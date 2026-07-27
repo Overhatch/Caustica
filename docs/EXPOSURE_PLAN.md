@@ -1,6 +1,6 @@
 # Exposure Plan — smarter metering and adaptation
 
-Status: **implementation in progress** — S0–S2 are implemented.
+Status: **implementation in progress** — S0–S3 are implemented.
 Written 2026-07-27 against `bt2020-only`
 (working tree, on top of `5d6bf62`). Scope: the auto-exposure loop that produces the 1x1
 `display exposure` image and everything that consumes it. The display transform that consumes
@@ -268,6 +268,14 @@ it in the resolve.
 *Acceptance:* the four reference scenes land within ~0.3 EV of the §2 table; `minEv`/`maxEv`
 saturate only in the intended deep-dark case.
 
+**Status (2026-07-28): implemented; scene tuning pending.** The example curve above is the initial
+default. Four authored points are parsed, sorted by measured scene EV, validated as finite/distinct,
+and pushed as eight floats; malformed input logs once and falls back to the default. Compensation is
+piecewise linear with constant values outside the authored domain. `full` supplies the same four
+scene points with zero compensation and exactly reproduces the legacy full-adaptation equation.
+The GPU writes its evaluated compensation and effective slope into the existing final two
+`ExposureState` floats, and the once-per-second diagnostics report both.
+
 ### S4 — Temporal controller
 
 Rewrite the smoothing in EV space (D4, D5):
@@ -357,7 +365,7 @@ existing convention):
 | `stride` | 2 | S1 |
 | `center-weight-sigma` / `center-weight-floor` | 0.35 / 0.15 | S2 |
 | `sky-weight-cap` | 0.25 | S2 |
-| `curve` (4 control points, or `full`) | see §S3 | S3 |
+| `curve` (4 control points, or `full`) | `-6:-2.0, -3:-0.8, 0:0.0, 4:0.4` | S3 |
 | `tau-brighten` / `tau-darken` | 0.4 / 0.8 s | S4 |
 | `max-ev-per-second` | 1.5 | S4 |
 | `deadband-ev` | 0.05 | S4 |

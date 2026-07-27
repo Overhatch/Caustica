@@ -108,6 +108,10 @@ public final class CausticaConfig {
                 " SDR + HDR display-transform: a baked ACES 2.0 output-transform LUT (see\n"
                         + " docs/DISPLAY_TRANSFORM_PLAN.md). aces-exposure-ev is a mid-grey placement bias,\n"
                         + " applied before both LUT fetches; tune it together with exposure (see docs/EXPOSURE_PLAN.md).");
+        FILE.setComment("exposure",
+                " Auto-exposure metering and shaping (see docs/EXPOSURE_PLAN.md). curve is either 'full'\n"
+                        + " for legacy full adaptation or four measured-EV:compensation-EV control points,\n"
+                        + " for example \"-6:-2.0, -3:-0.8, 0:0.0, 4:0.4\".");
         FILE.setComment("hdr",
                 " HDR display output (ST.2084/PQ). When enabled the swapchain is created in PQ automatically\n"
                         + " (falls back to SDR if the surface doesn't advertise it). paper-white-nits / peak-nits\n"
@@ -697,8 +701,12 @@ public final class CausticaConfig {
         }
 
         public static final class Exposure {
+            public static final String DEFAULT_CURVE = "-6:-2.0, -3:-0.8, 0:0.0, 4:0.4";
             public static final StringSetting MODE =
                     string("caustica.rt.exposure.mode", "exposure.mode", "auto", Exposure::sanitizeMode);
+            public static final StringSetting CURVE =
+                    string("caustica.rt.exposure.curve", "exposure.curve", DEFAULT_CURVE,
+                            Exposure::sanitizeCurveSpec);
             public static final FloatSetting MANUAL_EV =
                     finiteFloat("caustica.rt.exposure.manualEv", "exposure.manual-ev", 0.0f);
             public static final FloatSetting KEY = exposureScale("caustica.rt.exposure.key", "exposure.key", 0.18f);
@@ -749,6 +757,14 @@ public final class CausticaConfig {
                     return "manual";
                 }
                 return "auto";
+            }
+
+            private static String sanitizeCurveSpec(String value) {
+                if (value == null || value.isBlank()) {
+                    return DEFAULT_CURVE;
+                }
+                String trimmed = value.trim();
+                return "full".equalsIgnoreCase(trimmed) ? "full" : trimmed;
             }
         }
 

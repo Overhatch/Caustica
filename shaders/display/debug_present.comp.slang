@@ -32,7 +32,8 @@ struct ExposureState {
     float evHistory[8];
     float meteringSkyScale;
     float meteringSkyFrac;
-    float2 reservedS2;
+    float curveCompensation;
+    float effectiveSlope;
 };
 [[vk::binding(9, 0)]] StructuredBuffer<ExposureState, Std430DataLayout> exposureState;
 

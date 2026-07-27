@@ -14,6 +14,8 @@ import org.lwjgl.vulkan.VkClearColorValue;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkImageSubresourceRange;
 
+import java.util.Objects;
+
 /** Owns the display exposure value shared by the RT compositor's display-mapping passes. */
 public final class RtExposure {
     private RtImage image;
@@ -23,6 +25,8 @@ public final class RtExposure {
     private boolean logged;
     private long lastFrameNanos;
     private long lastDiagLogNanos;
+    private String cachedCurveSpec;
+    private ExposureCurve cachedCurve;
 
     // ExposureState byte layout (std430, see exposure_resolve.comp.slang) -- must match field-for-
     // field. S2 appends sky-weight diagnostics after S4's already-reserved history fields so their
@@ -37,6 +41,8 @@ public final class RtExposure {
     private static final long OFF_CLIP_HIGH_FRAC = 24L;
     private static final long OFF_METERING_SKY_SCALE = 64L;
     private static final long OFF_METERING_SKY_FRAC = 68L;
+    private static final long OFF_CURVE_COMPENSATION = 72L;
+    private static final long OFF_EFFECTIVE_SLOPE = 76L;
     private static final long DIAG_LOG_INTERVAL_NANOS = 1_000_000_000L;
 
     public RtImage image() {
@@ -159,15 +165,17 @@ public final class RtExposure {
         float clipHighFrac = MemoryUtil.memGetFloat(state.mapped + OFF_CLIP_HIGH_FRAC);
         float skyScale = MemoryUtil.memGetFloat(state.mapped + OFF_METERING_SKY_SCALE);
         float skyFrac = MemoryUtil.memGetFloat(state.mapped + OFF_METERING_SKY_FRAC);
+        float curveCompensation = MemoryUtil.memGetFloat(state.mapped + OFF_CURVE_COMPENSATION);
+        float effectiveSlope = MemoryUtil.memGetFloat(state.mapped + OFF_EFFECTIVE_SLOPE);
         AutoConfig cfg = autoConfig();
         boolean pinnedLow = evTarget <= cfg.minEv() + 0.01f;
         boolean pinnedHigh = evTarget >= cfg.maxEv() - 0.01f;
         CausticaMod.LOGGER.info(
                 "RT exposure diag: evScene={} evTarget={}{} evApplied={} clipLow={}% clipHigh={}% "
-                        + "skyScale={} skyWeight={}%",
+                        + "skyScale={} skyWeight={}% curveComp={} effectiveSlope={}",
                 fmt(evScene), fmt(evTarget), pinnedLow ? " (at minEv clamp)" : pinnedHigh ? " (at maxEv clamp)" : "",
                 fmt(evApplied), fmt(clipLowFrac * 100.0f), fmt(clipHighFrac * 100.0f),
-                fmt(skyScale), fmt(skyFrac * 100.0f));
+                fmt(skyScale), fmt(skyFrac * 100.0f), fmt(curveCompensation), fmt(effectiveSlope));
     }
 
     private static String fmt(float v) {
@@ -211,7 +219,8 @@ public final class RtExposure {
                 + ", evBias=" + autoConfig.evBias + ", percentiles=" + autoConfig.lowPercentile
                 + ".." + autoConfig.highPercentile + ", stride=" + autoConfig.stride
                 + ", centerWeight=" + autoConfig.centerWeightSigma + "/" + autoConfig.centerWeightFloor
-                + ", skyCap=" + autoConfig.skyWeightCap + ")"
+                + ", skyCap=" + autoConfig.skyWeightCap
+                + ", curve=" + CausticaConfig.Rt.Exposure.CURVE.get() + ")"
                 : Float.toString(manualExposureScale());
         CausticaMod.LOGGER.info("RT display exposure: mode={}, exposure={}, tonemap=aces2.0(exposureEv={}), "
                         + "DLSS-RR exposure=NGX auto",
@@ -226,7 +235,7 @@ public final class RtExposure {
         return CausticaConfig.Rt.Exposure.MANUAL_EV.value();
     }
 
-    private static AutoConfig autoConfig() {
+    private AutoConfig autoConfig() {
         return new AutoConfig(
                 CausticaConfig.Rt.Exposure.KEY.value(),
                 CausticaConfig.Rt.Exposure.minEv(),
@@ -239,12 +248,123 @@ public final class RtExposure {
                 CausticaConfig.Rt.Exposure.STRIDE.value(),
                 CausticaConfig.Rt.Exposure.CENTER_WEIGHT_SIGMA.value(),
                 CausticaConfig.Rt.Exposure.CENTER_WEIGHT_FLOOR.value(),
-                CausticaConfig.Rt.Exposure.SKY_WEIGHT_CAP.value());
+                CausticaConfig.Rt.Exposure.SKY_WEIGHT_CAP.value(),
+                curveConfig());
     }
 
     record AutoConfig(float key, float minEv, float maxEv, float adaptUp, float adaptDown, float evBias,
                       float lowPercentile, float highPercentile, int stride,
-                      float centerWeightSigma, float centerWeightFloor, float skyWeightCap) {
+                      float centerWeightSigma, float centerWeightFloor, float skyWeightCap,
+                      ExposureCurve curve) {
+    }
+
+    private ExposureCurve curveConfig() {
+        String spec = CausticaConfig.Rt.Exposure.CURVE.get();
+        if (cachedCurve != null && Objects.equals(cachedCurveSpec, spec)) {
+            return cachedCurve;
+        }
+        ExposureCurve parsed;
+        try {
+            parsed = parseCurve(spec);
+        } catch (IllegalArgumentException e) {
+            CausticaMod.LOGGER.warn("Invalid exposure curve '{}'; using default '{}': {}",
+                    spec, CausticaConfig.Rt.Exposure.DEFAULT_CURVE, e.getMessage());
+            parsed = parseCurve(CausticaConfig.Rt.Exposure.DEFAULT_CURVE);
+        }
+        cachedCurveSpec = spec;
+        cachedCurve = parsed;
+        return parsed;
+    }
+
+    static ExposureCurve parseCurve(String spec) {
+        if (spec == null) {
+            throw new IllegalArgumentException("curve is null");
+        }
+        if ("full".equalsIgnoreCase(spec.trim())) {
+            return new ExposureCurve(-6.0f, 0.0f, -3.0f, 0.0f, 0.0f, 0.0f, 4.0f, 0.0f);
+        }
+        String[] encodedPoints = spec.split(",");
+        if (encodedPoints.length != 4) {
+            throw new IllegalArgumentException("expected exactly four scene:compensation points");
+        }
+        float[] scene = new float[4];
+        float[] compensation = new float[4];
+        for (int i = 0; i < encodedPoints.length; i++) {
+            String[] pair = encodedPoints[i].trim().split(":", -1);
+            if (pair.length != 2) {
+                throw new IllegalArgumentException("point " + (i + 1) + " is not scene:compensation");
+            }
+            try {
+                scene[i] = Float.parseFloat(pair[0].trim());
+                compensation[i] = Float.parseFloat(pair[1].trim());
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException("point " + (i + 1) + " contains a non-number", e);
+            }
+            if (!Float.isFinite(scene[i]) || !Float.isFinite(compensation[i])) {
+                throw new IllegalArgumentException("point " + (i + 1) + " is not finite");
+            }
+        }
+        // Four elements: insertion sort avoids a temporary point-object list.
+        for (int i = 1; i < 4; i++) {
+            float sceneValue = scene[i];
+            float compensationValue = compensation[i];
+            int j = i - 1;
+            while (j >= 0 && scene[j] > sceneValue) {
+                scene[j + 1] = scene[j];
+                compensation[j + 1] = compensation[j];
+                j--;
+            }
+            scene[j + 1] = sceneValue;
+            compensation[j + 1] = compensationValue;
+        }
+        for (int i = 1; i < 4; i++) {
+            if (scene[i] - scene[i - 1] < 1.0e-4f) {
+                throw new IllegalArgumentException("scene EV points must be distinct");
+            }
+        }
+        return new ExposureCurve(scene[0], compensation[0], scene[1], compensation[1],
+                scene[2], compensation[2], scene[3], compensation[3]);
+    }
+
+    record ExposureCurve(float scene0, float compensation0, float scene1, float compensation1,
+                         float scene2, float compensation2, float scene3, float compensation3) {
+        float compensationAt(float sceneEv) {
+            if (sceneEv <= scene0) {
+                return compensation0;
+            }
+            if (sceneEv < scene1) {
+                return interpolate(sceneEv, scene0, compensation0, scene1, compensation1);
+            }
+            if (sceneEv < scene2) {
+                return interpolate(sceneEv, scene1, compensation1, scene2, compensation2);
+            }
+            if (sceneEv < scene3) {
+                return interpolate(sceneEv, scene2, compensation2, scene3, compensation3);
+            }
+            return compensation3;
+        }
+
+        float effectiveSlopeAt(float sceneEv) {
+            if (sceneEv <= scene0 || sceneEv >= scene3) {
+                return 1.0f;
+            }
+            if (sceneEv < scene1) {
+                return 1.0f - slope(scene0, compensation0, scene1, compensation1);
+            }
+            if (sceneEv < scene2) {
+                return 1.0f - slope(scene1, compensation1, scene2, compensation2);
+            }
+            return 1.0f - slope(scene2, compensation2, scene3, compensation3);
+        }
+
+        private static float interpolate(float x, float x0, float y0, float x1, float y1) {
+            float t = (x - x0) / (x1 - x0);
+            return y0 + t * (y1 - y0);
+        }
+
+        private static float slope(float x0, float y0, float x1, float y1) {
+            return (y1 - y0) / (x1 - x0);
+        }
     }
 
     private enum Mode {

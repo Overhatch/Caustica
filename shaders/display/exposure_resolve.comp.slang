@@ -21,7 +21,8 @@ struct ExposureState {
     float evHistory[8];    // reserved for S4's median-of-N ring, unused here
     float meteringSkyScale; // S2: frame-global multiplier applied to the separate sky histogram
     float meteringSkyFrac;  // S2: final weighted sky fraction after the cap
-    float2 reservedS2;
+    float curveCompensation; // S3: compensation EV evaluated at evScene
+    float effectiveSlope;    // S3: 1 - d(compensation)/d(evScene)
 };
 [[vk::binding(2, 0)]] RWStructuredBuffer<ExposureState, Std430DataLayout> stateBuf;
 
@@ -36,6 +37,14 @@ struct Push {
     float lowPercentile;
     float highPercentile;
     float skyWeightCap;
+    float curveScene0;
+    float curveCompensation0;
+    float curveScene1;
+    float curveCompensation1;
+    float curveScene2;
+    float curveCompensation2;
+    float curveScene3;
+    float curveCompensation3;
 };
 [[vk::push_constant]] Push pc;
 
@@ -45,6 +54,43 @@ static const float LOG_STEP = (LOG_MAX - LOG_MIN) / 256.0;
 
 float binCenter(uint bin) {
     return LOG_MIN + (float(bin) + 0.5) * LOG_STEP;
+}
+
+float curveSegment(float x, float x0, float y0, float x1, float y1) {
+    return lerp(y0, y1, (x - x0) / (x1 - x0));
+}
+
+float curveCompensation(float sceneEv) {
+    if (sceneEv <= pc.curveScene0) return pc.curveCompensation0;
+    if (sceneEv < pc.curveScene1) {
+        return curveSegment(sceneEv, pc.curveScene0, pc.curveCompensation0,
+                pc.curveScene1, pc.curveCompensation1);
+    }
+    if (sceneEv < pc.curveScene2) {
+        return curveSegment(sceneEv, pc.curveScene1, pc.curveCompensation1,
+                pc.curveScene2, pc.curveCompensation2);
+    }
+    if (sceneEv < pc.curveScene3) {
+        return curveSegment(sceneEv, pc.curveScene2, pc.curveCompensation2,
+                pc.curveScene3, pc.curveCompensation3);
+    }
+    return pc.curveCompensation3;
+}
+
+float curveEffectiveSlope(float sceneEv) {
+    if (sceneEv <= pc.curveScene0 || sceneEv >= pc.curveScene3) return 1.0;
+    float compensationSlope;
+    if (sceneEv < pc.curveScene1) {
+        compensationSlope = (pc.curveCompensation1 - pc.curveCompensation0)
+                / (pc.curveScene1 - pc.curveScene0);
+    } else if (sceneEv < pc.curveScene2) {
+        compensationSlope = (pc.curveCompensation2 - pc.curveCompensation1)
+                / (pc.curveScene2 - pc.curveScene1);
+    } else {
+        compensationSlope = (pc.curveCompensation3 - pc.curveCompensation2)
+                / (pc.curveScene3 - pc.curveScene2);
+    }
+    return 1.0 - compensationSlope;
 }
 
 [shader("compute")]
@@ -88,7 +134,9 @@ void main() {
     }
 
     float avgLogLum = weightedCount > 0.0 ? weightedLogLum / weightedCount : 0.0;
-    float target = pc.key * exp2(pc.evBias - avgLogLum);
+    float compensation = curveCompensation(avgLogLum);
+    float effectiveSlope = curveEffectiveSlope(avgLogLum);
+    float target = pc.key * exp2(pc.evBias - avgLogLum + compensation);
     target = clamp(target, exp2(pc.minEv), exp2(pc.maxEv));
 
     bool initialized = stateBuf[0].initialized != 0u;
@@ -106,5 +154,7 @@ void main() {
     stateBuf[0].clipHighFrac = (float(histBins[255]) + float(histBins[511]) * skyScale) / total;
     stateBuf[0].meteringSkyScale = skyScale;
     stateBuf[0].meteringSkyFrac = skyPopulation * skyScale / total;
+    stateBuf[0].curveCompensation = compensation;
+    stateBuf[0].effectiveSlope = effectiveSlope;
     exposureImage[int2(0, 0)] = exposure;
 }
