@@ -117,9 +117,10 @@ public final class RtExposure {
             VK10.vkCmdFillBuffer(cmd, histogram.handle, 0, histogram.size, 0);
         }
         VulkanCommandEncoder.memoryBarrier(cmd, stack);
-        pipeline.dispatchHistogram(cmd, traceColor.width, traceColor.height);
+        AutoConfig config = autoConfig();
+        pipeline.dispatchHistogram(cmd, traceColor.width, traceColor.height, config.stride());
         VulkanCommandEncoder.memoryBarrier(cmd, stack);
-        pipeline.dispatchResolve(cmd, Math.max(1, traceColor.width * traceColor.height), autoConfig(), frameTimeSeconds());
+        pipeline.dispatchResolve(cmd, config, frameTimeSeconds());
         logDiagnosticsIfDue();
     }
 
@@ -190,7 +191,8 @@ public final class RtExposure {
         String exposureText = mode == Mode.AUTO
                 ? "auto(key=" + autoConfig.key + ", minEv=" + autoConfig.minEv + ", maxEv=" + autoConfig.maxEv
                 + ", adaptUp=" + autoConfig.adaptUp + ", adaptDown=" + autoConfig.adaptDown
-                + ", evBias=" + autoConfig.evBias + ")"
+                + ", evBias=" + autoConfig.evBias + ", percentiles=" + autoConfig.lowPercentile
+                + ".." + autoConfig.highPercentile + ", stride=" + autoConfig.stride + ")"
                 : Float.toString(manualExposureScale());
         CausticaMod.LOGGER.info("RT display exposure: mode={}, exposure={}, tonemap=aces2.0(exposureEv={}), "
                         + "DLSS-RR exposure=NGX auto",
@@ -212,10 +214,14 @@ public final class RtExposure {
                 CausticaConfig.Rt.Exposure.maxEv(),
                 CausticaConfig.Rt.Exposure.ADAPT_UP.value(),
                 CausticaConfig.Rt.Exposure.ADAPT_DOWN.value(),
-                manualEv());
+                manualEv(),
+                CausticaConfig.Rt.Exposure.LOW_PERCENTILE.value(),
+                CausticaConfig.Rt.Exposure.HIGH_PERCENTILE.value(),
+                CausticaConfig.Rt.Exposure.STRIDE.value());
     }
 
-    record AutoConfig(float key, float minEv, float maxEv, float adaptUp, float adaptDown, float evBias) {
+    record AutoConfig(float key, float minEv, float maxEv, float adaptUp, float adaptDown, float evBias,
+                      float lowPercentile, float highPercentile, int stride) {
     }
 
     private enum Mode {

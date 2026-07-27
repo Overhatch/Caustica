@@ -222,6 +222,13 @@ Small, self-contained, no behaviour change intended beyond removing noise source
 *Acceptance:* EV trace from S0 is unchanged (within ~0.05 EV) at stride 1 vs stride 2; frame time
 for `frame.exposure` drops.
 
+**Status (2026-07-27): implemented; stride 1 vs 2 has no visible difference in play, GPU timing
+confirmation remains.** Histogram dispatch
+now samples at configurable stride (default 2), rejects non-finite radiance explicitly, and resolve
+derives its population from the bin sum so skipped samples remain correct. The 0.50/0.95 trim window
+is exposed as ordered, clamped push data through `exposure.low-percentile` /
+`exposure.high-percentile`; equal or reversed values still resolve to at least one histogram sample.
+
 ### S2 — Spatial weighting
 
 Weighted histogram: `atomicAdd` a fixed-point weight (`uint(w * 256)`) instead of `1u`.

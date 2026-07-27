@@ -89,7 +89,7 @@ final class RtExposurePipeline {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_POOL, histPool, "exposure histogram descriptor pool");
             long histSet = allocateSet(vk, stack, histPool, histDsl, "hist");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET, histSet, "exposure histogram descriptor set");
-            long histLayout = createPipelineLayout(vk, stack, histDsl, 0, "hist");
+            long histLayout = createPipelineLayout(vk, stack, histDsl, Integer.BYTES, "hist");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE_LAYOUT, histLayout, "exposure histogram pipeline layout");
             long histModule = loadModule(vk, stack, "exposure_hist.comp.spv");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SHADER_MODULE, histModule, "exposure histogram shader module");
@@ -113,7 +113,7 @@ final class RtExposurePipeline {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_POOL, resolvePool, "exposure resolve descriptor pool");
             long resolveSet = allocateSet(vk, stack, resolvePool, resolveDsl, "resolve");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET, resolveSet, "exposure resolve descriptor set");
-            long resolveLayout = createPipelineLayout(vk, stack, resolveDsl, 32, "resolve");
+            long resolveLayout = createPipelineLayout(vk, stack, resolveDsl, 36, "resolve");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE_LAYOUT, resolveLayout, "exposure resolve pipeline layout");
             long resolveModule = loadModule(vk, stack, "exposure_resolve.comp.spv");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SHADER_MODULE, resolveModule, "exposure resolve shader module");
@@ -167,29 +167,35 @@ final class RtExposurePipeline {
         }
     }
 
-    void dispatchHistogram(org.lwjgl.vulkan.VkCommandBuffer cmd, int width, int height) {
+    void dispatchHistogram(org.lwjgl.vulkan.VkCommandBuffer cmd, int width, int height, int stride) {
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure histogram")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, histPipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, histPipelineLayout, 0,
                     stack.longs(histDescriptorSet), null);
-            VK10.vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
+            ByteBuffer push = stack.malloc(Integer.BYTES);
+            push.putInt(0, stride);
+            VK10.vkCmdPushConstants(cmd, histPipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
+            int sampleWidth = (width + stride - 1) / stride;
+            int sampleHeight = (height + stride - 1) / stride;
+            VK10.vkCmdDispatch(cmd, (sampleWidth + 15) / 16, (sampleHeight + 15) / 16, 1);
         }
     }
 
-    void dispatchResolve(org.lwjgl.vulkan.VkCommandBuffer cmd, int pixelCount, RtExposure.AutoConfig config, float frameTimeSeconds) {
+    void dispatchResolve(org.lwjgl.vulkan.VkCommandBuffer cmd, RtExposure.AutoConfig config, float frameTimeSeconds) {
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure resolve")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, resolvePipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, resolvePipelineLayout, 0,
                     stack.longs(resolveDescriptorSet), null);
-            ByteBuffer push = stack.malloc(32);
-            push.putInt(0, pixelCount);
-            push.putFloat(4, config.key());
-            push.putFloat(8, config.minEv());
-            push.putFloat(12, config.maxEv());
-            push.putFloat(16, config.adaptUp());
-            push.putFloat(20, config.adaptDown());
-            push.putFloat(24, frameTimeSeconds);
-            push.putFloat(28, config.evBias());
+            ByteBuffer push = stack.malloc(36);
+            push.putFloat(0, config.key());
+            push.putFloat(4, config.minEv());
+            push.putFloat(8, config.maxEv());
+            push.putFloat(12, config.adaptUp());
+            push.putFloat(16, config.adaptDown());
+            push.putFloat(20, frameTimeSeconds);
+            push.putFloat(24, config.evBias());
+            push.putFloat(28, config.lowPercentile());
+            push.putFloat(32, config.highPercentile());
             VK10.vkCmdPushConstants(cmd, resolvePipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, 1, 1, 1);
         }

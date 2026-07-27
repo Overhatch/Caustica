@@ -710,6 +710,12 @@ public final class CausticaConfig {
                     exposureScale("caustica.rt.exposure.adaptUp", "exposure.adapt-up", 0.12f);
             public static final FloatSetting ADAPT_DOWN =
                     exposureScale("caustica.rt.exposure.adaptDown", "exposure.adapt-down", 0.35f);
+            public static final FloatSetting LOW_PERCENTILE =
+                    clampedFloat("caustica.rt.exposure.lowPercentile", "exposure.low-percentile", 0.50f, 0.0f, 1.0f);
+            public static final FloatSetting HIGH_PERCENTILE =
+                    clampedFloat("caustica.rt.exposure.highPercentile", "exposure.high-percentile", 0.95f, 0.0f, 1.0f);
+            public static final IntSetting STRIDE =
+                    clampedInt("caustica.rt.exposure.stride", "exposure.stride", 2, 1, 8);
 
             private Exposure() {
             }

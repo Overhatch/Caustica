@@ -4,6 +4,11 @@
 [[vk::binding(0, 0)]] [format("rgba16f")] RWTexture2D<float4> colorImage;
 [[vk::binding(1, 0)]] RWStructuredBuffer<uint, Std430DataLayout> histBins; // 256 bins
 
+struct Push {
+    uint stride;
+};
+[[vk::push_constant]] Push pc;
+
 static const float LOG_MIN = -12.0;
 static const float LOG_MAX = 12.0;
 static const float INV_LOG_RANGE = 1.0 / (LOG_MAX - LOG_MIN);
@@ -21,17 +26,22 @@ void main(uint3 dispatchId : SV_DispatchThreadID, uint groupIndex : SV_GroupInde
     localBins[groupIndex] = 0u;
     GroupMemoryBarrierWithGroupSync();
 
-    int2 pix = int2(dispatchId.xy);
+    int2 pix = int2(dispatchId.xy * pc.stride);
     uint w, h;
     colorImage.GetDimensions(w, h);
     if (pix.x < int(w) && pix.y < int(h)) {
-        float3 rgb = max(colorImage[pix].rgb, float3(0.0));
-        // The reconstructed scene image is linear BT.2020; meter it in the transport basis.
-        float lum = dot(rgb, BT2020_LUMA);
-        float logLum = clamp(log2(max(lum, 1.0e-5)), LOG_MIN, LOG_MAX);
-        uint bin = min(uint(floor((logLum - LOG_MIN) * INV_LOG_RANGE * 256.0)), 255u);
-        uint unused;
-        InterlockedAdd(localBins[bin], 1u, unused);
+        float3 rgb = colorImage[pix].rgb;
+        // Invalid radiance is not a meaningful metering sample. Skipping it is safe because resolve
+        // derives its population from the bins instead of assuming image area.
+        if (all(isfinite(rgb))) {
+            rgb = max(rgb, float3(0.0));
+            // The reconstructed scene image is linear BT.2020; meter it in the transport basis.
+            float lum = dot(rgb, BT2020_LUMA);
+            float logLum = clamp(log2(max(lum, 1.0e-5)), LOG_MIN, LOG_MAX);
+            uint bin = min(uint(floor((logLum - LOG_MIN) * INV_LOG_RANGE * 256.0)), 255u);
+            uint unused;
+            InterlockedAdd(localBins[bin], 1u, unused);
+        }
     }
 
     GroupMemoryBarrierWithGroupSync();

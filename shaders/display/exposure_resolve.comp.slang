@@ -23,7 +23,6 @@ struct ExposureState {
 [[vk::binding(2, 0)]] RWStructuredBuffer<ExposureState, Std430DataLayout> stateBuf;
 
 struct Push {
-    uint pixelCount;
     float key;
     float minEv;
     float maxEv;
@@ -31,6 +30,8 @@ struct Push {
     float adaptDown;
     float frameTimeSeconds;
     float evBias;
+    float lowPercentile;
+    float highPercentile;
 };
 [[vk::push_constant]] Push pc;
 
@@ -45,9 +46,15 @@ float binCenter(uint bin) {
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void main() {
-    uint total = max(pc.pixelCount, 1u);
-    uint lowCount = uint(floor(float(total) * 0.50));
-    uint highCount = max(lowCount + 1u, uint(ceil(float(total) * 0.95)));
+    uint population = 0u;
+    for (uint i = 0u; i < 256u; ++i) {
+        population += histBins[i];
+    }
+    uint total = max(population, 1u);
+    float lowPercentile = clamp(min(pc.lowPercentile, pc.highPercentile), 0.0, 1.0);
+    float highPercentile = clamp(max(pc.lowPercentile, pc.highPercentile), 0.0, 1.0);
+    uint lowCount = min(uint(floor(float(total) * lowPercentile)), total - 1u);
+    uint highCount = clamp(uint(ceil(float(total) * highPercentile)), lowCount + 1u, total);
 
     uint cumulative = 0u;
     float weightedLogLum = 0.0;
