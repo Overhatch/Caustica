@@ -244,7 +244,4 @@ void main() {
     queue[pixelIndex] = packPathSegment(terminal, nextRecord);
 
     writeGuides(pix, dir, jndc, size, rayConeSpread);
-    if (pc.debugView != 0u) {
-        writeDebugView(pix);
-    }
 }

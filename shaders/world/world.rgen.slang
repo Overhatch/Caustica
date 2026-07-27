@@ -388,9 +388,6 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
 [shader("raygeneration")]
 void main() {
     worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
-    if (pc.debugView != 0u) {
-        return; // pass A owns guide visualization output
-    }
     uint2 dispatchIndex = DispatchRaysIndex().xy;
     uint2 dimensions = DispatchRaysDimensions().xy;
     int2 pix = int2(dispatchIndex);

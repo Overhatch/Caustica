@@ -54,6 +54,7 @@ import dev.comfyfluffy.caustica.rt.material.RtBlockMaterials;
 import dev.comfyfluffy.caustica.rt.material.RtEmissionSemantics;
 import dev.comfyfluffy.caustica.rt.material.RtMaterialOverrides;
 import dev.comfyfluffy.caustica.rt.material.RtMaterialRegistry;
+import dev.comfyfluffy.caustica.rt.pipeline.RtDebugPresentPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDisplayPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssRr;
@@ -93,8 +94,9 @@ public final class RtComposite {
     // owns or calculates a shader byte offset, struct size, array stride, or fixed-array capacity.
     private static final int WORLD_PUSH_SIZE = WorldPushData.BYTE_SIZE;
     // Real inline push constants (fast constant-bank reads), separate from the WorldPush BDA ring above.
-    // Hot addresses/frameIndex and raygen's debugView avoid unnecessary global-memory dereferences;
-    // WorldPushConstantsData is generated from the same Slang module and owns this second ABI as well.
+    // Hot addresses/frameIndex avoid unnecessary global-memory dereferences; WorldPushConstantsData is
+    // generated from the same Slang module and owns this second ABI as well. debugView is no longer
+    // part of it -- no world shader reads it anymore; debug views are a downstream compute pass.
     private static final int GUIDE_COUNT = 6; // RR guide buffers bound at world-pipeline bindings 3..8
     private static final long PATH_RECORD_BYTES = 48L;
     private static int debugView() {
@@ -180,6 +182,7 @@ public final class RtComposite {
     private PushSlot[] pushRing;
     private int pushSlot;
     private RtDisplayPipeline displayPipeline;
+    private RtDebugPresentPipeline debugPresentPipeline;
     private RtToneLut sdrToneLut;
     private RtToneLut hdrToneLut;
     private int loadedHdrLutNits = -1;
@@ -465,6 +468,9 @@ public final class RtComposite {
             if (displayPipeline == null) {
                 displayPipeline = RtDisplayPipeline.create(ctx);
             }
+            if (debugPresentPipeline == null) {
+                debugPresentPipeline = RtDebugPresentPipeline.create(ctx);
+            }
             if (sdrToneLut == null) {
                 sdrToneLut = RtToneLut.load(ctx, "sdr_aces2_rec709.bin");
             }
@@ -508,6 +514,8 @@ public final class RtComposite {
             // if the bound views already match, so this is cheap on every other frame.
             displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                     sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler());
+            debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
+                    gMotion.view, gSpecAlbedo.view, gSpecMotion.view);
             // Cheap idempotent check every frame (not just on resize): if the exposure mode is switched
             // manual -> auto at runtime (video settings), the auto-mode histogram/state/pipeline must be
             // allocated before recordFrame's exposure.record() below needs them, or it throws.
@@ -729,6 +737,9 @@ public final class RtComposite {
     }
 
     private void ensureOutput(RtContext ctx, int width, int height) {
+        // Debug presentation is downstream of the ordinary frame graph and must not change the image
+        // being inspected. In particular, toggling it must not rebuild at native resolution or disable
+        // the RR path whose render-resolution guide inputs the debug pass visualizes.
         boolean rrEnabled = RtDlssRr.enabled();
         int rrQuality = rrEnabled ? RtDlssRr.quality() : Integer.MIN_VALUE;
         if (output != null && continuationQueue != null
@@ -799,6 +810,8 @@ public final class RtComposite {
         }
         displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                 sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler());
+        debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
+                gMotion.view, gSpecAlbedo.view, gSpecMotion.view);
     }
 
     /**
@@ -841,8 +854,8 @@ public final class RtComposite {
         RtTerrain terrain = RtTerrain.currentOrNull();
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope frameLabel = RtDebugLabels.scope(ctx, cmd, "composite frame")) {
             // RR drives the upscale: trace + jitter at render res, DLSS-RR denoises+upscales to display.
-            // Jitter is suppressed for the no-RR reference and for the debug guide views (raw inspection).
-            boolean rrPath = RtDlssRr.enabled() && debugView == 0;
+            // A debug view observes this ordinary path; it never changes jitter or disables RR.
+            boolean rrPath = RtDlssRr.enabled();
             float jitterX = 0f;
             float jitterY = 0f;
             if (rrPath) {
@@ -991,7 +1004,7 @@ public final class RtComposite {
                     terrain.lightBufferAddress(), terrain.lightAliasBufferAddress(),
                     terrain.lightLocalAliasBufferAddress(), terrain.lightGridCellBufferAddress(),
                     terrain.lightGridSpanBufferAddress(), continuationQueue.deviceAddress,
-                    (int) frameCounter, debugView).write(pushConstants);
+                    (int) frameCounter).write(pushConstants);
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world primary trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.tracePrimary")) {
                 active.trace(cmd, renderW, renderH, pushConstants, 0);
@@ -1013,9 +1026,10 @@ public final class RtComposite {
                 }
             }
 
-            // When DLSS-RR did not produce the display-res image (disabled, debug view, or a runtime
-            // failure), bring the render-res trace up to display res with a linear blit so the display mapper
-            // always has a display-res RT image. With RR off render == display, so this is a 1:1 copy.
+            // When DLSS-RR did not produce the display-res image (disabled or a runtime failure), bring
+            // the render-res trace up to display res with a linear blit so the display mapper and
+            // downstream debug pass always have a valid display-res scene image. With RR off
+            // render == display, so this is a 1:1 copy.
             if (!rrDone) {
                 VulkanCommandEncoder.memoryBarrier(cmd, stack);
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "fallback upscale");
@@ -1044,6 +1058,19 @@ public final class RtComposite {
                         sdrToneLut.size, CausticaConfig.Rt.Tonemap.acesExposureScale());
             }
             hdrWrittenThisFrame = CausticaConfig.Rt.Hdr.enabled();
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // display output visible to debug composite
+
+            if (debugView != 0) {
+                // Debug content is composited only after the real scene has completed trace, RR/fallback,
+                // exposure, and display mapping. It therefore observes the renderer without perturbing
+                // exposure history or feeding literal diagnostic colors through ACES. Debug presentation
+                // remains SDR for now; a PQ swapchain uses the existing SDR->PQ conversion path.
+                try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "debug present");
+                     RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.debugPresent")) {
+                    debugPresentPipeline.dispatch(cmd, displayW, displayH, debugView);
+                }
+                hdrWrittenThisFrame = false;
+            }
             VulkanCommandEncoder.memoryBarrier(cmd, stack);
 
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "copy composite to main target");
@@ -1309,6 +1336,10 @@ public final class RtComposite {
         if (displayPipeline != null) {
             displayPipeline.destroy();
             displayPipeline = null;
+        }
+        if (debugPresentPipeline != null) {
+            debugPresentPipeline.destroy();
+            debugPresentPipeline = null;
         }
         if (sdrToneLut != null) {
             sdrToneLut.destroy();

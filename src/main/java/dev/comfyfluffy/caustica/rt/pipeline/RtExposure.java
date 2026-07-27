@@ -22,6 +22,19 @@ public final class RtExposure {
     private RtExposurePipeline pipeline;
     private boolean logged;
     private long lastFrameNanos;
+    private long lastDiagLogNanos;
+
+    // ExposureState byte layout (std430, see exposure_resolve.comp.slang) -- must match field-for-
+    // field. resetSeq/evHistory are reserved for S4 and neither read nor written on the CPU side yet.
+    private static final int STATE_BYTES = 64;
+    private static final long OFF_PREVIOUS = 0L;
+    private static final long OFF_INITIALIZED = 4L;
+    private static final long OFF_EV_SCENE = 8L;
+    private static final long OFF_EV_TARGET = 12L;
+    private static final long OFF_EV_APPLIED = 16L;
+    private static final long OFF_CLIP_LOW_FRAC = 20L;
+    private static final long OFF_CLIP_HIGH_FRAC = 24L;
+    private static final long DIAG_LOG_INTERVAL_NANOS = 1_000_000_000L;
 
     public RtImage image() {
         return image;
@@ -42,7 +55,7 @@ public final class RtExposure {
                         "exposure histogram");
             }
             if (state == null) {
-                state = ctx.createBuffer(16, VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, "exposure state");
+                state = ctx.createBuffer(STATE_BYTES, VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, "exposure state");
                 resetAutoHistory();
             }
             if (pipeline == null) {
@@ -107,6 +120,41 @@ public final class RtExposure {
         pipeline.dispatchHistogram(cmd, traceColor.width, traceColor.height);
         VulkanCommandEncoder.memoryBarrier(cmd, stack);
         pipeline.dispatchResolve(cmd, Math.max(1, traceColor.width * traceColor.height), autoConfig(), frameTimeSeconds());
+        logDiagnosticsIfDue();
+    }
+
+    /**
+     * S0 observability (docs/EXPOSURE_PLAN.md): throttled log of the controller's internal EVs, gated
+     * behind the frame-stats toggle since that's the existing "I want renderer internals" switch.
+     * Reads {@code state.mapped} with no fence — the buffer is host-visible+coherent and this frame's
+     * GPU work hasn't executed yet when this runs, so it's last frame's value; fine for a debug log,
+     * per the plan's own tolerance for staleness here.
+     */
+    private void logDiagnosticsIfDue() {
+        if (!CausticaConfig.Rt.FrameStats.ENABLED.value() || state == null || state.mapped == 0L) {
+            return;
+        }
+        long now = System.nanoTime();
+        if (lastDiagLogNanos != 0L && now - lastDiagLogNanos < DIAG_LOG_INTERVAL_NANOS) {
+            return;
+        }
+        lastDiagLogNanos = now;
+        float evScene = MemoryUtil.memGetFloat(state.mapped + OFF_EV_SCENE);
+        float evTarget = MemoryUtil.memGetFloat(state.mapped + OFF_EV_TARGET);
+        float evApplied = MemoryUtil.memGetFloat(state.mapped + OFF_EV_APPLIED);
+        float clipLowFrac = MemoryUtil.memGetFloat(state.mapped + OFF_CLIP_LOW_FRAC);
+        float clipHighFrac = MemoryUtil.memGetFloat(state.mapped + OFF_CLIP_HIGH_FRAC);
+        AutoConfig cfg = autoConfig();
+        boolean pinnedLow = evTarget <= cfg.minEv() + 0.01f;
+        boolean pinnedHigh = evTarget >= cfg.maxEv() - 0.01f;
+        CausticaMod.LOGGER.info(
+                "RT exposure diag: evScene={} evTarget={}{} evApplied={} clipLow={}% clipHigh={}%",
+                fmt(evScene), fmt(evTarget), pinnedLow ? " (at minEv clamp)" : pinnedHigh ? " (at maxEv clamp)" : "",
+                fmt(evApplied), fmt(clipLowFrac * 100.0f), fmt(clipHighFrac * 100.0f));
+    }
+
+    private static String fmt(float v) {
+        return String.format(java.util.Locale.ROOT, "%.2f", v);
     }
 
     private float frameTimeSeconds() {
@@ -121,10 +169,15 @@ public final class RtExposure {
         if (state == null || state.mapped == 0L) {
             return;
         }
-        MemoryUtil.memPutFloat(state.mapped, manualExposureScale());
-        MemoryUtil.memPutInt(state.mapped + 4, 0);
-        state.flush(0L, 2L * Integer.BYTES);
+        // Zero the whole widened struct, not just (previous, initialized): the S0 diagnostic fields
+        // and the reserved S4 fields (resetSeq, evHistory) should start clean too, not carry over
+        // whatever garbage a fresh VMA allocation happened to contain.
+        MemoryUtil.memSet(state.mapped, 0, STATE_BYTES);
+        MemoryUtil.memPutFloat(state.mapped + OFF_PREVIOUS, manualExposureScale());
+        MemoryUtil.memPutInt(state.mapped + OFF_INITIALIZED, 0);
+        state.flush(0L, STATE_BYTES);
         lastFrameNanos = 0L;
+        lastDiagLogNanos = 0L;
     }
 
     private void logOnce() {
