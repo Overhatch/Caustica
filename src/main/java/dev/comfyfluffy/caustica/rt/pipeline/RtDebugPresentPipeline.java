@@ -40,7 +40,7 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
  */
 public final class RtDebugPresentPipeline {
     private static final String SHADER_DIR = "/caustica/rt/";
-    private static final int PUSH_BYTES = Integer.BYTES;
+    private static final int PUSH_BYTES = Integer.BYTES + Float.BYTES;
 
     private final RtContext ctx;
     private final long descriptorSetLayout;
@@ -55,6 +55,8 @@ public final class RtDebugPresentPipeline {
     private long boundMotionView;
     private long boundSpecAlbedoView;
     private long boundSpecMotionView;
+    private long boundSceneView;
+    private long boundExposureView;
     private boolean destroyed;
 
     private RtDebugPresentPipeline(RtContext ctx, long dsl, long pool, long set, long layout, long pipeline) {
@@ -69,11 +71,10 @@ public final class RtDebugPresentPipeline {
     public static RtDebugPresentPipeline create(RtContext ctx) {
         VkDevice vk = ctx.vk();
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            // 0: output (SDR display target). 1..6: guide buffers (gNormal, gAlbedo, gDepth, gMotion,
-            // gSpecAlbedo, gSpecMotion), matching world_core.slang's set/formats but on this pipeline's
-            // own independent descriptor set/layout.
-            VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(7, stack);
-            for (int i = 0; i < 7; i++) {
+            // 0: output (SDR display target). 1..6: guide buffers. 7: post-RR scene image.
+            // 8: same-frame display exposure. All are storage images in GENERAL layout.
+            VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(9, stack);
+            for (int i = 0; i < 9; i++) {
                 binds.get(i).binding(i).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                         .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             }
@@ -85,7 +86,7 @@ public final class RtDebugPresentPipeline {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, dsl, "debug present descriptor set layout");
 
             VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(1, stack);
-            poolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(7);
+            poolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(9);
             VkDescriptorPoolCreateInfo dpci = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(1).pPoolSizes(poolSizes);
             check(VK10.vkCreateDescriptorPool(vk, dpci, null, p), "vkCreateDescriptorPool(rt debug present)");
             long pool = p.get(0);
@@ -123,16 +124,19 @@ public final class RtDebugPresentPipeline {
     }
 
     public void setImages(long outputImageView, long normalView, long albedoView, long depthView,
-                           long motionView, long specAlbedoView, long specMotionView) {
+                           long motionView, long specAlbedoView, long specMotionView,
+                           long sceneView, long exposureView) {
         if (boundOutputView == outputImageView && boundNormalView == normalView && boundAlbedoView == albedoView
                 && boundDepthView == depthView && boundMotionView == motionView
-                && boundSpecAlbedoView == specAlbedoView && boundSpecMotionView == specMotionView) {
+                && boundSpecAlbedoView == specAlbedoView && boundSpecMotionView == specMotionView
+                && boundSceneView == sceneView && boundExposureView == exposureView) {
             return;
         }
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            long[] views = {outputImageView, normalView, albedoView, depthView, motionView, specAlbedoView, specMotionView};
-            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(7, stack);
-            for (int i = 0; i < 7; i++) {
+            long[] views = {outputImageView, normalView, albedoView, depthView, motionView,
+                    specAlbedoView, specMotionView, sceneView, exposureView};
+            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(9, stack);
+            for (int i = 0; i < 9; i++) {
                 VkDescriptorImageInfo.Buffer info = VkDescriptorImageInfo.calloc(1, stack);
                 info.get(0).imageView(views[i]).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
                 writes.get(i).sType$Default().dstSet(descriptorSet).dstBinding(i)
@@ -147,14 +151,17 @@ public final class RtDebugPresentPipeline {
         boundMotionView = motionView;
         boundSpecAlbedoView = specAlbedoView;
         boundSpecMotionView = specMotionView;
+        boundSceneView = sceneView;
+        boundExposureView = exposureView;
     }
 
-    public void dispatch(VkCommandBuffer cmd, int width, int height, int debugView) {
+    public void dispatch(VkCommandBuffer cmd, int width, int height, int debugView, float acesExposure) {
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "debug present compute")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSet), null);
             ByteBuffer push = stack.malloc(PUSH_BYTES);
             push.putInt(0, debugView);
+            push.putFloat(Integer.BYTES, acesExposure);
             VK10.vkCmdPushConstants(cmd, pipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
         }

@@ -1,6 +1,7 @@
 # Exposure Plan — smarter metering and adaptation
 
-Status: **plan only**, nothing implemented. Written 2026-07-27 against `bt2020-only`
+Status: **implementation in progress** — S0 state diagnostics and debug views are implemented.
+Written 2026-07-27 against `bt2020-only`
 (working tree, on top of `5d6bf62`). Scope: the auto-exposure loop that produces the 1x1
 `display exposure` image and everything that consumes it. The display transform that consumes
 that scalar (AgX / PQ curve shape, and its planned ACES 2.0 replacement) is a separate, downstream
@@ -11,10 +12,10 @@ plan's original §S6.
 
 | Piece | File | Role |
 |---|---|---|
-| Owner / mode switch / config | [RtExposure.java](../src/main/java/dev/comfyfluffy/caustica/rt/pipeline/RtExposure.java) | 1x1 `R32_SFLOAT` image, 256-bin histogram buffer, 16-byte host-visible state buffer |
+| Owner / mode switch / config | [RtExposure.java](../src/main/java/dev/comfyfluffy/caustica/rt/pipeline/RtExposure.java) | 1x1 `R32_SFLOAT` image, 256-bin histogram buffer, 64-byte host-visible state buffer |
 | Pipelines | [RtExposurePipeline.java](../src/main/java/dev/comfyfluffy/caustica/rt/pipeline/RtExposurePipeline.java) | two compute pipelines (hist, resolve) |
-| Metering | [exposure_hist.comp](../shaders/display/exposure_hist.comp) | full-res log2-luminance histogram, shared-memory atomics, one bin per thread |
-| Controller | [exposure_resolve.comp](../shaders/display/exposure_resolve.comp) | 1 invocation: percentile trim → key → clamp → exponential smoothing |
+| Metering | [exposure_hist.comp.slang](../shaders/display/exposure_hist.comp.slang) | full-res log2-luminance histogram, shared-memory atomics, one bin per thread |
+| Controller | [exposure_resolve.comp.slang](../shaders/display/exposure_resolve.comp.slang) | 1 invocation: percentile trim → key → clamp → exponential smoothing |
 | Consumer | [display.comp:131](../shaders/display/display.comp) | one scalar multiply feeding both the SDR AgX path and the PQ HDR path |
 | Frame placement | [RtComposite.java:990-1003](../src/main/java/dev/comfyfluffy/caustica/rt/RtComposite.java) | after DLSS-RR, before display mapping |
 
@@ -49,7 +50,7 @@ work, and a clamp that is regularly saturated is a controller that is being over
 the root cause; D2–D4 are refinements that only matter once this is fixed.
 
 **D2 — no spatial weighting.** Every pixel votes equally
-([exposure_hist.comp:28-35](../shaders/display/exposure_hist.comp)). Sky is 2–4 EV above any lit
+([exposure_hist.comp.slang](../shaders/display/exposure_hist.comp.slang)). Sky is 2–4 EV above any lit
 surface, so tilting the camera up past the horizon moves well over half the frame into the top
 of the histogram; the 50th–95th percentile window then samples almost nothing but sky and the
 terrain crushes. The inverse happens looking down in a cave. The exposure changing because of
@@ -154,6 +155,58 @@ mostly bookkeeping.
 
 *Acceptance:* the HUD reads out sane EVs in all four reference scenes; the false-colour view makes
 the sky/terrain split obvious.
+
+**Status (2026-07-27): state widening, log line, and the two debug views are done.**
+`ExposureState` (std430, `exposure_resolve.comp.slang`) widened from `(previous, initialized)` to
+64 bytes: adds `evScene`/`evTarget`/`evApplied` (all EV, i.e. log2), `clipLowFrac`/`clipHighFrac`
+(fraction of metered pixels landing in the histogram's extreme bins — the "is the meter's dynamic
+range clipping" reading, distinct from whether the EV clamp itself is pinned), and reserves
+`resetSeq`/`evHistory[8]` for S4 (declared now, neither read nor written yet, so the buffer layout
+doesn't need to change again when S4 lands). No behavior change: the linear-space smoothing math is
+untouched, these are read-only diagnostics alongside it. `RtExposure.logDiagnosticsIfDue()` logs
+them once/second, gated behind the existing `caustica.rt.frameStats` toggle (reused rather than a
+new flag — that's already "I want renderer internals" for this codebase) and flags when `evTarget`
+is sitting at the `minEv`/`maxEv` clamp boundary, directly surfacing D1's diagnosis.
+
+**Debug presentation + the two exposure views done (2026-07-27).** `writeDebugView` was removed
+from the primary raygen — the hottest, occupancy-bound shader in the renderer — and replaced with
+`RtDebugPresentPipeline` / `debug_present.comp.slang`, a small compute pass at the end of the frame.
+Crucially, `debugView` is now purely observational and changes no upstream work:
+
+```
+primary trace → indirect trace → RR/fallback → exposure meter/resolve → ACES display → debug present
+```
+
+This fixes the first attempt's fundamental mistake: it disabled RR/jitter, skipped indirect tracing
+and fallback upscale, bypassed exposure/display mapping, froze exposure history, and forced a
+full-resolution resource rebuild whenever a debug view was selected. Exposure diagnostics then had
+no real post-RR scene to inspect. The final design always renders the ordinary frame first. The debug
+pass reads the display-resolution `rrOutput` plus same-frame exposure, nearest-samples the real
+render-resolution guide buffers, and only then replaces `displayImage` with literal diagnostic
+colors. Those colors never enter the histogram or ACES. Guide motion is scaled from render-pixel to
+display-pixel units so its visualization is stable across RR quality modes. Debug output currently
+uses the explicit SDR→PQ present fallback in HDR mode; native-PQ debug coloring remains optional
+follow-up work.
+
+Modes 8 and 9 are now exposed in the video options:
+
+- **Exposure false colour (8):** BT.2020 luminance from post-RR `rrOutput`, multiplied by the
+  same-frame display exposure and ACES mid-grey bias, shown in discrete one-stop bands relative to
+  18% grey. Cool colors are below mid-grey, neutral grey is the zero-stop band, and warm colors are
+  above it.
+- **Metering weight preview (9):** greyscale preview of S2's planned Gaussian centre weight
+  (`σ = 0.35`, floor `0.15`) and provisional `0.25` local sky down-weight from reversed-Z depth.
+  This is deliberately labelled a preview: the current S0 histogram still gives every pixel one
+  vote. S2 must replace the provisional local sky factor with its frame-global sky-cap normalization
+  when weighting becomes real metering behavior.
+
+`debugView` was also removed from `WorldPushConstants`; no world shader needs a debug branch now.
+
+Also migrated `exposure_hist.comp`/`exposure_resolve.comp` to Slang (→ `.comp.slang`) while doing
+this rewrite, matching `display.comp`'s migration — see
+[DISPLAY_TRANSFORM_PLAN.md](DISPLAY_TRANSFORM_PLAN.md) step 4 for the established conventions
+(`[shader("compute")]`/`[numthreads]`/`SV_DispatchThreadID`, `StructuredBuffer`/`RWStructuredBuffer`
+with an explicit `Std430DataLayout` to guarantee the byte layout matches the CPU-side raw writes).
 
 ### S1 — Metering hygiene
 

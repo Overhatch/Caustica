@@ -515,7 +515,7 @@ public final class RtComposite {
             displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                     sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler());
             debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
-                    gMotion.view, gSpecAlbedo.view, gSpecMotion.view);
+                    gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view);
             // Cheap idempotent check every frame (not just on resize): if the exposure mode is switched
             // manual -> auto at runtime (video settings), the auto-mode histogram/state/pipeline must be
             // allocated before recordFrame's exposure.record() below needs them, or it throws.
@@ -811,7 +811,7 @@ public final class RtComposite {
         displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                 sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler());
         debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
-                gMotion.view, gSpecAlbedo.view, gSpecMotion.view);
+                gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view);
     }
 
     /**
@@ -1067,7 +1067,8 @@ public final class RtComposite {
                 // remains SDR for now; a PQ swapchain uses the existing SDR->PQ conversion path.
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "debug present");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.debugPresent")) {
-                    debugPresentPipeline.dispatch(cmd, displayW, displayH, debugView);
+                    debugPresentPipeline.dispatch(cmd, displayW, displayH, debugView,
+                            CausticaConfig.Rt.Tonemap.acesExposureScale());
                 }
                 hdrWrittenThisFrame = false;
             }

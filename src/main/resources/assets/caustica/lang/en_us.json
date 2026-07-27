@@ -48,7 +48,7 @@
 	"caustica.options.rt.dlssQuality.5": "DLAA",
 
 	"caustica.options.rt.debugView": "Debug View",
-	"caustica.options.rt.debugView.tooltip": "Visualize an intermediate ray-tracing buffer instead of the final image.",
+	"caustica.options.rt.debugView.tooltip": "Inspect ray-tracing buffers and exposure diagnostics after the normal frame has rendered.",
 	"caustica.options.rt.debugView.0": "Off",
 	"caustica.options.rt.debugView.1": "Normals",
 	"caustica.options.rt.debugView.2": "Albedo",
@@ -56,5 +56,7 @@
 	"caustica.options.rt.debugView.4": "Roughness",
 	"caustica.options.rt.debugView.5": "Motion",
 	"caustica.options.rt.debugView.6": "Specular",
-	"caustica.options.rt.debugView.7": "Specular Motion"
+	"caustica.options.rt.debugView.7": "Specular Motion",
+	"caustica.options.rt.debugView.8": "Exposure False Color",
+	"caustica.options.rt.debugView.9": "Metering Weight Preview"
 }
