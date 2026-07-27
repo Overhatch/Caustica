@@ -6,7 +6,7 @@
 // resetSeq/evHistory are reserved for S4 (hard reset, median-of-N flash rejection) and are neither
 // read nor written here yet.
 
-[[vk::binding(0, 0)]] StructuredBuffer<uint, Std430DataLayout> histBins; // 256 bins, readonly
+[[vk::binding(0, 0)]] StructuredBuffer<uint, Std430DataLayout> histBins; // 256 surface + 256 sky bins
 [[vk::binding(1, 0)]] [format("r32f")] RWTexture2D<float> exposureImage;
 
 struct ExposureState {
@@ -19,6 +19,9 @@ struct ExposureState {
     float clipHighFrac;    // S0: fraction landing in the top bin
     uint resetSeq;         // reserved for S4, unused here
     float evHistory[8];    // reserved for S4's median-of-N ring, unused here
+    float meteringSkyScale; // S2: frame-global multiplier applied to the separate sky histogram
+    float meteringSkyFrac;  // S2: final weighted sky fraction after the cap
+    float2 reservedS2;
 };
 [[vk::binding(2, 0)]] RWStructuredBuffer<ExposureState, Std430DataLayout> stateBuf;
 
@@ -32,6 +35,7 @@ struct Push {
     float evBias;
     float lowPercentile;
     float highPercentile;
+    float skyWeightCap;
 };
 [[vk::push_constant]] Push pc;
 
@@ -46,34 +50,44 @@ float binCenter(uint bin) {
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void main() {
-    uint population = 0u;
+    float surfacePopulation = 0.0;
+    float skyPopulation = 0.0;
     for (uint i = 0u; i < 256u; ++i) {
-        population += histBins[i];
+        surfacePopulation += float(histBins[i]);
+        skyPopulation += float(histBins[256u + i]);
     }
-    uint total = max(population, 1u);
+    float skyCap = clamp(pc.skyWeightCap, 0.0, 1.0);
+    float skyScale = 1.0;
+    if (surfacePopulation > 0.0 && skyPopulation > 0.0 && skyCap < 1.0) {
+        skyScale = skyCap <= 0.0 ? 0.0
+                : min(1.0, (skyCap * surfacePopulation)
+                        / max((1.0 - skyCap) * skyPopulation, 1.0e-6));
+    }
+    float population = surfacePopulation + skyPopulation * skyScale;
+    float total = max(population, 1.0);
     float lowPercentile = clamp(min(pc.lowPercentile, pc.highPercentile), 0.0, 1.0);
     float highPercentile = clamp(max(pc.lowPercentile, pc.highPercentile), 0.0, 1.0);
-    uint lowCount = min(uint(floor(float(total) * lowPercentile)), total - 1u);
-    uint highCount = clamp(uint(ceil(float(total) * highPercentile)), lowCount + 1u, total);
+    float lowCount = min(floor(total * lowPercentile), total - 1.0);
+    float highCount = clamp(ceil(total * highPercentile), lowCount + 1.0, total);
 
-    uint cumulative = 0u;
+    float cumulative = 0.0;
     float weightedLogLum = 0.0;
-    uint weightedCount = 0u;
+    float weightedCount = 0.0;
     for (uint i = 0u; i < 256u; ++i) {
-        uint count = histBins[i];
-        uint start = cumulative;
-        uint end = cumulative + count;
-        uint takeStart = max(start, lowCount);
-        uint takeEnd = min(end, highCount);
+        float count = float(histBins[i]) + float(histBins[256u + i]) * skyScale;
+        float start = cumulative;
+        float end = cumulative + count;
+        float takeStart = max(start, lowCount);
+        float takeEnd = min(end, highCount);
         if (takeEnd > takeStart) {
-            uint take = takeEnd - takeStart;
-            weightedLogLum += binCenter(i) * float(take);
+            float take = takeEnd - takeStart;
+            weightedLogLum += binCenter(i) * take;
             weightedCount += take;
         }
         cumulative = end;
     }
 
-    float avgLogLum = weightedCount > 0u ? weightedLogLum / float(weightedCount) : 0.0;
+    float avgLogLum = weightedCount > 0.0 ? weightedLogLum / weightedCount : 0.0;
     float target = pc.key * exp2(pc.evBias - avgLogLum);
     target = clamp(target, exp2(pc.minEv), exp2(pc.maxEv));
 
@@ -88,7 +102,9 @@ void main() {
     stateBuf[0].evScene = avgLogLum;
     stateBuf[0].evTarget = log2(max(target, 1.0e-6));
     stateBuf[0].evApplied = log2(max(exposure, 1.0e-6));
-    stateBuf[0].clipLowFrac = float(histBins[0]) / float(total);
-    stateBuf[0].clipHighFrac = float(histBins[255]) / float(total);
+    stateBuf[0].clipLowFrac = (float(histBins[0]) + float(histBins[256]) * skyScale) / total;
+    stateBuf[0].clipHighFrac = (float(histBins[255]) + float(histBins[511]) * skyScale) / total;
+    stateBuf[0].meteringSkyScale = skyScale;
+    stateBuf[0].meteringSkyFrac = skyPopulation * skyScale / total;
     exposureImage[int2(0, 0)] = exposure;
 }

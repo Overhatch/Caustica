@@ -515,7 +515,8 @@ public final class RtComposite {
             displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                     sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler());
             debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
-                    gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view);
+                    gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
+                    exposure.stateBuffer());
             // Cheap idempotent check every frame (not just on resize): if the exposure mode is switched
             // manual -> auto at runtime (video settings), the auto-mode histogram/state/pipeline must be
             // allocated before recordFrame's exposure.record() below needs them, or it throws.
@@ -811,7 +812,8 @@ public final class RtComposite {
         displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                 sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler());
         debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
-                gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view);
+                gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
+                exposure.stateBuffer());
     }
 
     /**
@@ -1048,7 +1050,7 @@ public final class RtComposite {
             // regardless of SPP, keeping exposure consistent.
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.exposure")) {
-                exposure.record(ctx, cmd, stack, rrOutput);
+                exposure.record(ctx, cmd, stack, rrOutput, gDepth);
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // exposure image visible to the display mapper
 
@@ -1068,7 +1070,9 @@ public final class RtComposite {
                 try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "debug present");
                      RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.debugPresent")) {
                     debugPresentPipeline.dispatch(cmd, displayW, displayH, debugView,
-                            CausticaConfig.Rt.Tonemap.acesExposureScale());
+                            CausticaConfig.Rt.Tonemap.acesExposureScale(),
+                            CausticaConfig.Rt.Exposure.CENTER_WEIGHT_SIGMA.value(),
+                            CausticaConfig.Rt.Exposure.CENTER_WEIGHT_FLOOR.value());
                 }
                 hdrWrittenThisFrame = false;
             }

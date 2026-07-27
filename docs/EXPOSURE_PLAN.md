@@ -1,6 +1,6 @@
 # Exposure Plan — smarter metering and adaptation
 
-Status: **implementation in progress** — S0 state diagnostics and debug views are implemented.
+Status: **implementation in progress** — S0–S2 are implemented.
 Written 2026-07-27 against `bt2020-only`
 (working tree, on top of `5d6bf62`). Scope: the auto-exposure loop that produces the 1x1
 `display exposure` image and everything that consumes it. The display transform that consumes
@@ -12,7 +12,7 @@ plan's original §S6.
 
 | Piece | File | Role |
 |---|---|---|
-| Owner / mode switch / config | [RtExposure.java](../src/main/java/dev/comfyfluffy/caustica/rt/pipeline/RtExposure.java) | 1x1 `R32_SFLOAT` image, 256-bin histogram buffer, 64-byte host-visible state buffer |
+| Owner / mode switch / config | [RtExposure.java](../src/main/java/dev/comfyfluffy/caustica/rt/pipeline/RtExposure.java) | 1x1 `R32_SFLOAT` image, separate 256-bin surface/sky histograms, 80-byte host-visible state buffer |
 | Pipelines | [RtExposurePipeline.java](../src/main/java/dev/comfyfluffy/caustica/rt/pipeline/RtExposurePipeline.java) | two compute pipelines (hist, resolve) |
 | Metering | [exposure_hist.comp.slang](../shaders/display/exposure_hist.comp.slang) | full-res log2-luminance histogram, shared-memory atomics, one bin per thread |
 | Controller | [exposure_resolve.comp.slang](../shaders/display/exposure_resolve.comp.slang) | 1 invocation: percentile trim → key → clamp → exponential smoothing |
@@ -157,8 +157,9 @@ mostly bookkeeping.
 the sky/terrain split obvious.
 
 **Status (2026-07-27): state widening, log line, and the two debug views are done.**
-`ExposureState` (std430, `exposure_resolve.comp.slang`) widened from `(previous, initialized)` to
-64 bytes: adds `evScene`/`evTarget`/`evApplied` (all EV, i.e. log2), `clipLowFrac`/`clipHighFrac`
+`ExposureState` (std430, `exposure_resolve.comp.slang`) initially widened from
+`(previous, initialized)` to 64 bytes, then S2 appended 16 bytes of sky-weight diagnostics/reserve:
+adds `evScene`/`evTarget`/`evApplied` (all EV, i.e. log2), `clipLowFrac`/`clipHighFrac`
 (fraction of metered pixels landing in the histogram's extreme bins — the "is the meter's dynamic
 range clipping" reading, distinct from whether the EV clamp itself is pinned), and reserves
 `resetSeq`/`evHistory[8]` for S4 (declared now, neither read nor written yet, so the buffer layout
@@ -194,11 +195,9 @@ Modes 8 and 9 are now exposed in the video options:
   same-frame display exposure and ACES mid-grey bias, shown in discrete one-stop bands relative to
   18% grey. Cool colors are below mid-grey, neutral grey is the zero-stop band, and warm colors are
   above it.
-- **Metering weight preview (9):** greyscale preview of S2's planned Gaussian centre weight
-  (`σ = 0.35`, floor `0.15`) and provisional `0.25` local sky down-weight from reversed-Z depth.
-  This is deliberately labelled a preview: the current S0 histogram still gives every pixel one
-  vote. S2 must replace the provisional local sky factor with its frame-global sky-cap normalization
-  when weighting becomes real metering behavior.
+- **Metering weight (9):** greyscale display of the exact S2 Gaussian centre weight and the
+  same-frame global sky scale read from `ExposureState`. It therefore changes with both the configured
+  sigma/floor and the amount of sky in the current frame.
 
 `debugView` was also removed from `WorldPushConstants`; no world shader needs a debug branch now.
 
@@ -238,8 +237,7 @@ Weighted histogram: `atomicAdd` a fixed-point weight (`uint(w * 256)`) instead o
 - **Sky cap** — sky is `gDepth ≈ 0` (reversed-Z far, see
   [guides.slang:271](../shaders/world/guides.slang)). Do not exclude it — a bright sky *should*
   stop the ground down somewhat — but cap its total contribution to a configurable fraction
-  (default ~0.25) by scaling sky weights by `min(1, cap * total / skyTotal)`. Needs either a
-  two-pass histogram or a separate sky bin count; the latter is one extra `atomicAdd`.
+  (default ~0.25).
 - **Validity** — skip pixels with zero weight from the total (already handled by S1's bin sum).
 
 `gDepth` is at render res while metering runs on the display-res post-RR image; fetch it nearest
@@ -248,6 +246,13 @@ a statistical measure.
 
 *Acceptance:* panning across the horizon changes `evScene` by well under half of what it does
 today; the weight-map debug view matches expectation.
+
+**Status (2026-07-27): implemented; play acceptance pending.** The histogram buffer contains
+separate 256-bin fixed-point surface and sky distributions. Resolve derives the one frame-global
+sky multiplier that limits sky to `sky-weight-cap` of the final weighted population, then merges
+the distributions for percentile trimming. This makes the cap exact without a second full-image
+pass. `ExposureState` exposes the applied scale/fraction for diagnostics and debug mode 9 uses that
+same value, so the view now shows the meter's real weight rather than its earlier preview.
 
 ### S3 — Adaptation curve
 

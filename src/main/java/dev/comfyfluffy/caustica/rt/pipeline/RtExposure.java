@@ -25,8 +25,9 @@ public final class RtExposure {
     private long lastDiagLogNanos;
 
     // ExposureState byte layout (std430, see exposure_resolve.comp.slang) -- must match field-for-
-    // field. resetSeq/evHistory are reserved for S4 and neither read nor written on the CPU side yet.
-    private static final int STATE_BYTES = 64;
+    // field. S2 appends sky-weight diagnostics after S4's already-reserved history fields so their
+    // existing offsets remain stable.
+    private static final int STATE_BYTES = 80;
     private static final long OFF_PREVIOUS = 0L;
     private static final long OFF_INITIALIZED = 4L;
     private static final long OFF_EV_SCENE = 8L;
@@ -34,6 +35,8 @@ public final class RtExposure {
     private static final long OFF_EV_APPLIED = 16L;
     private static final long OFF_CLIP_LOW_FRAC = 20L;
     private static final long OFF_CLIP_HIGH_FRAC = 24L;
+    private static final long OFF_METERING_SKY_SCALE = 64L;
+    private static final long OFF_METERING_SKY_FRAC = 68L;
     private static final long DIAG_LOG_INTERVAL_NANOS = 1_000_000_000L;
 
     public RtImage image() {
@@ -44,19 +47,27 @@ public final class RtExposure {
         return image != null;
     }
 
+    public RtBuffer stateBuffer() {
+        return state;
+    }
+
     public void ensureResources(RtContext ctx) {
         if (image == null) {
             image = ctx.createStorageImage(1, 1, VK10.VK_FORMAT_R32_SFLOAT, "display exposure");
         }
+        // The final debug pass always binds the state buffer, including in manual mode. Keep this tiny
+        // resource permanently available; histogram/pipeline allocation remains auto-only.
+        if (state == null) {
+            state = ctx.createBuffer(STATE_BYTES, VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, "exposure state");
+            resetAutoHistory();
+        }
         if (mode() == Mode.AUTO) {
             if (histogram == null) {
-                histogram = ctx.createBuffer(256L * Integer.BYTES,
+                // Separate 256-bin surface/sky histograms let resolve enforce the sky cap exactly
+                // without a second full-image dispatch.
+                histogram = ctx.createBuffer(512L * Integer.BYTES,
                         VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK10.VK_BUFFER_USAGE_TRANSFER_DST_BIT, false,
                         "exposure histogram");
-            }
-            if (state == null) {
-                state = ctx.createBuffer(STATE_BYTES, VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, "exposure state");
-                resetAutoHistory();
             }
             if (pipeline == null) {
                 pipeline = RtExposurePipeline.create(ctx);
@@ -65,12 +76,12 @@ public final class RtExposure {
         logOnce();
     }
 
-    public void record(RtContext ctx, VkCommandBuffer cmd, MemoryStack stack, RtImage traceColor) {
+    public void record(RtContext ctx, VkCommandBuffer cmd, MemoryStack stack, RtImage traceColor, RtImage guideDepth) {
         if (image == null) {
             throw new IllegalStateException("RT exposure image not created");
         }
         if (mode() == Mode.AUTO) {
-            recordAuto(ctx, cmd, stack, traceColor);
+            recordAuto(ctx, cmd, stack, traceColor, guideDepth);
             return;
         }
         try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure manual write")) {
@@ -108,17 +119,18 @@ public final class RtExposure {
         return CausticaConfig.Rt.Exposure.clampScale((float) Math.pow(2.0, manualEv()));
     }
 
-    private void recordAuto(RtContext ctx, VkCommandBuffer cmd, MemoryStack stack, RtImage traceColor) {
+    private void recordAuto(RtContext ctx, VkCommandBuffer cmd, MemoryStack stack,
+                            RtImage traceColor, RtImage guideDepth) {
         if (pipeline == null || histogram == null || state == null) {
             throw new IllegalStateException("RT auto exposure resources not created");
         }
-        pipeline.setResources(traceColor.view, histogram, image.view, state);
+        pipeline.setResources(traceColor.view, guideDepth.view, histogram, image.view, state);
         try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure histogram clear")) {
             VK10.vkCmdFillBuffer(cmd, histogram.handle, 0, histogram.size, 0);
         }
         VulkanCommandEncoder.memoryBarrier(cmd, stack);
         AutoConfig config = autoConfig();
-        pipeline.dispatchHistogram(cmd, traceColor.width, traceColor.height, config.stride());
+        pipeline.dispatchHistogram(cmd, traceColor.width, traceColor.height, config);
         VulkanCommandEncoder.memoryBarrier(cmd, stack);
         pipeline.dispatchResolve(cmd, config, frameTimeSeconds());
         logDiagnosticsIfDue();
@@ -145,13 +157,17 @@ public final class RtExposure {
         float evApplied = MemoryUtil.memGetFloat(state.mapped + OFF_EV_APPLIED);
         float clipLowFrac = MemoryUtil.memGetFloat(state.mapped + OFF_CLIP_LOW_FRAC);
         float clipHighFrac = MemoryUtil.memGetFloat(state.mapped + OFF_CLIP_HIGH_FRAC);
+        float skyScale = MemoryUtil.memGetFloat(state.mapped + OFF_METERING_SKY_SCALE);
+        float skyFrac = MemoryUtil.memGetFloat(state.mapped + OFF_METERING_SKY_FRAC);
         AutoConfig cfg = autoConfig();
         boolean pinnedLow = evTarget <= cfg.minEv() + 0.01f;
         boolean pinnedHigh = evTarget >= cfg.maxEv() - 0.01f;
         CausticaMod.LOGGER.info(
-                "RT exposure diag: evScene={} evTarget={}{} evApplied={} clipLow={}% clipHigh={}%",
+                "RT exposure diag: evScene={} evTarget={}{} evApplied={} clipLow={}% clipHigh={}% "
+                        + "skyScale={} skyWeight={}%",
                 fmt(evScene), fmt(evTarget), pinnedLow ? " (at minEv clamp)" : pinnedHigh ? " (at maxEv clamp)" : "",
-                fmt(evApplied), fmt(clipLowFrac * 100.0f), fmt(clipHighFrac * 100.0f));
+                fmt(evApplied), fmt(clipLowFrac * 100.0f), fmt(clipHighFrac * 100.0f),
+                fmt(skyScale), fmt(skyFrac * 100.0f));
     }
 
     private static String fmt(float v) {
@@ -176,6 +192,7 @@ public final class RtExposure {
         MemoryUtil.memSet(state.mapped, 0, STATE_BYTES);
         MemoryUtil.memPutFloat(state.mapped + OFF_PREVIOUS, manualExposureScale());
         MemoryUtil.memPutInt(state.mapped + OFF_INITIALIZED, 0);
+        MemoryUtil.memPutFloat(state.mapped + OFF_METERING_SKY_SCALE, 1.0f);
         state.flush(0L, STATE_BYTES);
         lastFrameNanos = 0L;
         lastDiagLogNanos = 0L;
@@ -192,7 +209,9 @@ public final class RtExposure {
                 ? "auto(key=" + autoConfig.key + ", minEv=" + autoConfig.minEv + ", maxEv=" + autoConfig.maxEv
                 + ", adaptUp=" + autoConfig.adaptUp + ", adaptDown=" + autoConfig.adaptDown
                 + ", evBias=" + autoConfig.evBias + ", percentiles=" + autoConfig.lowPercentile
-                + ".." + autoConfig.highPercentile + ", stride=" + autoConfig.stride + ")"
+                + ".." + autoConfig.highPercentile + ", stride=" + autoConfig.stride
+                + ", centerWeight=" + autoConfig.centerWeightSigma + "/" + autoConfig.centerWeightFloor
+                + ", skyCap=" + autoConfig.skyWeightCap + ")"
                 : Float.toString(manualExposureScale());
         CausticaMod.LOGGER.info("RT display exposure: mode={}, exposure={}, tonemap=aces2.0(exposureEv={}), "
                         + "DLSS-RR exposure=NGX auto",
@@ -217,11 +236,15 @@ public final class RtExposure {
                 manualEv(),
                 CausticaConfig.Rt.Exposure.LOW_PERCENTILE.value(),
                 CausticaConfig.Rt.Exposure.HIGH_PERCENTILE.value(),
-                CausticaConfig.Rt.Exposure.STRIDE.value());
+                CausticaConfig.Rt.Exposure.STRIDE.value(),
+                CausticaConfig.Rt.Exposure.CENTER_WEIGHT_SIGMA.value(),
+                CausticaConfig.Rt.Exposure.CENTER_WEIGHT_FLOOR.value(),
+                CausticaConfig.Rt.Exposure.SKY_WEIGHT_CAP.value());
     }
 
     record AutoConfig(float key, float minEv, float maxEv, float adaptUp, float adaptDown, float evBias,
-                      float lowPercentile, float highPercentile, int stride) {
+                      float lowPercentile, float highPercentile, int stride,
+                      float centerWeightSigma, float centerWeightFloor, float skyWeightCap) {
     }
 
     private enum Mode {

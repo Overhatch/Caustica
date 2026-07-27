@@ -716,6 +716,15 @@ public final class CausticaConfig {
                     clampedFloat("caustica.rt.exposure.highPercentile", "exposure.high-percentile", 0.95f, 0.0f, 1.0f);
             public static final IntSetting STRIDE =
                     clampedInt("caustica.rt.exposure.stride", "exposure.stride", 2, 1, 8);
+            public static final FloatSetting CENTER_WEIGHT_SIGMA =
+                    clampedFloat("caustica.rt.exposure.centerWeightSigma",
+                            "exposure.center-weight-sigma", 0.35f, 0.01f, 2.0f);
+            public static final FloatSetting CENTER_WEIGHT_FLOOR =
+                    clampedFloat("caustica.rt.exposure.centerWeightFloor",
+                            "exposure.center-weight-floor", 0.15f, 0.0f, 1.0f);
+            public static final FloatSetting SKY_WEIGHT_CAP =
+                    clampedFloat("caustica.rt.exposure.skyWeightCap",
+                            "exposure.sky-weight-cap", 0.25f, 0.0f, 1.0f);
 
             private Exposure() {
             }

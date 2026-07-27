@@ -20,10 +20,27 @@
 [[vk::binding(6, 0)]] [format("rg16f")]   RWTexture2D<float2> gSpecMotion; // reflection MVs for RR
 [[vk::binding(7, 0)]] [format("rgba16f")] RWTexture2D<float4> sceneImage;  // display-res post-RR scene-linear BT.2020
 [[vk::binding(8, 0)]] [format("r32f")]    RWTexture2D<float>  exposureImage; // same-frame display exposure
+struct ExposureState {
+    float previous;
+    uint initialized;
+    float evScene;
+    float evTarget;
+    float evApplied;
+    float clipLowFrac;
+    float clipHighFrac;
+    uint resetSeq;
+    float evHistory[8];
+    float meteringSkyScale;
+    float meteringSkyFrac;
+    float2 reservedS2;
+};
+[[vk::binding(9, 0)]] StructuredBuffer<ExposureState, Std430DataLayout> exposureState;
 
 struct Push {
     uint debugView;     // 1..9; this pass is only dispatched for debugView != 0
     float acesExposure; // display seam's additional linear mid-grey placement bias
+    float centerWeightSigma;
+    float centerWeightFloor;
 };
 [[vk::push_constant]] Push pc;
 
@@ -59,15 +76,14 @@ float3 exposureFalseColor(float ev) {
     return float3(1.00, 1.00, 1.00);
 }
 
-// Preview of S2's planned local spatial weight, not yet the histogram's actual weight: the current
-// meter still gives every pixel one vote. The eventual sky-cap normalization depends on the frame's
-// global sky population; 0.25 here is an intentionally provisional local preview of its default.
-float plannedMeteringWeight(float2 uv, float depth) {
+// Exactly the S2 weight used by the histogram: local Gaussian centre weighting multiplied by the
+// same frame-global sky scale computed by resolve from separate surface/sky histograms.
+float meteringWeight(float2 uv, float depth) {
     float2 centered = uv * 2.0 - 1.0;
-    const float sigma = 0.35;
+    float sigma = max(pc.centerWeightSigma, 0.01);
     float gaussian = exp(-0.5 * dot(centered, centered) / (sigma * sigma));
-    float centerWeight = 0.15 + 0.85 * gaussian;
-    float skyWeight = depth <= 1.0e-6 ? 0.25 : 1.0; // reversed-Z far/sky is zero
+    float centerWeight = lerp(clamp(pc.centerWeightFloor, 0.0, 1.0), 1.0, gaussian);
+    float skyWeight = depth <= 1.0e-6 ? exposureState[0].meteringSkyScale : 1.0;
     return centerWeight * skyWeight;
 }
 
@@ -96,7 +112,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         float evFromMidGrey = log2(max(exposedLuminance, 1.0e-6) / 0.18);
         dbg = exposureFalseColor(evFromMidGrey);
     } else if (pc.debugView == 9u) {
-        float weight = plannedMeteringWeight(uv, gDepth[guidePix]);
+        float weight = meteringWeight(uv, gDepth[guidePix]);
         dbg = float3(weight, weight, weight);
     } else if (pc.debugView == 1u) {
         dbg = bt709ToBt2020(normalRough.xyz * 0.5 + 0.5);
