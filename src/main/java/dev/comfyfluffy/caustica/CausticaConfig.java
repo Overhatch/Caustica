@@ -58,7 +58,7 @@ public final class CausticaConfig {
         Object[] touch = {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
-            Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.FrameStats.ENABLED,
+            Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.MODE, Rt.FrameStats.ENABLED,
             Rt.Hdr.ENABLED, Ngx.PATH,
         };
     }
@@ -104,6 +104,13 @@ public final class CausticaConfig {
                         + " grid are always active whenever RIS is on. min-fill-ratio drops emissive footprints\n"
                         + " below that fraction of their bounding rectangle (speckle/sparse crossed planes), so\n"
                         + " only reasonably compact glows become lights. stats/dump/dump-radius are debug logging.");
+        FILE.setComment("tonemap",
+                " SDR display-transform operator. mode = agx (default, original in-shader operator) or\n"
+                        + " aces (baked ACES 2.0 output-transform LUT, see docs/DISPLAY_TRANSFORM_PLAN.md).\n"
+                        + " Runtime-switchable for A/B comparison; does not affect the HDR path yet.\n"
+                        + " aces-exposure-ev compensates the two operators' different mid-grey anchors\n"
+                        + " (scene 0.18 renders at 0.497 through AgX, 0.349 through ACES 2.0) so that\n"
+                        + " switching mode compares curve shape, not overall brightness.");
         FILE.setComment("hdr",
                 " HDR display output (ST.2084/PQ). When enabled the swapchain is created in PQ automatically\n"
                         + " (falls back to SDR if the surface doesn't advertise it). paper-white-nits / peak-nits\n"
@@ -733,6 +740,56 @@ public final class CausticaConfig {
             }
         }
 
+        /**
+         * SDR display-transform operator. "aces" is a baked ACES 2.0 output-transform LUT (see
+         * {@code RtToneLut}, {@code tools/bake_display_lut.py}, {@code docs/DISPLAY_TRANSFORM_PLAN.md});
+         * "agx" is the original in-shader operator. Runtime-switchable (no rebuild) so the two can be
+         * A/B'd against each other in actual gameplay. Does not yet affect the HDR path — see the plan.
+         */
+        public static final class Tonemap {
+            public static final StringSetting MODE =
+                    string("caustica.rt.tonemap.mode", "tonemap.mode", "agx", Tonemap::sanitizeMode);
+
+            /**
+             * Exposure compensation applied only on the ACES path, in EV, so switching operators is
+             * brightness-neutral and an A/B compares tone-curve SHAPE rather than overall level.
+             *
+             * <p>Needed because an operator has an intrinsic mid-grey anchor: scene-linear 0.18 renders
+             * at display code 0.497 through AgX but 0.349 through ACES 2.0 (the film convention of
+             * 0.18 -> ~0.1 linear display). Since {@code Exposure.KEY} anchors the metered median in
+             * SCENE-linear terms, swapping operators at a fixed key silently darkens the whole midtone
+             * range by ~1 EV. +1.014 EV is the measured value that aligns the two at mid-grey; with it
+             * applied the operators agree within +/-0.06 code value everywhere and ACES is 1.20x
+             * steeper at mid-grey, which is the intended "mildly higher contrast" difference.
+             *
+             * <p>Which absolute anchor is actually WANTED is a creative call, not a correctness one —
+             * AgX's 0.497 is on the bright/milky side, ACES's 0.349 is the film convention. Retune this
+             * together with the exposure compensation curve (EXPOSURE_PLAN.md S3) rather than treating
+             * it as a constant. SDR only: the HDR path does not use the ACES LUT yet.
+             */
+            public static final FloatSetting ACES_EXPOSURE_EV =
+                    finiteFloat("caustica.rt.tonemap.acesExposureEv", "tonemap.aces-exposure-ev", 1.014f);
+
+            private Tonemap() {
+            }
+
+            public static boolean acesLut() {
+                return "aces".equalsIgnoreCase(MODE.get());
+            }
+
+            /** Linear multiplier applied to exposed scene values on the ACES path (1.0 elsewhere). */
+            public static float acesExposureScale() {
+                return acesLut() ? (float) Math.pow(2.0, ACES_EXPOSURE_EV.value()) : 1.0f;
+            }
+
+            private static String sanitizeMode(String value) {
+                if ("aces".equalsIgnoreCase(value)) {
+                    return "aces";
+                }
+                return "agx";
+            }
+        }
+
         /** Render-frame timing + hitch logging. See {@code RtFrameStats}. */
         public static final class FrameStats {
             public static final BooleanSetting ENABLED = bool("caustica.rt.frameStats", "frame-stats.enabled", false);
@@ -770,24 +827,53 @@ public final class CausticaConfig {
             public static final FloatSetting PEAK_NITS =
                     clampedFloat("caustica.rt.hdr.peakNits", "hdr.peak-nits", 1000.0f, 80.0f, 5000.0f);
 
-            // Snapshot of ENABLED as resolved at startup (system property / config file), before any
-            // in-session edit from the options screen. The swapchain's pixel format (PQ vs SDR) is fixed
-            // at surface-creation time, so flipping ENABLED later cannot change what's actually presented
-            // until a restart — every runtime/rendering check reads this frozen value via enabled(),
-            // never ENABLED directly, so the live toggle is a no-op for the current session.
-            private static final boolean ENABLED_AT_STARTUP = ENABLED.value();
+            /**
+             * ACES 2.0's REC2020 HDR output transform is only available at these fixed mastering-target
+             * peaks (see tools/bake_display_lut.py) — it does not parameterize peak luminance
+             * continuously. The options-menu slider steps through exactly this list; {@link #PEAK_NITS}
+             * stays a plain float so a hand-edited config/system-property value still resolves sensibly
+             * via {@link #nearestPeakNitsStep}, but the LUT that actually gets loaded is always one of
+             * these four.
+             */
+            public static final List<Integer> PEAK_NITS_STEPS = List.of(500, 1000, 2000, 4000);
+
+            // Whether the live Vulkan surface actually advertises an HDR-capable (colorSpace, format)
+            // pair, i.e. whether VulkanGpuSurfaceMixin.caustica$pickPqFormat found one and the swapchain
+            // is (always, per that mixin) created in PQ when it does. Set exactly once, right after the
+            // surface is created — before any frame, options screen, or config read can observe it — so
+            // there is no race despite the volatile. Gates both the options-menu entries (RtVideoOptions
+            // omits them entirely when false) and enabled() below, so a stale ENABLED=true left over in
+            // caustica.toml from a different display/session can't make the renderer think HDR is live
+            // when the current surface can't actually present it.
+            private static volatile boolean SWAPCHAIN_PQ_AVAILABLE = false;
 
             private Hdr() {
             }
 
-            /** Whether the HDR display path (world HDR + PQ swapchain + UI overlay) is active this session. */
-            public static boolean enabled() {
-                return ENABLED_AT_STARTUP;
+            public static void setSwapchainPqAvailable(boolean available) {
+                SWAPCHAIN_PQ_AVAILABLE = available;
             }
 
-            /** Whether {@link #ENABLED} has been changed since startup and needs a restart to take effect. */
-            public static boolean pendingRestart() {
-                return ENABLED.value() != ENABLED_AT_STARTUP;
+            /**
+             * Whether this session's swapchain is PQ-capable, independent of the user's {@link #ENABLED}
+             * toggle. The swapchain is always created in PQ when the surface offers it (see
+             * VulkanGpuSurfaceMixin) specifically so that {@link #enabled()} can be a genuine per-frame
+             * runtime toggle: turning HDR off doesn't need a different swapchain, only a different
+             * per-frame present path (RtComposite.isPqSdrPresentActive's SDR-&gt;PQ conversion) — see
+             * docs/DISPLAY_TRANSFORM_PLAN.md.
+             */
+            public static boolean swapchainPqAvailable() {
+                return SWAPCHAIN_PQ_AVAILABLE;
+            }
+
+            /**
+             * Whether the HDR display path (world HDR + PQ swapchain + UI overlay) should be active this
+             * frame. Live — reads {@link #ENABLED} directly, no startup snapshot; the swapchain being
+             * unconditionally PQ-capable whenever the surface allows it (see {@link #swapchainPqAvailable})
+             * is what makes flipping this at runtime actually work rather than requiring a restart.
+             */
+            public static boolean enabled() {
+                return SWAPCHAIN_PQ_AVAILABLE && ENABLED.value();
             }
 
             /** Absolute nits SDR paper white maps to in the PQ encode (ST.2084 is referenced to 10000 nits). */
@@ -798,6 +884,26 @@ public final class CausticaConfig {
             /** Highlight headroom above paper white, in paper-white-referred units ({@code >= 1}). */
             public static float headroom() {
                 return Math.max(1.0f, PEAK_NITS.value() / Math.max(1.0f, PAPER_WHITE_NITS.value()));
+            }
+
+            /**
+             * Snaps an arbitrary configured nits value to the nearest baked LUT target, in log-nits space
+             * (perceived brightness differences are roughly logarithmic). The options-menu slider only
+             * ever writes an exact step, so this mainly matters for a hand-edited config/system-property
+             * value.
+             */
+            public static int nearestPeakNitsStep(float nits) {
+                float logTarget = (float) Math.log(Math.max(nits, 1.0f));
+                int best = PEAK_NITS_STEPS.get(0);
+                float bestDist = Float.MAX_VALUE;
+                for (int candidate : PEAK_NITS_STEPS) {
+                    float dist = Math.abs((float) Math.log(candidate) - logTarget);
+                    if (dist < bestDist) {
+                        bestDist = dist;
+                        best = candidate;
+                    }
+                }
+                return best;
             }
         }
     }

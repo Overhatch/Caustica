@@ -109,27 +109,39 @@ public abstract class VulkanGpuSurfaceMixin {
 	}
 
 	/**
-	 * Pick a PQ (HDR10_ST2084) surface format when requested + available, before vanilla's SDR-only selection
-	 * runs. Scans for any format the surface pairs with that color space rather than assuming a specific one
+	 * Always try to pick a PQ (HDR10_ST2084) surface format, before vanilla's SDR-only selection runs —
+	 * independent of the current {@code caustica.rt.hdr.enabled} value. The swapchain's format/colorSpace
+	 * are fixed for the life of this surface (only {@code imageColorSpace} in {@code configure} is
+	 * re-applied from {@link #caustica$colorSpace} on every resize, but that field itself is set once,
+	 * here), so if HDR is ever going to be a runtime toggle rather than a restart, the surface has to be
+	 * PQ-capable from the start regardless of whether the user has HDR on right now — flipping the config
+	 * afterward then just switches which per-frame present path {@code RtComposite} takes
+	 * ({@code isHdrPresentActive} vs. the SDR-&gt;PQ conversion in {@code isPqSdrPresentActive}), never the
+	 * swapchain itself. See {@code CausticaConfig.Rt.Hdr.swapchainPqAvailable} and
+	 * docs/DISPLAY_TRANSFORM_PLAN.md.
+	 *
+	 * <p>Scans for any format the surface pairs with that color space rather than assuming a specific one
 	 * (IHVs commonly pair it with a 10-bit UNORM like A2R10G10B10, but this must not be hardcoded). Sets
-	 * {@link #caustica$colorSpace} so {@code configure} can pass the matching color space.
+	 * {@link #caustica$colorSpace} so {@code configure} can pass the matching color space, and records the
+	 * outcome via {@code CausticaConfig.Rt.Hdr.setSwapchainPqAvailable} so the options menu and
+	 * {@code enabled()} both know whether HDR can actually do anything this session.
 	 */
 	@Inject(method = "pickSwapchainSurfaceFormat", at = @At("HEAD"), cancellable = true)
 	private void caustica$pickPqFormat(VkSurfaceFormatKHR.Buffer formats, CallbackInfoReturnable<VkSurfaceFormatKHR> cir) {
-		if (!CausticaConfig.Rt.Hdr.enabled()) {
-			return;
-		}
 		for (int i = 0; i < formats.capacity(); i++) {
 			VkSurfaceFormatKHR f = formats.get(i);
 			if (f.colorSpace() == VK_COLOR_SPACE_HDR10_ST2084_EXT) {
 				this.caustica$colorSpace = VK_COLOR_SPACE_HDR10_ST2084_EXT;
-				CausticaMod.LOGGER.info("HDR: selecting PQ swapchain (format={}, colorSpace=HDR10_ST2084)", f.format());
+				CausticaConfig.Rt.Hdr.setSwapchainPqAvailable(true);
+				CausticaMod.LOGGER.info("HDR: surface supports PQ (format={}, colorSpace=HDR10_ST2084); "
+						+ "creating the swapchain in PQ so HDR can be toggled live", f.format());
 				cir.setReturnValue(f);
 				return;
 			}
 		}
-		CausticaMod.LOGGER.warn("HDR: PQ swapchain requested but HDR10_ST2084 was not advertised by the surface; "
-				+ "using SDR (enable OS/display HDR; on Linux use a native Wayland session with HDR enabled in the compositor)");
+		CausticaConfig.Rt.Hdr.setSwapchainPqAvailable(false);
+		CausticaMod.LOGGER.warn("HDR: HDR10_ST2084 was not advertised by the surface; HDR is unavailable this "
+				+ "session (enable OS/display HDR; on Linux use a native Wayland session with HDR enabled in the compositor)");
 	}
 
 	/** Replace the hardcoded {@code imageColorSpace(0)} with the PQ color space when one was selected. */

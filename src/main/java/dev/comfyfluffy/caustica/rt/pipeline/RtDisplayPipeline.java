@@ -31,8 +31,11 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
 /** Maps the display-res scene-linear BT.2020 RT image to sRGB SDR and, when enabled, PQ/BT.2020 HDR. */
 public final class RtDisplayPipeline {
     private static final String SHADER_DIR = "/caustica/rt/";
-    /** Push constants: int hdrEnabled, float paperWhiteNits, float headroom. */
-    private static final int PUSH_BYTES = 3 * Integer.BYTES;
+    /**
+     * Push constants: int hdrEnabled, float paperWhiteNits, float headroom, int tonemapMode,
+     * float lutSize, float acesExposure.
+     */
+    private static final int PUSH_BYTES = 6 * Integer.BYTES;
 
     private final RtContext ctx;
     private final long descriptorSetLayout;
@@ -44,6 +47,10 @@ public final class RtDisplayPipeline {
     private long boundRtView;
     private long boundExposureView;
     private long boundHdrView;
+    private long boundLutView;
+    private long boundLutSampler;
+    private long boundHdrLutView;
+    private long boundHdrLutSampler;
     private boolean destroyed;
 
     private RtDisplayPipeline(RtContext ctx, long dsl, long pool, long set, long layout, long pipeline) {
@@ -58,7 +65,7 @@ public final class RtDisplayPipeline {
     public static RtDisplayPipeline create(RtContext ctx) {
         VkDevice vk = ctx.vk();
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(4, stack);
+            VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(6, stack);
             binds.get(0).binding(0).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             binds.get(1).binding(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
@@ -67,6 +74,13 @@ public final class RtDisplayPipeline {
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             binds.get(3).binding(3).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            // Baked ACES 2.0 display-transform LUTs (see RtToneLut / docs/DISPLAY_TRANSFORM_PLAN.md).
+            // Selected at runtime via push-constant tonemapMode so AgX/the old HDR rolloff stay
+            // available for A/B.
+            binds.get(4).binding(4).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            binds.get(5).binding(5).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
 
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
@@ -74,8 +88,9 @@ public final class RtDisplayPipeline {
             long dsl = p.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, dsl, "display descriptor set layout");
 
-            VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(1, stack);
+            VkDescriptorPoolSize.Buffer poolSizes = VkDescriptorPoolSize.calloc(2, stack);
             poolSizes.get(0).type(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).descriptorCount(4);
+            poolSizes.get(1).type(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).descriptorCount(2);
             VkDescriptorPoolCreateInfo dpci = VkDescriptorPoolCreateInfo.calloc(stack).sType$Default().maxSets(1).pPoolSizes(poolSizes);
             check(VK10.vkCreateDescriptorPool(vk, dpci, null, p), "vkCreateDescriptorPool(rt display)");
             long pool = p.get(0);
@@ -112,9 +127,12 @@ public final class RtDisplayPipeline {
         }
     }
 
-    public void setImages(long outputImageView, long rtImageView, long exposureImageView, long hdrImageView) {
+    public void setImages(long outputImageView, long rtImageView, long exposureImageView, long hdrImageView,
+                           long lutView, long lutSampler, long hdrLutView, long hdrLutSampler) {
         if (boundOutputView == outputImageView && boundRtView == rtImageView
-                && boundExposureView == exposureImageView && boundHdrView == hdrImageView) {
+                && boundExposureView == exposureImageView && boundHdrView == hdrImageView
+                && boundLutView == lutView && boundLutSampler == lutSampler
+                && boundHdrLutView == hdrLutView && boundHdrLutSampler == hdrLutSampler) {
             return;
         }
         try (MemoryStack stack = MemoryStack.stackPush()) {
@@ -126,8 +144,12 @@ public final class RtDisplayPipeline {
             exposureInfo.get(0).imageView(exposureImageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
             VkDescriptorImageInfo.Buffer hdrInfo = VkDescriptorImageInfo.calloc(1, stack);
             hdrInfo.get(0).imageView(hdrImageView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkDescriptorImageInfo.Buffer lutInfo = VkDescriptorImageInfo.calloc(1, stack);
+            lutInfo.get(0).imageView(lutView).sampler(lutSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+            VkDescriptorImageInfo.Buffer hdrLutInfo = VkDescriptorImageInfo.calloc(1, stack);
+            hdrLutInfo.get(0).imageView(hdrLutView).sampler(hdrLutSampler).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
 
-            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(4, stack);
+            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(6, stack);
             writes.get(0).sType$Default().dstSet(descriptorSet).dstBinding(0)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(outputInfo);
             writes.get(1).sType$Default().dstSet(descriptorSet).dstBinding(1)
@@ -136,19 +158,31 @@ public final class RtDisplayPipeline {
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(exposureInfo);
             writes.get(3).sType$Default().dstSet(descriptorSet).dstBinding(3)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(hdrInfo);
+            writes.get(4).sType$Default().dstSet(descriptorSet).dstBinding(4)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(lutInfo);
+            writes.get(5).sType$Default().dstSet(descriptorSet).dstBinding(5)
+                    .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(hdrLutInfo);
             VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
         }
         boundOutputView = outputImageView;
         boundRtView = rtImageView;
         boundExposureView = exposureImageView;
         boundHdrView = hdrImageView;
+        boundLutView = lutView;
+        boundLutSampler = lutSampler;
+        boundHdrLutView = hdrLutView;
+        boundHdrLutSampler = hdrLutSampler;
     }
 
     /**
-     * Run the display mapping. The SDR AgX output is always written (binding 0). When {@code hdrEnabled}, the
-     * PQ-encoded HDR image (binding 3) is also written using the paper-white/headroom mapping.
+     * Run the display mapping. Both outputs switch on {@code tonemapMode} together (0 = legacy AgX +
+     * per-channel HDR rolloff, 1 = baked ACES 2.0 LUTs — see docs/DISPLAY_TRANSFORM_PLAN.md): SDR
+     * (binding 0) always writes; the PQ-encoded HDR image (binding 3) also writes when
+     * {@code hdrEnabled}. In legacy mode HDR uses the paper-white/headroom mapping; in ACES mode the
+     * HDR LUT is baked for a fixed 1000-nit peak regardless of {@code headroom} (see plan §6.2).
      */
-    public void dispatch(VkCommandBuffer cmd, int width, int height, boolean hdrEnabled, float paperWhiteNits, float headroom) {
+    public void dispatch(VkCommandBuffer cmd, int width, int height, boolean hdrEnabled, float paperWhiteNits,
+                          float headroom, int tonemapMode, int lutSize, float acesExposure) {
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "display compute")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSet), null);
@@ -156,6 +190,9 @@ public final class RtDisplayPipeline {
             push.putInt(0, hdrEnabled ? 1 : 0);
             push.putFloat(4, paperWhiteNits);
             push.putFloat(8, headroom);
+            push.putInt(12, tonemapMode);
+            push.putFloat(16, (float) lutSize);
+            push.putFloat(20, acesExposure);
             VK10.vkCmdPushConstants(cmd, pipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
         }

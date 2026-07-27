@@ -6,6 +6,7 @@ import dev.comfyfluffy.caustica.CausticaConfig.BooleanSetting;
 import dev.comfyfluffy.caustica.CausticaConfig.FloatSetting;
 import dev.comfyfluffy.caustica.CausticaConfig.IntSetting;
 import dev.comfyfluffy.caustica.CausticaConfig.StringSetting;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import net.minecraft.client.OptionInstance;
@@ -29,9 +30,15 @@ public final class RtVideoOptions {
     private RtVideoOptions() {
     }
 
-    /** Runtime-tunable RT options, in display order. Paired two-per-row by {@code OptionsList.addSmall}. */
+    /**
+     * Runtime-tunable RT options, in display order. Paired two-per-row by {@code OptionsList.addSmall}.
+     * The HDR entries are omitted entirely (not just disabled) when this session's swapchain isn't
+     * PQ-capable ({@code CausticaConfig.Rt.Hdr.swapchainPqAvailable()}) — offering a toggle/sliders that
+     * can never do anything is worse than not showing them, and unlike most settings here this one is
+     * fixed by hardware/OS/compositor at surface-creation time, not something the player can just enable.
+     */
     public static OptionInstance<?>[] runtimeOptions() {
-        return new OptionInstance<?>[] {
+        List<OptionInstance<?>> options = new ArrayList<>(List.of(
             exposureMode(),
             manualEv(),
             spp(),
@@ -40,12 +47,15 @@ public final class RtVideoOptions {
             entities(),
             particles(),
             waterWaves(),
-            dlssQuality(),
-            hdrEnabled(),
-            hdrPaperWhite(),
-            hdrPeak(),
-            debugView(),
-        };
+            dlssQuality()
+        ));
+        if (CausticaConfig.Rt.Hdr.swapchainPqAvailable()) {
+            options.add(hdrEnabled());
+            options.add(hdrPaperWhite());
+            options.add(hdrPeak());
+        }
+        options.add(debugView());
+        return options.toArray(OptionInstance<?>[]::new);
     }
 
     private static OptionInstance<String> exposureMode() {
@@ -159,15 +169,22 @@ public final class RtVideoOptions {
             nits -> setting.set(nits.floatValue()));
     }
 
+    // Stepped, not a continuous slider: ACES 2.0's HDR output transform only exists at these fixed
+    // mastering-target peaks (see CausticaConfig.Rt.Hdr.PEAK_NITS_STEPS / tools/bake_display_lut.py) --
+    // any other value would just get snapped to one of these anyway, so the slider shows that directly
+    // instead of implying a value in between does something different. Live: RtComposite hot-swaps the
+    // loaded HDR LUT the next frame this changes, no restart.
     private static OptionInstance<Integer> hdrPeak() {
         FloatSetting setting = CausticaConfig.Rt.Hdr.PEAK_NITS;
+        List<Integer> steps = CausticaConfig.Rt.Hdr.PEAK_NITS_STEPS;
+        int initialPosition = steps.indexOf(CausticaConfig.Rt.Hdr.nearestPeakNitsStep(setting.value()));
         return new OptionInstance<>(
             "caustica.options.rt.hdrPeak",
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.hdrPeak.tooltip")),
-            (caption, nits) -> Options.genericValueLabel(caption, Component.literal(nits + " nits")),
-            new OptionInstance.IntRange(80, 10000),
-            Math.clamp(Math.round(setting.value()), 80, 10000),
-            nits -> setting.set(nits.floatValue()));
+            (caption, position) -> Options.genericValueLabel(caption, Component.literal(steps.get(position) + " nits")),
+            new OptionInstance.IntRange(0, steps.size() - 1),
+            Math.max(initialPosition, 0),
+            position -> setting.set(steps.get(position).floatValue()));
     }
 
     private static OptionInstance<Integer> debugView() {

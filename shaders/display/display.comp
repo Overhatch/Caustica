@@ -6,13 +6,24 @@ layout(binding = 0, set = 0, rgba8) uniform writeonly image2D outputImage; // LD
 layout(binding = 1, set = 0, rgba16f) uniform readonly image2D rtImage; // scene-linear BT.2020 RT radiance
 layout(binding = 2, set = 0, r32f) uniform readonly image2D exposureImage; // 1x1 linear exposure scale
 layout(binding = 3, set = 0, rgba16f) uniform writeonly image2D hdrImage; // PQ-encoded ([0,1], ST.2084) HDR display
+// Baked ACES 2.0 SDR display transform (see tools/bake_display_lut.py, docs/DISPLAY_TRANSFORM_PLAN.md).
+// Domain is exposed scene-linear BT.2020, log2-shaped; range is sRGB-OETF-encoded BT.709, matching
+// outputImage exactly, so the LUT path needs no further gamut step or encode.
+layout(binding = 4, set = 0) uniform sampler3D toneLut;
+// Baked ACES 2.0 HDR display transform. Same shaper domain as toneLut; range is already ST.2084/PQ-
+// encoded BT.2020 (baked for a fixed 1000-nit peak), matching hdrImage exactly -- no pqEncode() needed.
+layout(binding = 5, set = 0) uniform sampler3D hdrToneLut;
 
-// HDR display parameters. hdrEnabled gates the parallel PQ write; the SDR AgX path always runs because
+// HDR display parameters. hdrEnabled gates the parallel PQ write; the SDR path always runs because
 // vanilla main-target presentation still consumes LDR.
 layout(push_constant) uniform Push {
     int hdrEnabled;        // 0 = SDR only, 1 = also write the PQ HDR image
-    float paperWhiteNits;  // absolute nits SDR paper white maps to
-    float headroom;        // highlight headroom above paper white (peakNits / paperWhiteNits, >= 1)
+    float paperWhiteNits;  // absolute nits SDR paper white maps to (tonemapMode == 0 only)
+    float headroom;        // highlight headroom above paper white, >= 1 (tonemapMode == 0 only)
+    int tonemapMode;       // operator, both SDR + HDR: 0 = legacy (AgX / per-channel rolloff), 1 = baked ACES 2.0 LUTs
+    float lutSize;         // toneLut/hdrToneLut texels per axis; both LUTs share one size (asserted at load)
+    float acesExposure;    // linear mid-grey anchor bias, ACES path only (1.0 in legacy mode) -- shared
+                            // by SDR and HDR so the two stay appearance-matched at one exposure
 } pc;
 
 // Tonemap seam: the path tracer and DLSS-RR use scene-linear BT.2020. SDR is the sole exit from that
@@ -94,6 +105,54 @@ vec3 tonemap(vec3 scene2020, float exposure) {
     return agx(gamutMapBt2020ToBt709(scene2020 * exposure));
 }
 
+// Baked ACES 2.0 SDR display transform (see docs/DISPLAY_TRANSFORM_PLAN.md). MUST exactly match
+// SHAPER_LO_STOPS/SHAPER_HI_STOPS in tools/bake_display_lut.py -- these are the two halves of one
+// shaper function, one run at bake time (Python), one at sample time (here); if they drift the LUT
+// fetch reads the wrong shelf of the LUT everywhere, silently.
+const float LUT_SHAPER_LO_STOPS = -12.0;
+const float LUT_SHAPER_HI_STOPS = 12.0;
+
+vec3 shaperEncode(vec3 linearColor) {
+    vec3 stops = log2(max(linearColor, vec3(1.0e-6)));
+    return clamp((stops - LUT_SHAPER_LO_STOPS) / (LUT_SHAPER_HI_STOPS - LUT_SHAPER_LO_STOPS), 0.0, 1.0);
+}
+
+// Edge-aligned LUT: texel 0's centre is uvw=0.0 and texel (lutSize-1)'s centre is uvw=1.0, but a
+// sampler's normalized [0,1] domain spans texel *centres* at 0.5/N .. 1-0.5/N by default. Remap into
+// that convention; RtToneLut's CLAMP_TO_EDGE then holds the boundary texel for any exposed value
+// outside the shaper's +/-12 EV range instead of wrapping. Shared by both LUTs -- they're baked at
+// the same lutSize (RtComposite asserts this when loading the HDR LUT).
+vec3 lutTexCoord(vec3 uvw) {
+    return uvw * ((pc.lutSize - 1.0) / pc.lutSize) + vec3(0.5 / pc.lutSize);
+}
+
+// acesExposure corrects for the legacy/ACES operators' different mid-grey anchors: scene-linear 0.18
+// renders at display code 0.497 through AgX but 0.349 through ACES 2.0, so at a fixed exposure key
+// swapping legacy->ACES would otherwise darken the whole midtone range ~1 EV and read as a large
+// contrast change rather than the intended mild one. Applied identically before both LUT fetches
+// (not just SDR) so SDR and HDR stay appearance-matched at one exposure once both are on ACES --
+// that shared match is the entire point of adopting a peak-luminance-parameterized operator; see
+// CausticaConfig.Rt.Tonemap.ACES_EXPOSURE_EV and docs/DISPLAY_TRANSFORM_PLAN.md S5a.
+vec3 acesExposed(vec3 scene2020, float exposure) {
+    return max(scene2020 * exposure * pc.acesExposure, vec3(0.0));
+}
+
+// Exposure -> log2 shaper -> trilinear LUT fetch. The LUT already bakes in ACES 2.0's gamut mapping
+// to BT.709 and the sRGB OETF (baked straight from scene-linear BT.2020, no separate gamut step
+// needed here unlike the AgX path above), so its output goes straight to outputImage.
+vec3 tonemapAces(vec3 scene2020, float exposure) {
+    vec3 uvw = shaperEncode(acesExposed(scene2020, exposure));
+    return clamp(texture(toneLut, lutTexCoord(uvw)).rgb, 0.0, 1.0);
+}
+
+// Same shaper as tonemapAces but sampling the HDR LUT, whose range is already PQ-encoded BT.2020 --
+// no pqEncode() or paperWhite/headroom mapping needed. Fixed at the LUT's baked 1000-nit peak
+// regardless of pc.headroom; see docs/DISPLAY_TRANSFORM_PLAN.md S6 open question #2.
+vec3 tonemapHdrAces(vec3 scene2020, float exposure) {
+    vec3 uvw = shaperEncode(acesExposed(scene2020, exposure));
+    return clamp(texture(hdrToneLut, lutTexCoord(uvw)).rgb, 0.0, 1.0);
+}
+
 const float PQ_M1 = 0.1593017578125;
 const float PQ_M2 = 78.84375;
 const float PQ_C1 = 0.8359375;
@@ -129,10 +188,11 @@ void main() {
 
     vec4 rt = imageLoad(rtImage, pix);
     float exposure = max(imageLoad(exposureImage, ivec2(0)).r, 0.0);
-    vec3 ldr = tonemap(rt.rgb, exposure);
+    vec3 ldr = pc.tonemapMode != 0 ? tonemapAces(rt.rgb, exposure) : tonemap(rt.rgb, exposure);
     imageStore(outputImage, pix, vec4(ldr, 1.0));
 
     if (pc.hdrEnabled != 0) {
-        imageStore(hdrImage, pix, vec4(tonemapHdr(rt.rgb, exposure), 1.0));
+        vec3 hdr = pc.tonemapMode != 0 ? tonemapHdrAces(rt.rgb, exposure) : tonemapHdr(rt.rgb, exposure);
+        imageStore(hdrImage, pix, vec4(hdr, 1.0));
     }
 }

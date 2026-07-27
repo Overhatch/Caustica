@@ -62,6 +62,7 @@ import dev.comfyfluffy.caustica.rt.pipeline.RtHdrCompositePipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtSdrPresentPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtExposure;
 import dev.comfyfluffy.caustica.rt.pipeline.RtPipeline;
+import dev.comfyfluffy.caustica.rt.pipeline.RtToneLut;
 import dev.comfyfluffy.caustica.rt.terrain.RtTerrain;
 
 import java.nio.ByteBuffer;
@@ -179,6 +180,9 @@ public final class RtComposite {
     private PushSlot[] pushRing;
     private int pushSlot;
     private RtDisplayPipeline displayPipeline;
+    private RtToneLut sdrToneLut;
+    private RtToneLut hdrToneLut;
+    private int loadedHdrLutNits = -1;
     private RtImage output;
     // Packed primary -> indirect continuations. Pass A is fixed at one sample and owns two records per
     // render pixel (base + optional transmission); Pass B resamples them at the configured SPP.
@@ -461,6 +465,31 @@ public final class RtComposite {
             if (displayPipeline == null) {
                 displayPipeline = RtDisplayPipeline.create(ctx);
             }
+            if (sdrToneLut == null) {
+                sdrToneLut = RtToneLut.load(ctx, "sdr_aces2_rec709.bin");
+            }
+            // Checked every frame, not just once: Hdr.PEAK_NITS is a live setting (options-menu slider,
+            // no restart), so the loaded HDR LUT must track it. Cheap when unchanged (one int compare);
+            // the actual reload (GPU upload of a new 2MB LUT) only runs on the rare frame the nearest
+            // step actually changes.
+            int wantedHdrNits = CausticaConfig.Rt.Hdr.nearestPeakNitsStep(CausticaConfig.Rt.Hdr.PEAK_NITS.value());
+            if (hdrToneLut == null || loadedHdrLutNits != wantedHdrNits) {
+                RtToneLut newHdrLut = RtToneLut.load(ctx, "hdr_aces2_rec2020_" + wantedHdrNits + "nit.bin");
+                if (newHdrLut.size != sdrToneLut.size) {
+                    // display.comp's lutSize push constant is shared by both LUT samples (see
+                    // lutTexCoord()); bake_display_lut.py currently always sizes both the same, but
+                    // this would silently misalign one LUT's edge texels if that ever changed.
+                    newHdrLut.destroy();
+                    throw new IllegalStateException("SDR/HDR tone LUT size mismatch: "
+                            + sdrToneLut.size + " vs " + newHdrLut.size);
+                }
+                if (hdrToneLut != null) {
+                    ctx.waitIdle(); // nits-step change is rare; no in-flight frame may sample the old LUT
+                    hdrToneLut.destroy();
+                }
+                hdrToneLut = newHdrLut;
+                loadedHdrLutNits = wantedHdrNits;
+            }
             // A resource reload re-stitches the block atlas. We've already torn down the world pipeline
             // (onResourceReloadStart) so nothing references the old atlas, but MC's deferred free keeps the
             // old view handle live for a few frames, then swaps in the new atlas (whose GPU upload may lag,
@@ -473,6 +502,12 @@ public final class RtComposite {
                 }
             }
             ensureOutput(ctx, width, height);
+            // ensureOutput's rebuild path (only taken on resize/RR-setting change) already rebinds
+            // displayPipeline's descriptor set; this covers the case ensureOutput early-returned but
+            // hdrToneLut was hot-swapped just above (a live Hdr.PEAK_NITS change) -- setImages is a no-op
+            // if the bound views already match, so this is cheap on every other frame.
+            displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
+                    sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler());
             // Cheap idempotent check every frame (not just on resize): if the exposure mode is switched
             // manual -> auto at runtime (video settings), the auto-mode histogram/state/pipeline must be
             // allocated before recordFrame's exposure.record() below needs them, or it throws.
@@ -762,7 +797,8 @@ public final class RtComposite {
             worldPipeline.setStorageImage(output.view);
             bindGuideImages();
         }
-        displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view);
+        displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
+                sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler());
     }
 
     /**
@@ -1005,7 +1041,9 @@ public final class RtComposite {
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "map RT to display");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.displayMap")) {
                 displayPipeline.dispatch(cmd, displayW, displayH, CausticaConfig.Rt.Hdr.enabled(),
-                        CausticaConfig.Rt.Hdr.paperWhiteNits(), CausticaConfig.Rt.Hdr.headroom());
+                        CausticaConfig.Rt.Hdr.paperWhiteNits(), CausticaConfig.Rt.Hdr.headroom(),
+                        CausticaConfig.Rt.Tonemap.acesLut() ? 1 : 0, sdrToneLut.size,
+                        CausticaConfig.Rt.Tonemap.acesExposureScale());
             }
             hdrWrittenThisFrame = CausticaConfig.Rt.Hdr.enabled();
             VulkanCommandEncoder.memoryBarrier(cmd, stack);
@@ -1274,6 +1312,15 @@ public final class RtComposite {
             displayPipeline.destroy();
             displayPipeline = null;
         }
+        if (sdrToneLut != null) {
+            sdrToneLut.destroy();
+            sdrToneLut = null;
+        }
+        if (hdrToneLut != null) {
+            hdrToneLut.destroy();
+            hdrToneLut = null;
+        }
+        loadedHdrLutNits = -1;
         if (hdrCompositePipeline != null) {
             hdrCompositePipeline.destroy();
             hdrCompositePipeline = null;
@@ -1519,7 +1566,12 @@ public final class RtComposite {
      * not produce an HDR image ({@link #isHdrPresentActive()} false).
      */
     public boolean isPqSdrPresentActive() {
-        return CausticaConfig.Rt.Hdr.enabled()
+        // swapchainPqAvailable(), not enabled(): the swapchain is unconditionally PQ whenever the surface
+        // allows it, independent of the live HDR toggle (see CausticaConfig.Rt.Hdr). When the user flips
+        // HDR off at runtime, enabled() (and so isHdrPresentActive()) goes false, but the swapchain is
+        // still PQ-tagged -- vanilla's raw SDR blit would misdisplay into it (SDR bytes reinterpreted as
+        // PQ codes), so this path must stay active precisely then, converting instead of falling through.
+        return CausticaConfig.Rt.Hdr.swapchainPqAvailable()
                 && !isHdrPresentActive();
     }
 
