@@ -203,15 +203,23 @@ final class RtLightCollector {
             // sum/rectSamples preserves the quad's total emissive power at rectArea. emissionStrength()
             // is the material's final HDR strength (EMISSIVE_STRENGTH baseline * any JSON multiplier,
             // baked in RtMaterialRegistry) — the single knob shared with world.rchit's direct-hit shading.
-            float tintR = p[pb + 4], tintG = p[pb + 5], tintB = p[pb + 6];
+            // Texture-grid averages are already linear BT.709; captured vertex/biome tint is still
+            // sRGB-encoded. Combine in the authored basis, use its invariant Y for the membership gate,
+            // then store the emitter in the scene's linear BT.2020 transport basis.
+            float tintR = srgbToLinear(p[pb + 4]);
+            float tintG = srgbToLinear(p[pb + 5]);
+            float tintB = srgbToLinear(p[pb + 6]);
             float scale = factor * desc.emissionStrength() / rectSamples;
-            float leR = sumR * scale * tintR;
-            float leG = sumG * scale * tintG;
-            float leB = sumB * scale * tintB;
-            float lum = 0.2126f * leR + 0.7152f * leG + 0.0722f * leB;
+            float le709R = sumR * scale * tintR;
+            float le709G = sumG * scale * tintG;
+            float le709B = sumB * scale * tintB;
+            float lum = 0.2126f * le709R + 0.7152f * le709G + 0.0722f * le709B;
             if (lum < LE_LUM_EPS || fill < minFillRatio) {
                 continue; // excluded: always-gathered on path hits, no energy lost
             }
+            float leR = 0.6274039f * le709R + 0.3292830f * le709G + 0.0433131f * le709B;
+            float leG = 0.0690973f * le709R + 0.9195406f * le709G + 0.0113612f * le709B;
+            float leB = 0.0163916f * le709R + 0.0880132f * le709G + 0.8955953f * le709B;
 
             float aC = 0.5f * (aLo + aHi);
             float bC = 0.5f * (bLo + bHi);
@@ -267,11 +275,16 @@ final class RtLightCollector {
         return Float.intBitsToFloat(bits);
     }
 
+    private static float srgbToLinear(float value) {
+        return value <= 0.04045f ? value / 12.92f
+                : (float) Math.pow((value + 0.055f) / 1.055f, 2.4f);
+    }
+
     /**
      * Packed light record, 5 vec4s / 80 B (matches the S1 shader struct):
      * {@code {pos.xyz, rectArea} {normal.xyz, materialId} {halfU.xyz, packHalf2(uvHu)}
-     * {halfV.xyz, packHalf2(uvHv)} {Le.rgb, packHalf2(uvCenter)}}. Positions/axes section-local here;
-     * publish adds the section-origin-minus-rebase offset to pos only.
+     * {halfV.xyz, packHalf2(uvHv)} {Le2020.rgb, packHalf2(uvCenter)}}. Positions/axes section-local
+     * here; publish adds the section-origin-minus-rebase offset to pos only.
      */
     private static void append(FloatArrayList out,
                                float px, float py, float pz, float area,

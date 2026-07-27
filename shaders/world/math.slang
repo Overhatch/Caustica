@@ -4,7 +4,7 @@
 import world_common;
 import world_core;
 
-public float luminance(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
+public float luminance(float3 c) { return dot(c, BT2020_LUMA); }
 
 // GGX normal distribution.
 // NOTE: the 1e-7 denominator guard is not merely a divide-by-zero epsilon, and it is load-bearing. At
@@ -173,11 +173,4 @@ public float3 sampleGGXVNDF(float3 n, float3 ve, float alpha, inout uint s) {
     float3 Nh = p1 * T1 + p2 * T2 + sqrt(max(0.0, 1.0 - p1 * p1 - p2 * p2)) * Vh;
     float3 Ne = normalize(float3(a * Nh.x, a * Nh.y, max(0.0, Nh.z))); // microfacet normal, tangent space
     return normalize(Ne.x * t + Ne.y * b + Ne.z * n);                 // -> world space
-}
-
-public float3 srgbToLinear(float3 c) {
-    float3 lo = c / 12.92;
-    float3 hi = pow((c + 0.055) / 1.055, float3(2.4, 2.4, 2.4));
-    float3 isHi = step(float3(0.04045, 0.04045, 0.04045), c);
-    return lerp(lo, hi, isHi);
 }

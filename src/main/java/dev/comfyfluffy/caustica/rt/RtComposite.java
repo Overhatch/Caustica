@@ -731,8 +731,9 @@ public final class RtComposite {
         renderSizeRrEnabled = rrEnabled;
         renderSizeRrQuality = rrQuality;
 
-        // RT traces into an HDR (R16G16B16A16_SFLOAT) target so radiance > 1 survives to the display
-        // mapping seam. displayImage stays R8G8B8A8 to match the main target it is copied into
+        // RT traces and DLSS-RR reconstructs scene-linear BT.2020 in an HDR R16G16B16A16_SFLOAT target,
+        // so radiance > 1 and wide-gamut colour survive to the display seam. displayImage stays
+        // R8G8B8A8 to match the main target it is copied into
         // (vkCmdCopyImage requires texel-size-compatible formats).
         output = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "trace color " + renderW + "x" + renderH);
         long pixelRecords = Math.multiplyExact((long) renderW, (long) renderH);
@@ -863,7 +864,7 @@ public final class RtComposite {
                     ? previousWaterWaveTime : waterWaveTime;
             previousWaterWaveTime = waterWaveTime;
             waterWaveTimeValid = true;
-            Float4 waterParams = new Float4(wtr, wtg, wtb, waterWaveTime);
+            Float4 waterParams = linearBt2020FromSrgb(wtr, wtg, wtb, waterWaveTime);
             // W1 wave-domain anchor: the terrain rebase origin reduced mod 4096 (kept small for shader
             // float precision). hitPos.xz (rebased) + anchor reconstructs a world-pinned coordinate, so the
             // ripple pattern stays fixed in the world as the player moves and the rebase origin shifts.
@@ -1126,7 +1127,7 @@ public final class RtComposite {
         return new SkyPush(
                 new Float4(sunX, sunY, sunZ, dayFactor),
                 new Float4(lx, ly, lz, lightRadius),
-                new Float4(rr, rg, rb, starBrightness),
+                linearBt2020FromBt709(rr, rg, rb, starBrightness),
                 new Float4(moonX, moonY, moonZ, moonPhase),
                 new Float4(0f, celestialAxisY(), celestialAxisZ(), starAngle),
                 uv.sun(),
@@ -1182,6 +1183,24 @@ public final class RtComposite {
     private static float smoothstep(float edge0, float edge1, float x) {
         float t = Math.clamp((x - edge0) / (edge1 - edge0), 0f, 1f);
         return t * t * (3f - 2f * t);
+    }
+
+    private static Float4 linearBt2020FromSrgb(double r, double g, double b, float w) {
+        return linearBt2020FromBt709(
+                srgbToLinear(r), srgbToLinear(g), srgbToLinear(b), w);
+    }
+
+    private static Float4 linearBt2020FromBt709(double r, double g, double b, float w) {
+        return new Float4(
+                (float) (0.6274039 * r + 0.3292830 * g + 0.0433131 * b),
+                (float) (0.0690973 * r + 0.9195406 * g + 0.0113612 * b),
+                (float) (0.0163916 * r + 0.0880132 * g + 0.8955953 * b),
+                w);
+    }
+
+    private static double srgbToLinear(double value) {
+        return value <= 0.04045 ? value / 12.92
+                : Math.pow((value + 0.055) / 1.055, 2.4);
     }
 
     /**

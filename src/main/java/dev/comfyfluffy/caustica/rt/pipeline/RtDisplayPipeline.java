@@ -28,7 +28,7 @@ import dev.comfyfluffy.caustica.rt.RtDebugLabels;
 
 import static dev.comfyfluffy.caustica.rt.RtContext.check;
 
-/** Compute pass that maps the display-res HDR RT image into an LDR image compatible with the main target. */
+/** Maps the display-res scene-linear BT.2020 RT image to sRGB SDR and, when enabled, PQ/BT.2020 HDR. */
 public final class RtDisplayPipeline {
     private static final String SHADER_DIR = "/caustica/rt/";
     /** Push constants: int hdrEnabled, float paperWhiteNits, float headroom. */

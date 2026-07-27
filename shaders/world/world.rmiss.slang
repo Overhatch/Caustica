@@ -248,7 +248,8 @@ void main(inout Payload payload) {
         downFade = exp(dir.y * 3.0);
     }
     float3 col = atmosphere(mdir, sd);
-    // Luminance-preserving vibrance on the in-scatter only (see SKY_SATURATION).
+    // This atmosphere model is parameterized in its original linear BT.709 basis. Apply its
+    // luminance-preserving look there, then cross into the BT.2020 transport basis once at output.
     float lum = dot(col, float3(0.2126, 0.7152, 0.0722));
     col = max(lerp(float3(lum, lum, lum), col, SKY_SATURATION), float3(0.0, 0.0, 0.0));
     float up = clamp(dir.y, 0.0, 1.0);
@@ -279,7 +280,7 @@ void main(inout Payload payload) {
         squareBody(dir, worldPush.moonDir.xyz, MOON_DISC_HALF_ANGLE, worldPush.celestial.xyz, local);
         if (all(abs(local) < float2(1.0, 1.0)) && moonUp > 0.0) {
             float2 uv = lerp(worldPush.moonUv.xy, worldPush.moonUv.zw, local * 0.5 + 0.5);
-            float3 t = celestialsAtlas.SampleLevel(uv, 0.0).rgb;
+            float3 t = srgbToLinear(celestialsAtlas.SampleLevel(uv, 0.0).rgb);
             // Moon: a smoothstep contrast ramp suppresses the faint halo while keeping the lit phase
             // shape from the texture. The transmittance tint gives a warm amber moon at moonrise/set.
             float m = smoothstep(0.0, 1.0, min(length(t), 1.0)) * 1.3;
@@ -290,7 +291,8 @@ void main(inout Payload payload) {
     // albedo is a half3 lane, so the sky's HDR radiance is clamped to half's finite range rather than
     // allowed to round up to +inf and propagate as NaN through the path throughput. This is a guard, not
     // a correction: the brightest term here is SUN_DISC_RADIANCE at 24.0, far under the 65504 ceiling.
-    payload.albedo = half3(clamp(col, float3(0.0, 0.0, 0.0), float3(HALF_MAX, HALF_MAX, HALF_MAX)));
+    float3 col2020 = bt709ToBt2020(max(col, float3(0.0)));
+    payload.albedo = half3(clamp(col2020, float3(0.0), float3(HALF_MAX)));
     payload.hitT = -1.0;
     payload.normal = half3(0.0h, 0.0h, 0.0h);
     payload.motionPrev = half3(0.0h, 0.0h, 0.0h);

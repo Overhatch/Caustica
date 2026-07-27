@@ -6,16 +6,16 @@ import world_common;
 [[vk::push_constant]] public WorldPushConstants pc;
 
 [[vk::binding(0, 0)]] public RaytracingAccelerationStructure topLevelAS;
-// HDR trace target: linear radiance, may exceed 1. Tonemap happens later at the display.comp seam.
+// HDR trace target: scene-linear BT.2020 radiance, may exceed 1. Tonemap happens at the display seam.
 [[vk::binding(1, 0)]] [format("rgba16f")] public RWTexture2D<float4> outImage;
 // Guide buffers — first-hit (primary-visibility) attributes consumed by the denoiser/DLSS-RR. Written
 // every frame regardless of accumulation. gNormal.w carries LINEAR roughness (= GGX alpha, which is what
 // DLSS-RR documents for this input); gDepth carries HW reversed-Z depth.
 [[vk::binding(3, 0)]] [format("rgba16f")] public RWTexture2D<float4> gNormal;     // xyz world normal, w linear roughness
-[[vk::binding(4, 0)]] [format("rgba16f")] public RWTexture2D<float4> gAlbedo;     // rgb diffuse albedo
+[[vk::binding(4, 0)]] [format("rgba16f")] public RWTexture2D<float4> gAlbedo;     // rgb BT.2020 diffuse albedo
 [[vk::binding(5, 0)]] [format("r32f")]    public RWTexture2D<float>  gDepth;      // HW reversed-Z depth
 [[vk::binding(6, 0)]] [format("rg16f")]   public RWTexture2D<float2> gMotion;     // screen-space motion (render px)
-[[vk::binding(7, 0)]] [format("rgba16f")] public RWTexture2D<float4> gSpecAlbedo; // exact-mirror reflected diffuse × reflectance; material reflectance otherwise
+[[vk::binding(7, 0)]] [format("rgba16f")] public RWTexture2D<float4> gSpecAlbedo; // BT.2020 exact-mirror reflected diffuse × reflectance; material reflectance otherwise
 [[vk::binding(8, 0)]] [format("rg16f")]   public RWTexture2D<float2> gSpecMotion; // reflection MVs for RR
 
 // Per-frame push data loaded once from the BDA buffer at the top of main() (same pattern as the GLSL

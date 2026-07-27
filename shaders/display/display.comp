@@ -3,7 +3,7 @@
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(binding = 0, set = 0, rgba8) uniform writeonly image2D outputImage; // LDR world target image
-layout(binding = 1, set = 0, rgba16f) uniform readonly image2D rtImage; // HDR RT radiance
+layout(binding = 1, set = 0, rgba16f) uniform readonly image2D rtImage; // scene-linear BT.2020 RT radiance
 layout(binding = 2, set = 0, r32f) uniform readonly image2D exposureImage; // 1x1 linear exposure scale
 layout(binding = 3, set = 0, rgba16f) uniform writeonly image2D hdrImage; // PQ-encoded ([0,1], ST.2084) HDR display
 
@@ -15,9 +15,16 @@ layout(push_constant) uniform Push {
     float headroom;        // highlight headroom above paper white (peakNits / paperWhiteNits, >= 1)
 } pc;
 
-// Tonemap seam: map HDR RT radiance to displayable LDR before copying back to the main target.
-// The path tracer emits true HDR radiance, so exposure is applied from the compositor-owned 1x1 image
-// before the AgX view transform. DLSS-RR still consumes HDR pre-tonemap.
+// Tonemap seam: the path tracer and DLSS-RR use scene-linear BT.2020. SDR is the sole exit from that
+// contract, converting to BT.709 before the existing AgX view transform; HDR stays BT.2020 through PQ.
+// Exposure is applied from the compositor-owned 1x1 image at either display boundary.
+
+const mat3 BT2020_TO_BT709 = mat3(
+     1.6604910, -0.1245505, -0.0181508,
+    -0.5876411,  1.1328999, -0.1005789,
+    -0.0728499, -0.0083494,  1.1187297
+);
+const vec3 BT2020_LUMA = vec3(0.2627, 0.6780, 0.0593);
 
 const mat3 AGX_INSET = mat3(
     0.842479062253094, 0.042328242261012, 0.042375654905705,
@@ -68,8 +75,23 @@ vec3 agx(vec3 color) {
     return clamp(color, 0.0, 1.0);
 }
 
-vec3 tonemap(vec3 hdr, float exposure) {
-    return agx(hdr * exposure);
+// A plain primary conversion can produce negative BT.709 channels for valid wide-gamut colours.
+// Pull only that out-of-gamut chroma toward an equal-luminance neutral, preserving brightness and hue
+// direction instead of clipping channels independently.
+vec3 gamutMapBt2020ToBt709(vec3 scene2020) {
+    scene2020 = max(scene2020, vec3(0.0));
+    vec3 raw709 = BT2020_TO_BT709 * scene2020;
+    float luma = max(dot(scene2020, BT2020_LUMA), 0.0);
+    vec3 chroma = raw709 - vec3(luma);
+    float scale = 1.0;
+    if (chroma.r < 0.0) scale = min(scale, luma / max(-chroma.r, 1.0e-6));
+    if (chroma.g < 0.0) scale = min(scale, luma / max(-chroma.g, 1.0e-6));
+    if (chroma.b < 0.0) scale = min(scale, luma / max(-chroma.b, 1.0e-6));
+    return max(vec3(luma) + chroma * clamp(scale, 0.0, 1.0), vec3(0.0));
+}
+
+vec3 tonemap(vec3 scene2020, float exposure) {
+    return agx(gamutMapBt2020ToBt709(scene2020 * exposure));
 }
 
 const float PQ_M1 = 0.1593017578125;
@@ -83,30 +105,18 @@ float pqEncode(float nits) {
     return pow((PQ_C1 + PQ_C2 * y) / (1.0 + PQ_C3 * y), PQ_M2);
 }
 
-// VK_COLOR_SPACE_HDR10_ST2084_EXT mandates BT.2020 primaries as its container gamut (not just the ST.2084
-// transfer function) — but every color we compute (textures, tonemap) is authored/blended in BT.709/sRGB
-// primaries. Feeding BT.709 numbers straight into a BT.2020-tagged buffer makes the display read them as
-// (more saturated) BT.2020 coordinates, oversaturating everything. This matrix converts linear-light
-// BT.709 -> BT.2020 right before the PQ encode, which is the container's actual gamut. (ITU-R BT.2087.)
-const mat3 BT709_TO_BT2020 = mat3(
-    0.6274039, 0.0690973, 0.0163916,
-    0.3292830, 0.9195406, 0.0880132,
-    0.0433131, 0.0113612, 0.8955953
-);
-
 // HDR display mapping: map exposed scene-linear radiance to absolute nits, then PQ-encode (ST.2084) for
 // direct presentation to a PQ/HDR10 swapchain. SDR-range values (<= 1.0 after exposure) stay identity so
 // paper white lands exactly at paperWhiteNits. Highlights above 1.0 roll off smoothly and asymptote to
 // `headroom`, i.e. the brightest pixels approach peakNits. No SDR clamp here — that is the point.
-vec3 tonemapHdr(vec3 hdr, float exposure) {
-    vec3 c = max(hdr * exposure, vec3(0.0));
+vec3 tonemapHdr(vec3 scene2020, float exposure) {
+    vec3 c = max(scene2020 * exposure, vec3(0.0));
     vec3 lo = min(c, vec3(1.0));
     vec3 hi = max(c - vec3(1.0), vec3(0.0));
     float k = max(pc.headroom - 1.0, 0.0);
     vec3 rolled = (k > 0.0) ? (k * hi) / (k + hi) : vec3(0.0); // -> k as hi -> inf
     vec3 paperReferred = lo + rolled;                          // 1.0 == paper white, max -> headroom
-    vec3 nits709 = paperReferred * pc.paperWhiteNits;
-    vec3 nits2020 = BT709_TO_BT2020 * nits709;
+    vec3 nits2020 = paperReferred * pc.paperWhiteNits;
     return vec3(pqEncode(nits2020.r), pqEncode(nits2020.g), pqEncode(nits2020.b));
 }
 
