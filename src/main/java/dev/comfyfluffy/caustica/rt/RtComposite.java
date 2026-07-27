@@ -1041,9 +1041,7 @@ public final class RtComposite {
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "map RT to display");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.displayMap")) {
                 displayPipeline.dispatch(cmd, displayW, displayH, CausticaConfig.Rt.Hdr.enabled(),
-                        CausticaConfig.Rt.Hdr.paperWhiteNits(), CausticaConfig.Rt.Hdr.headroom(),
-                        CausticaConfig.Rt.Tonemap.acesLut() ? 1 : 0, sdrToneLut.size,
-                        CausticaConfig.Rt.Tonemap.acesExposureScale());
+                        sdrToneLut.size, CausticaConfig.Rt.Tonemap.acesExposureScale());
             }
             hdrWrittenThisFrame = CausticaConfig.Rt.Hdr.enabled();
             VulkanCommandEncoder.memoryBarrier(cmd, stack);

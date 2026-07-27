@@ -139,8 +139,9 @@ public final class RtExposure {
                 + ", adaptUp=" + autoConfig.adaptUp + ", adaptDown=" + autoConfig.adaptDown
                 + ", evBias=" + autoConfig.evBias + ")"
                 : Float.toString(manualExposureScale());
-        CausticaMod.LOGGER.info("RT display exposure: mode={}, exposure={}, tonemap=agx, DLSS-RR exposure=NGX auto",
-                mode.configName, exposureText);
+        CausticaMod.LOGGER.info("RT display exposure: mode={}, exposure={}, tonemap=aces2.0(exposureEv={}), "
+                        + "DLSS-RR exposure=NGX auto",
+                mode.configName, exposureText, CausticaConfig.Rt.Tonemap.ACES_EXPOSURE_EV.value());
     }
 
     private static Mode mode() {

@@ -31,11 +31,8 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
 /** Maps the display-res scene-linear BT.2020 RT image to sRGB SDR and, when enabled, PQ/BT.2020 HDR. */
 public final class RtDisplayPipeline {
     private static final String SHADER_DIR = "/caustica/rt/";
-    /**
-     * Push constants: int hdrEnabled, float paperWhiteNits, float headroom, int tonemapMode,
-     * float lutSize, float acesExposure.
-     */
-    private static final int PUSH_BYTES = 6 * Integer.BYTES;
+    /** Push constants: int hdrEnabled, float lutSize, float acesExposure. */
+    private static final int PUSH_BYTES = 3 * Integer.BYTES;
 
     private final RtContext ctx;
     private final long descriptorSetLayout;
@@ -75,8 +72,6 @@ public final class RtDisplayPipeline {
             binds.get(3).binding(3).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             // Baked ACES 2.0 display-transform LUTs (see RtToneLut / docs/DISPLAY_TRANSFORM_PLAN.md).
-            // Selected at runtime via push-constant tonemapMode so AgX/the old HDR rolloff stay
-            // available for A/B.
             binds.get(4).binding(4).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             binds.get(5).binding(5).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
@@ -175,24 +170,20 @@ public final class RtDisplayPipeline {
     }
 
     /**
-     * Run the display mapping. Both outputs switch on {@code tonemapMode} together (0 = legacy AgX +
-     * per-channel HDR rolloff, 1 = baked ACES 2.0 LUTs — see docs/DISPLAY_TRANSFORM_PLAN.md): SDR
+     * Run the display mapping via the baked ACES 2.0 LUTs (see docs/DISPLAY_TRANSFORM_PLAN.md): SDR
      * (binding 0) always writes; the PQ-encoded HDR image (binding 3) also writes when
-     * {@code hdrEnabled}. In legacy mode HDR uses the paper-white/headroom mapping; in ACES mode the
-     * HDR LUT is baked for a fixed 1000-nit peak regardless of {@code headroom} (see plan §6.2).
+     * {@code hdrEnabled}. The HDR LUT is baked for a fixed mastering-nits peak (see
+     * {@code CausticaConfig.Rt.Hdr.PEAK_NITS_STEPS}), selected host-side by which LUT resource is bound.
      */
-    public void dispatch(VkCommandBuffer cmd, int width, int height, boolean hdrEnabled, float paperWhiteNits,
-                          float headroom, int tonemapMode, int lutSize, float acesExposure) {
+    public void dispatch(VkCommandBuffer cmd, int width, int height, boolean hdrEnabled, int lutSize,
+                          float acesExposure) {
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "display compute")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSet), null);
             ByteBuffer push = stack.malloc(PUSH_BYTES);
             push.putInt(0, hdrEnabled ? 1 : 0);
-            push.putFloat(4, paperWhiteNits);
-            push.putFloat(8, headroom);
-            push.putInt(12, tonemapMode);
-            push.putFloat(16, (float) lutSize);
-            push.putFloat(20, acesExposure);
+            push.putFloat(4, (float) lutSize);
+            push.putFloat(8, acesExposure);
             VK10.vkCmdPushConstants(cmd, pipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
         }

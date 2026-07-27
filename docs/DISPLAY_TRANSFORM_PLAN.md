@@ -268,14 +268,29 @@ before any frame/menu/options-screen code can observe it, so there's no start-of
 
 1. **Done (2026-07-27).** SDR LUT baked and wired behind `tonemap.mode` (default still `agx`).
    Mid-grey anchor mismatch found and fixed — see §5a.
-2. **Deferred** — validate against the glowstone/lava/portal scene; resolve LUT-size question if it
-   comes up. Needs in-game inspection (not automatable from this environment); on the user.
+2. **Done (2026-07-27) — validated in play.** No banding at 65³. One hue-drift finding on
+   lava at extreme brightness (see §5b) — a documented ACES 2.0 characteristic, not a defect;
+   AgX was masking the same underlying limitation by crushing to white instead. Confirmed
+   "working correctly" overall; cleared the way for step 4.
 3. **Done (2026-07-27).** HDR LUTs baked and wired: `tonemapMode` now switches SDR and HDR together,
    old per-channel rolloff + `pqEncode` still present but only reachable in legacy mode.
    `acesExposure` (§5a) is shared identically by both LUT fetches — required, not optional, for
    SDR/HDR to stay appearance-matched at one exposure, which is the entire reason this plan chose
    ACES 2.0 over the old two-operator setup. §6.2 (peak-nits variants) resolved same day, see below.
-4. Delete dead AgX/gamut-map/rolloff/`pqEncode` code from
-   [display.comp](../shaders/display/display.comp) once both paths are confirmed good in play and
-   `tonemap.mode` defaults to `aces`.
+4. **Done (2026-07-27).** Deleted the legacy operator entirely (AgX inset/sigmoid/outset,
+   `gamutMapBt2020ToBt709`, the per-channel HDR rolloff, `pqEncode`, the dead `applyLook`) —
+   ACES 2.0 is now the only SDR/HDR display transform, no mode switch. `CausticaConfig.Rt.Tonemap`
+   lost `MODE`/`acesLut()`; `ACES_EXPOSURE_EV` stays (renamed rationale from "vs. AgX" to "mid-grey
+   placement bias", same default 1.014 — a confirmed-good starting point carried forward, not
+   re-derived, since AgX is no longer around to compare against). `RtDisplayPipeline.dispatch`'s
+   push constants shrank to `(hdrEnabled, lutSize, acesExposure)` — `paperWhiteNits`/`headroom`
+   were only ever consumed by the deleted rolloff.
+
+   **Also migrated `display.comp` → `display.comp.slang`** (Slang, matching `shaders/world/*`,
+   rather than GLSL) while rewriting it — build.gradle already globs `**/*.comp.slang` and strips
+   the suffix for the output name, so this needed no build changes; `RtDisplayPipeline`'s loader
+   still asks for `display.comp.spv` unmodified. Scoped to this one file for now — the other
+   `shaders/display/*.comp` files (`exposure_hist`, `exposure_resolve`, `hdr_ui_composite`,
+   `sdr_present`) are still GLSL; `exposure_hist`/`exposure_resolve` migrate as part of
+   [EXPOSURE_PLAN.md](EXPOSURE_PLAN.md)'s work, not here.
 5. Land exposure plan §S3 (compensation curve) tuning against the new operator, not before.
