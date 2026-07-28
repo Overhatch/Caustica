@@ -221,25 +221,25 @@ resize path) reuses whatever `pickSwapchainSurfaceFormat` decided once at surfac
 naively there is no way to switch a live swapchain between SDR and PQ formats without recreating it,
 which blaze3d does not expose a path to trigger on demand.
 
-**Resolution: stop trying to switch the swapchain at all.** `VulkanGpuSurfaceMixin.caustica$pickPqFormat`
-now always attempts to select the PQ (HDR10_ST2084) format whenever the surface advertises it —
-unconditionally, not gated on whether the user currently has HDR on. The swapchain is therefore
-PQ-capable for the entire session whenever the hardware/OS/compositor allow it, regardless of the
-live toggle. What the toggle now controls is purely which per-frame **present path** runs, both of
-which already existed:
+**Current resolution: recreate through the existing resize path.** The HDR option updates
+`Hdr.ENABLED` and calls `Minecraft.invalidateSurfaceConfiguration()`. At the next safe render
+boundary Minecraft executes the same `GpuSurface.configure()` used by framebuffer resize. The
+Vulkan surface mixin re-enumerates advertised formats there, makes vanilla's normally-final
+`swapchainImageFormat` selectable, and chooses native SDR (`SRGB_NONLINEAR`) or HDR10/PQ
+(`HDR10_ST2084`) to match the toggle.
 
-- `isHdrPresentActive()` — real HDR content (`Hdr.enabled()` true, an HDR image was written this
-  frame). Unchanged.
-- `isPqSdrPresentActive()` — the SDR-&gt;PQ conversion path, originally built only for menu/loading
-  frames on a PQ swapchain. Its gate changed from `Hdr.enabled()` to the new
-  `Hdr.swapchainPqAvailable()` (independent of the live toggle) precisely so it also covers "user
-  just turned HDR off, swapchain is still PQ" — without that change, disabling HDR at runtime would
-  fall through to vanilla's raw SDR blit into a PQ-tagged swapchain and misdisplay (SDR bytes
-  reinterpreted as PQ codes).
+Capability and current state are deliberately separate:
 
-`CausticaConfig.Rt.Hdr.enabled()` is now `swapchainPqAvailable() && ENABLED.value()` — live, no
-snapshot. `swapchainPqAvailable()` is set exactly once, by the mixin, right after surface creation,
-before any frame/menu/options-screen code can observe it, so there's no start-of-session race.
+- `swapchainPqAvailable()` means the surface advertises a PQ pair, so HDR controls remain visible
+  while the current swapchain is native SDR.
+- `swapchainPqActive()` means the currently configured swapchain is PQ.
+- `Hdr.enabled()` requires both the user toggle and an active PQ swapchain.
+- `isPqSdrPresentActive()` remains for menus/loading frames while HDR is active (and the short
+  toggle-to-reconfigure interval), but is bypassed once HDR-off recreation produces native SDR.
+
+Consequently, `paper-white-nits` no longer changes whole-image brightness with HDR disabled: native
+SDR uses Minecraft's ordinary presentation. It still places SDR-authored UI/menu content at an
+absolute luminance when that content must be embedded into an active PQ swapchain.
 
 **Consequences elsewhere:**
 - `GlxMixin.caustica$preferWaylandForHdr` now always attempts the native Wayland backend on Linux
@@ -248,7 +248,7 @@ before any frame/menu/options-screen code can observe it, so there's no start-of
   to switch backends after `_initGlfw` returns. If HDR is ever going to work at all this session,
   Wayland has to already be the active backend by the time the surface is created.
 - `RtVideoOptions.runtimeOptions()` omits the HDR toggle/paper-white/peak-nits entries entirely
-  (not just disables them) when `swapchainPqAvailable()` is false — this is fixed by
+  (not just disables them) when `swapchainPqAvailable()` is false — this capability is fixed by
   hardware/OS/compositor at surface creation, unlike every other RT setting, so offering controls
   that can never do anything would be actively misleading.
 - Deleted `OptionsMixin` (`Options.isRestartRequiredToApplyVideoSettings`) and

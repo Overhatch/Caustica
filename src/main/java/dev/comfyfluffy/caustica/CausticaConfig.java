@@ -853,15 +853,10 @@ public final class CausticaConfig {
              */
             public static final List<Integer> PEAK_NITS_STEPS = List.of(500, 1000, 2000, 4000);
 
-            // Whether the live Vulkan surface actually advertises an HDR-capable (colorSpace, format)
-            // pair, i.e. whether VulkanGpuSurfaceMixin.caustica$pickPqFormat found one and the swapchain
-            // is (always, per that mixin) created in PQ when it does. Set exactly once, right after the
-            // surface is created — before any frame, options screen, or config read can observe it — so
-            // there is no race despite the volatile. Gates both the options-menu entries (RtVideoOptions
-            // omits them entirely when false) and enabled() below, so a stale ENABLED=true left over in
-            // caustica.toml from a different display/session can't make the renderer think HDR is live
-            // when the current surface can't actually present it.
+            // Surface capability and current swapchain state are separate: HDR controls remain available
+            // while the swapchain is native SDR, so enabling HDR can recreate it in PQ.
             private static volatile boolean SWAPCHAIN_PQ_AVAILABLE = false;
+            private static volatile boolean SWAPCHAIN_PQ_ACTIVE = false;
 
             private Hdr() {
             }
@@ -870,26 +865,30 @@ public final class CausticaConfig {
                 SWAPCHAIN_PQ_AVAILABLE = available;
             }
 
+            public static void setSwapchainPqActive(boolean active) {
+                SWAPCHAIN_PQ_ACTIVE = active;
+            }
+
             /**
-             * Whether this session's swapchain is PQ-capable, independent of the user's {@link #ENABLED}
-             * toggle. The swapchain is always created in PQ when the surface offers it (see
-             * VulkanGpuSurfaceMixin) specifically so that {@link #enabled()} can be a genuine per-frame
-             * runtime toggle: turning HDR off doesn't need a different swapchain, only a different
-             * per-frame present path (RtComposite.isPqSdrPresentActive's SDR-&gt;PQ conversion) — see
-             * docs/DISPLAY_TRANSFORM_PLAN.md.
+             * Whether this session's surface can create a PQ swapchain, independent of which format the
+             * current swapchain uses.
              */
             public static boolean swapchainPqAvailable() {
                 return SWAPCHAIN_PQ_AVAILABLE;
             }
 
+            /** Whether the currently configured swapchain is HDR10/PQ rather than native SDR. */
+            public static boolean swapchainPqActive() {
+                return SWAPCHAIN_PQ_ACTIVE;
+            }
+
             /**
              * Whether the HDR display path (world HDR + PQ swapchain + UI overlay) should be active this
-             * frame. Live — reads {@link #ENABLED} directly, no startup snapshot; the swapchain being
-             * unconditionally PQ-capable whenever the surface allows it (see {@link #swapchainPqAvailable})
-             * is what makes flipping this at runtime actually work rather than requiring a restart.
+             * frame. The option invalidates the surface configuration after changing {@link #ENABLED};
+             * the ordinary resize/configure path recreates the swapchain in SDR or PQ.
              */
             public static boolean enabled() {
-                return SWAPCHAIN_PQ_AVAILABLE && ENABLED.value();
+                return SWAPCHAIN_PQ_ACTIVE && ENABLED.value();
             }
 
             /** Absolute nits SDR paper white maps to in the PQ encode (ST.2084 is referenced to 10000 nits). */

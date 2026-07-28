@@ -12,7 +12,7 @@ plan's original §S6.
 
 | Piece | File | Role |
 |---|---|---|
-| Owner / mode switch / config | [RtExposure.java](../src/main/java/dev/comfyfluffy/caustica/rt/pipeline/RtExposure.java) | 1x1 `R32_SFLOAT` image, separate 256-bin surface/sky histograms, 80-byte host-visible state buffer |
+| Owner / mode switch / config | [RtExposure.java](../src/main/java/dev/comfyfluffy/caustica/rt/pipeline/RtExposure.java) | 1x1 `R32_SFLOAT` image, separate 256-bin ordinary/sky/emissive histograms, 88-byte host-visible state buffer |
 | Pipelines | [RtExposurePipeline.java](../src/main/java/dev/comfyfluffy/caustica/rt/pipeline/RtExposurePipeline.java) | two compute pipelines (hist, resolve) |
 | Metering | [exposure_hist.comp.slang](../shaders/display/exposure_hist.comp.slang) | full-res log2-luminance histogram, shared-memory atomics, one bin per thread |
 | Controller | [exposure_resolve.comp.slang](../shaders/display/exposure_resolve.comp.slang) | 1 invocation: percentile trim → key → clamp → exponential smoothing |
@@ -158,7 +158,8 @@ the sky/terrain split obvious.
 
 **Status (2026-07-27): state widening, log line, and the two debug views are done.**
 `ExposureState` (std430, `exposure_resolve.comp.slang`) initially widened from
-`(previous, initialized)` to 64 bytes, then S2 appended 16 bytes of sky-weight diagnostics/reserve:
+`(previous, initialized)` to 64 bytes, then S2/S3 appended sky-weight/curve diagnostics and the
+emissive follow-up added 8 bytes, for 88 bytes total:
 adds `evScene`/`evTarget`/`evApplied` (all EV, i.e. log2), `clipLowFrac`/`clipHighFrac`
 (fraction of metered pixels landing in the histogram's extreme bins — the "is the meter's dynamic
 range clipping" reading, distinct from whether the EV clamp itself is pinned), and reserves
@@ -276,6 +277,30 @@ scene points with zero compensation and exactly reproduces the legacy full-adapt
 The GPU writes its evaluated compensation and effective slope into the existing final two
 `ExposureState` floats, and the once-per-second diagnostics report both.
 
+For repeatable tuning, enable `frame-stats.enabled`, hold each of the four reference views still
+until the once-per-second `RT exposure diag` line stabilizes, and record `evScene`. Then run:
+
+```
+python tools/fit_exposure_curve.py --noon N --overcast O --night M --cave C
+```
+
+The tool maps those readings to the midpoint of each §2 target range, orders the control points,
+reports effective slopes and any `minEv`/`maxEv` clamp hits, and prints a ready-to-paste
+`exposure.curve`. Target offsets can be overridden on its command line.
+
+Image contrast is intentionally downstream of this calibration. `tonemap.contrast` (default 1.0)
+is a luminance exponent around exposed scene-linear 18% grey, applied before both ACES LUTs.
+It does not feed back into metering, preserves chromaticity, and has the same meaning for SDR and
+HDR; a conventional post-LUT gamma control was avoided because operating on PQ code values would
+not be a physically or perceptually equivalent HDR adjustment.
+
+**Emissive population follow-up (2026-07-28): implemented; play acceptance pending.** The diffuse
+albedo guide's otherwise-unused alpha lane now marks whether the visible guide endpoint emits.
+The histogram has a third 256-bin population for those pixels, and resolve applies an exact
+`emissive-weight-cap` final-share cap (default 0.10) jointly with the sky cap. This prevents a large
+lava/glowstone area from stopping down nearby ordinary blocks while retaining emitter influence.
+Mode 9 displays the actual same-frame emissive scale, and diagnostics report its scale/final share.
+
 ### S4 — Temporal controller
 
 Rewrite the smoothing in EV space (D4, D5):
@@ -365,6 +390,7 @@ existing convention):
 | `stride` | 2 | S1 |
 | `center-weight-sigma` / `center-weight-floor` | 0.35 / 0.15 | S2 |
 | `sky-weight-cap` | 0.25 | S2 |
+| `emissive-weight-cap` | 0.10 | S2/S5 follow-up |
 | `curve` (4 control points, or `full`) | `-6:-2.0, -3:-0.8, 0:0.0, 4:0.4` | S3 |
 | `tau-brighten` / `tau-darken` | 0.4 / 0.8 s | S4 |
 | `max-ev-per-second` | 1.5 | S4 |

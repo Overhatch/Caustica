@@ -1602,12 +1602,10 @@ public final class RtComposite {
      * not produce an HDR image ({@link #isHdrPresentActive()} false).
      */
     public boolean isPqSdrPresentActive() {
-        // swapchainPqAvailable(), not enabled(): the swapchain is unconditionally PQ whenever the surface
-        // allows it, independent of the live HDR toggle (see CausticaConfig.Rt.Hdr). When the user flips
-        // HDR off at runtime, enabled() (and so isHdrPresentActive()) goes false, but the swapchain is
-        // still PQ-tagged -- vanilla's raw SDR blit would misdisplay into it (SDR bytes reinterpreted as
-        // PQ codes), so this path must stay active precisely then, converting instead of falling through.
-        return CausticaConfig.Rt.Hdr.swapchainPqAvailable()
+        // The conversion is needed only while the CURRENT swapchain is PQ and this frame has no HDR
+        // image (menus/loading, or the short interval after the toggle changed but before configure()).
+        // Once configure recreates a native-SDR swapchain, vanilla's ordinary blit is correct.
+        return CausticaConfig.Rt.Hdr.swapchainPqActive()
                 && !isHdrPresentActive();
     }
 

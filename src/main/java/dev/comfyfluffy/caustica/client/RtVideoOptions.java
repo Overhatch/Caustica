@@ -9,6 +9,7 @@ import dev.comfyfluffy.caustica.CausticaConfig.StringSetting;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.OptionInstance;
 import net.minecraft.client.Options;
 import net.minecraft.network.chat.Component;
@@ -35,7 +36,8 @@ public final class RtVideoOptions {
      * The HDR entries are omitted entirely (not just disabled) when this session's swapchain isn't
      * PQ-capable ({@code CausticaConfig.Rt.Hdr.swapchainPqAvailable()}) — offering a toggle/sliders that
      * can never do anything is worse than not showing them, and unlike most settings here this one is
-     * fixed by hardware/OS/compositor at surface-creation time, not something the player can just enable.
+     * fixed by hardware/OS/compositor at surface-creation time. The current swapchain may still be native
+     * SDR; changing the toggle invalidates its configuration and recreates it in the selected format.
      */
     public static OptionInstance<?>[] runtimeOptions() {
         List<OptionInstance<?>> options = new ArrayList<>(List.of(
@@ -168,7 +170,19 @@ public final class RtVideoOptions {
     }
 
     private static OptionInstance<Boolean> hdrEnabled() {
-        return bool("caustica.options.rt.hdr", CausticaConfig.Rt.Hdr.ENABLED);
+        BooleanSetting setting = CausticaConfig.Rt.Hdr.ENABLED;
+        return OptionInstance.createBoolean(
+            "caustica.options.rt.hdr",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.hdr.tooltip")),
+            setting.value(),
+            enabled -> {
+                if (setting.value() != enabled) {
+                    setting.set(enabled);
+                    // Reuse the framebuffer-resize path at the next safe frame boundary. GpuSurface
+                    // refuses configure() while an image is acquired, so doing it directly here is unsafe.
+                    Minecraft.getInstance().invalidateSurfaceConfiguration();
+                }
+            });
     }
 
     private static OptionInstance<Integer> hdrPaperWhite() {
