@@ -56,5 +56,7 @@
 	"caustica.options.rt.debugView.4": "粗糙度",
 	"caustica.options.rt.debugView.5": "运动",
 	"caustica.options.rt.debugView.6": "高光",
-	"caustica.options.rt.debugView.7": "高光运动"
+	"caustica.options.rt.debugView.7": "高光运动",
+	"caustica.options.rt.debugView.8": "发光遮罩",
+	"caustica.options.rt.debugView.9": "发光源"
 }

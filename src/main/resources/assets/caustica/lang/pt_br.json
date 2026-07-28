@@ -56,5 +56,7 @@
 	"caustica.options.rt.debugView.4": "Rugosidade",
 	"caustica.options.rt.debugView.5": "Movimento",
 	"caustica.options.rt.debugView.6": "Especular",
-	"caustica.options.rt.debugView.7": "Movimento especular"
+	"caustica.options.rt.debugView.7": "Movimento especular",
+	"caustica.options.rt.debugView.8": "Máscara de emissão",
+	"caustica.options.rt.debugView.9": "Fonte de emissão"
 }
