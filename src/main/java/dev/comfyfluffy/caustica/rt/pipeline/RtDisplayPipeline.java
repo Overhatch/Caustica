@@ -31,7 +31,7 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
 /** Maps the display-res scene-linear BT.2020 RT image to sRGB SDR and, when enabled, PQ/BT.2020 HDR. */
 public final class RtDisplayPipeline {
     private static final String SHADER_DIR = "/caustica/rt/";
-    /** Push constants: int hdrEnabled, float lutSize, float acesExposure, float contrast. */
+    /** Push constants: int hdrEnabled, float lutSize, float gamma, float HDR peak nits. */
     private static final int PUSH_BYTES = 4 * Integer.BYTES;
 
     private final RtContext ctx;
@@ -176,15 +176,15 @@ public final class RtDisplayPipeline {
      * {@code CausticaConfig.Rt.Hdr.PEAK_NITS_STEPS}), selected host-side by which LUT resource is bound.
      */
     public void dispatch(VkCommandBuffer cmd, int width, int height, boolean hdrEnabled, int lutSize,
-                          float acesExposure, float contrast) {
+                         float gamma, float hdrPeakNits) {
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "display compute")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSet), null);
             ByteBuffer push = stack.malloc(PUSH_BYTES);
             push.putInt(0, hdrEnabled ? 1 : 0);
             push.putFloat(4, (float) lutSize);
-            push.putFloat(8, acesExposure);
-            push.putFloat(12, contrast);
+            push.putFloat(8, gamma);
+            push.putFloat(12, hdrPeakNits);
             VK10.vkCmdPushConstants(cmd, pipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
         }

@@ -193,9 +193,8 @@ follow-up work.
 Modes 8 and 9 are now exposed in the video options:
 
 - **Exposure false colour (8):** BT.2020 luminance from post-RR `rrOutput`, multiplied by the
-  same-frame display exposure and ACES mid-grey bias, shown in discrete one-stop bands relative to
-  18% grey. Cool colors are below mid-grey, neutral grey is the zero-stop band, and warm colors are
-  above it.
+  same-frame display exposure, shown in discrete one-stop bands relative to 18% grey. Cool colors
+  are below mid-grey, neutral grey is the zero-stop band, and warm colors are above it.
 - **Metering weight (9):** greyscale display of the exact S2 Gaussian centre weight and the
   same-frame global sky scale read from `ExposureState`. It therefore changes with both the configured
   sigma/floor and the amount of sky in the current frame.
@@ -288,11 +287,12 @@ The tool maps those readings to the midpoint of each §2 target range, orders th
 reports effective slopes and any `minEv`/`maxEv` clamp hits, and prints a ready-to-paste
 `exposure.curve`. Target offsets can be overridden on its command line.
 
-Image contrast is intentionally downstream of this calibration. `tonemap.contrast` (default 1.0)
-is a luminance exponent around exposed scene-linear 18% grey, applied before both ACES LUTs.
-It does not feed back into metering, preserves chromaticity, and has the same meaning for SDR and
-HDR; a conventional post-LUT gamma control was avoided because operating on PQ code values would
-not be a physically or perceptually equivalent HDR adjustment.
+Artistic gamma is intentionally downstream of this calibration. `tonemap.gamma` (default 1.0) is
+applied to the display-transform output: values below 1 brighten shadows/midtones while leaving
+black and peak white fixed. It does not feed back into metering or alter the exposure false-colour
+diagnostic. Both paths decode to display-linear light, apply the power to luminance, uniformly scale
+RGB to preserve chromaticity, and re-encode to sRGB or PQ. The uniform scale stops at the display
+gamut boundary rather than clipping channels independently.
 
 **Emissive population follow-up (2026-07-28): implemented; play acceptance pending.** The diffuse
 albedo guide's otherwise-unused alpha lane now marks whether the visible guide endpoint emits.

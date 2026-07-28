@@ -19,8 +19,8 @@
 struct DisplayPush {
     int hdrEnabled;      // 0 = SDR only, 1 = also write the PQ HDR image
     float lutSize;       // toneLut/hdrToneLut texels per axis; both LUTs share one size (asserted at load)
-    float acesExposure;  // linear mid-grey placement bias -- see CausticaConfig.Rt.Tonemap.ACES_EXPOSURE_EV
-    float contrast;      // luminance exponent around scene-linear 18% grey; 1 = identity
+    float gamma;         // post-display artistic gamma; below 1 brightens midtones
+    float hdrPeakNits;   // mastering peak baked into the currently bound HDR ACES LUT
 };
 [[vk::push_constant]] DisplayPush pc;
 
@@ -44,23 +44,85 @@ float3 lutTexCoord(float3 uvw) {
     return uvw * ((pc.lutSize - 1.0) / pc.lutSize) + float3(0.5 / pc.lutSize);
 }
 
-// acesExposure is a mid-grey placement bias, tuned together with the exposure system's own key/curve
-// (see docs/EXPOSURE_PLAN.md S3) rather than a fixed constant -- it's what actually decides how bright
-// scene-linear 0.18 renders, since the LUT itself has no notion of exposure. Shared by SDR and HDR so
-// the two stay appearance-matched at one exposure, which is the whole point of a peak-luminance-
-// parameterized operator (see docs/DISPLAY_TRANSFORM_PLAN.md).
 float3 exposed(float3 scene2020, float exposure) {
-    float3 color = max(scene2020 * exposure * pc.acesExposure, float3(0.0));
-    // Apply contrast in scene-linear light before either output transform. A display-code gamma after
-    // the LUT would mean different things in sRGB and PQ; this shared luminance exponent instead keeps
-    // SDR/HDR appearance matching and preserves chromaticity.
-    float luminance = dot(color, float3(0.2627, 0.6780, 0.0593));
-    if (luminance <= 1.0e-8) {
-        return float3(0.0);
+    return max(scene2020 * exposure, float3(0.0));
+}
+
+// Artistic gamma after the view/display transform. Apply the curve to display luminance and scale
+// RGB uniformly instead of exponentiating each channel: this lifts shadows/midtones without pulling
+// chromaticities toward white. The uniform scale is limited at the display boundary so saturated
+// colors preserve their channel ratios instead of clipping individual channels.
+static const float3 BT709_LUMA = float3(0.2126, 0.7152, 0.0722);
+static const float3 BT2020_LUMA = float3(0.2627, 0.6780, 0.0593);
+
+float3 luminanceGamma(float3 linearDisplayColor, float3 lumaCoefficients) {
+    float3 color = clamp(linearDisplayColor, 0.0, 1.0);
+    float luminance = dot(color, lumaCoefficients);
+    if (luminance <= 0.0) {
+        return color;
     }
-    float adjustedLuminance = 0.18 * pow(max(luminance / 0.18, 1.0e-6),
-            clamp(pc.contrast, 0.25, 4.0));
-    return color * (adjustedLuminance / luminance);
+
+    float adjustedLuminance = pow(luminance, clamp(pc.gamma, 0.1, 5.0));
+    float scale = adjustedLuminance / luminance;
+    float maxChannel = max(color.r, max(color.g, color.b));
+    float gamutLimitedScale = 1.0 / max(maxChannel, 1.0e-8);
+    return color * min(scale, gamutLimitedScale);
+}
+
+float srgbDecodeChannel(float code) {
+    return code <= 0.04045 ? code / 12.92 : pow((code + 0.055) / 1.055, 2.4);
+}
+
+float srgbEncodeChannel(float linearValue) {
+    return linearValue <= 0.0031308
+            ? 12.92 * linearValue
+            : 1.055 * pow(linearValue, 1.0 / 2.4) - 0.055;
+}
+
+float3 srgbDecode(float3 code) {
+    return float3(srgbDecodeChannel(code.r), srgbDecodeChannel(code.g), srgbDecodeChannel(code.b));
+}
+
+float3 srgbEncode(float3 linearColor) {
+    return float3(
+            srgbEncodeChannel(linearColor.r),
+            srgbEncodeChannel(linearColor.g),
+            srgbEncodeChannel(linearColor.b));
+}
+
+float3 displayGammaSdr(float3 displayColor) {
+    float3 code = clamp(displayColor, 0.0, 1.0);
+    if (abs(pc.gamma - 1.0) < 1.0e-6) {
+        return code;
+    }
+    return clamp(srgbEncode(luminanceGamma(srgbDecode(code), BT709_LUMA)), 0.0, 1.0);
+}
+
+static const float PQ_M1 = 0.1593017578125;
+static const float PQ_M2 = 78.84375;
+static const float PQ_C1 = 0.8359375;
+static const float PQ_C2 = 18.8515625;
+static const float PQ_C3 = 18.6875;
+
+float3 pqDecode(float3 code) {
+    float3 p = pow(clamp(code, 0.0, 1.0), float3(1.0 / PQ_M2));
+    float3 y = max((p - PQ_C1) / max(PQ_C2 - PQ_C3 * p, float3(1.0e-6)), float3(0.0));
+    return pow(y, float3(1.0 / PQ_M1)) * 10000.0;
+}
+
+float3 pqEncode(float3 nits) {
+    float3 y = pow(max(nits, float3(0.0)) / 10000.0, float3(PQ_M1));
+    return pow((PQ_C1 + PQ_C2 * y) / (1.0 + PQ_C3 * y), float3(PQ_M2));
+}
+
+float3 displayGammaHdr(float3 pqColor) {
+    if (abs(pc.gamma - 1.0) < 1.0e-6) {
+        return clamp(pqColor, 0.0, 1.0);
+    }
+    float peak = max(pc.hdrPeakNits, 1.0);
+    float3 normalizedNits = clamp(pqDecode(pqColor) / peak, 0.0, 1.0);
+    float3 adjustedNits = peak * luminanceGamma(normalizedNits, BT2020_LUMA);
+    return clamp(pqEncode(adjustedNits), 0.0, 1.0);
 }
 
 // Exposure -> log2 shaper -> trilinear LUT fetch. The LUT already bakes in ACES 2.0's gamut mapping to
@@ -68,14 +130,14 @@ float3 exposed(float3 scene2020, float exposure) {
 // explicit level-0 SampleLevel is exact, not an approximation.
 float3 tonemap(float3 scene2020, float exposure) {
     float3 uvw = shaperEncode(exposed(scene2020, exposure));
-    return clamp(toneLut.SampleLevel(lutTexCoord(uvw), 0.0).rgb, 0.0, 1.0);
+    return displayGammaSdr(toneLut.SampleLevel(lutTexCoord(uvw), 0.0).rgb);
 }
 
 // Same shaper as tonemap() but sampling the HDR LUT, whose range is already PQ-encoded BT.2020 -- no
 // separate encode or paperWhite/headroom mapping needed.
 float3 tonemapHdr(float3 scene2020, float exposure) {
     float3 uvw = shaperEncode(exposed(scene2020, exposure));
-    return clamp(hdrToneLut.SampleLevel(lutTexCoord(uvw), 0.0).rgb, 0.0, 1.0);
+    return displayGammaHdr(hdrToneLut.SampleLevel(lutTexCoord(uvw), 0.0).rgb);
 }
 
 [shader("compute")]

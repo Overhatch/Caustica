@@ -233,9 +233,8 @@ public final class RtExposure {
                 + ", curve=" + CausticaConfig.Rt.Exposure.CURVE.get() + ")"
                 : Float.toString(manualExposureScale());
         CausticaMod.LOGGER.info("RT display exposure: mode={}, exposure={}, "
-                        + "tonemap=aces2.0(exposureEv={}, contrast={}), DLSS-RR exposure=NGX auto",
-                mode.configName, exposureText, CausticaConfig.Rt.Tonemap.ACES_EXPOSURE_EV.value(),
-                CausticaConfig.Rt.Tonemap.CONTRAST.value());
+                        + "tonemap=aces2.0(gamma={}), DLSS-RR exposure=NGX auto",
+                mode.configName, exposureText, CausticaConfig.Rt.Tonemap.GAMMA.value());
     }
 
     private static Mode mode() {

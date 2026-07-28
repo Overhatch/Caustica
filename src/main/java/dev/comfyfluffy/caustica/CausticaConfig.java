@@ -58,7 +58,7 @@ public final class CausticaConfig {
         Object[] touch = {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
-            Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.ACES_EXPOSURE_EV, Rt.FrameStats.ENABLED,
+            Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
             Rt.Hdr.ENABLED, Ngx.PATH,
         };
     }
@@ -106,9 +106,8 @@ public final class CausticaConfig {
                         + " only reasonably compact glows become lights. stats/dump/dump-radius are debug logging.");
         FILE.setComment("tonemap",
                 " SDR + HDR display-transform: a baked ACES 2.0 output-transform LUT (see\n"
-                        + " docs/DISPLAY_TRANSFORM_PLAN.md). aces-exposure-ev is a mid-grey placement bias,\n"
-                        + " applied before both LUT fetches; contrast is a scene-linear luminance exponent\n"
-                        + " around 18% grey. Tune them together with exposure (see docs/EXPOSURE_PLAN.md).");
+                        + " docs/DISPLAY_TRANSFORM_PLAN.md). gamma is a luminance-preserving artistic\n"
+                        + " correction applied after both LUTs (1 is neutral; below 1 brightens midtones).");
         FILE.setComment("exposure",
                 " Auto-exposure metering and shaping (see docs/EXPOSURE_PLAN.md). curve is either 'full'\n"
                         + " for legacy full adaptation or four measured-EV:compensation-EV control points,\n"
@@ -780,29 +779,10 @@ public final class CausticaConfig {
          * is gone, not just disabled — see {@code docs/DISPLAY_TRANSFORM_PLAN.md} plan step 4.
          */
         public static final class Tonemap {
-            /**
-             * Mid-grey placement bias, in EV, applied before both the SDR and HDR LUT fetches (shared,
-             * so the two stay appearance-matched at one exposure — the whole point of a peak-luminance-
-             * parameterized operator).
-             *
-             * <p>+1.014 EV is inherited from the value that aligned ACES 2.0 with the old AgX operator's
-             * mid-grey during the A/B that validated this switch (scene-linear 0.18 rendered at display
-             * code 0.497 through AgX vs. 0.349 through ACES 2.0's film-convention anchor) — it is a
-             * confirmed-good starting point, not a value with any remaining independent meaning now that
-             * AgX is gone. Retune this together with the exposure compensation curve
-             * (EXPOSURE_PLAN.md S3); the two are one tuning problem, not two.
-             */
-            public static final FloatSetting ACES_EXPOSURE_EV =
-                    finiteFloat("caustica.rt.tonemap.acesExposureEv", "tonemap.aces-exposure-ev", 1.014f);
-            public static final FloatSetting CONTRAST =
-                    clampedFloat("caustica.rt.tonemap.contrast", "tonemap.contrast", 1.0f, 0.25f, 4.0f);
+            public static final FloatSetting GAMMA =
+                    clampedFloat("caustica.rt.tonemap.gamma", "tonemap.gamma", 1.0f, 0.1f, 5.0f);
 
             private Tonemap() {
-            }
-
-            /** Linear multiplier applied to exposed scene values before both LUT fetches. */
-            public static float acesExposureScale() {
-                return (float) Math.pow(2.0, ACES_EXPOSURE_EV.value());
             }
         }
 

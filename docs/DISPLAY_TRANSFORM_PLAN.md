@@ -155,13 +155,13 @@ rather than the mild one seen in the Blender evaluation. It is not a LUT or shap
 +1.014 EV to the ACES path brings the two operators within ±0.06 code value across −6…+4 EV, leaving
 ACES **1.20× steeper at mid-grey**, which *is* the expected "mildly higher contrast".
 
-Handled by `tonemap.aces-exposure-ev` (default +1.014) so mode switching compares curve shape, not
-level. Two follow-ups this implies:
+The temporary +1.014 EV comparison bias was removed with the AgX mode. ACES now receives only the
+exposure system's output, so mid-grey placement is tuned in one place: the exposure compensation
+curve. Two follow-ups this implies:
 
 - **Which anchor is actually wanted is a creative decision, not a correctness one.** AgX's 0.497 is
-  on the bright/milky side; ACES's 0.349 is the film convention. Do not treat +1.014 as permanent —
-  it is a comparison aid. Fold this into the [EXPOSURE_PLAN.md](EXPOSURE_PLAN.md) §S3 retune, where
-  `key`, the compensation curve and this offset are all one tuning problem.
+  on the bright/milky side; ACES's 0.349 is the film convention. Tune the desired placement through
+  the [EXPOSURE_PLAN.md](EXPOSURE_PLAN.md) §S3 compensation curve.
 - The AgX baseline being compared against is **base AgX with no look** (`applyLook` is commented out
   at [display.comp](../shaders/display/display.comp)), i.e. the flattest AgX available — flatter than
   Blender's, which ships a base-contrast look. Some of the perceived gap is that, not the operators.
@@ -258,11 +258,11 @@ absolute luminance when that content must be embedded into an active PQ swapchai
    offline (Python + `PyOpenColorIO`, or `ociobakelut`). This is a one-time dev-environment cost,
    not a runtime dependency, but needs to be set up and the exact bake command recorded here once
    done, so the LUTs are reproducible.
-4. **Does a look/contrast layer belong on top of ACES 2.0**, the way AgX ships flat and looks are
-   applied separately in DCC tools? Start with ACES 2.0 base (no look) given it already tested
-   with acceptable contrast in Blender; revisit only if the in-engine result reads differently than
-   the DCC preview (likely, given MC's saturated, low-key torch/lava-lit palette vs. whatever the
-   Blender test scene was).
+4. **Creative display gamma.** A post-transform `tonemap.gamma` control is now available. It is
+   neutral at 1; lower values lift shadows/midtones without moving black or peak white. Both paths
+   decode to display-linear light, apply the power to luminance, and scale RGB uniformly to preserve
+   chromaticity. SDR then re-encodes sRGB; HDR re-encodes PQ. The uniform scale is gamut-limited
+   before individual channels clip, so highly saturated colors retain their channel ratios.
 
 ## 7. Recommended order
 
@@ -274,17 +274,13 @@ absolute luminance when that content must be embedded into an active PQ swapchai
    "working correctly" overall; cleared the way for step 4.
 3. **Done (2026-07-27).** HDR LUTs baked and wired: `tonemapMode` now switches SDR and HDR together,
    old per-channel rolloff + `pqEncode` still present but only reachable in legacy mode.
-   `acesExposure` (§5a) is shared identically by both LUT fetches — required, not optional, for
-   SDR/HDR to stay appearance-matched at one exposure, which is the entire reason this plan chose
-   ACES 2.0 over the old two-operator setup. §6.2 (peak-nits variants) resolved same day, see below.
+   Both LUT fetches consume the same exposed scene value so SDR/HDR stay appearance-matched at one
+   exposure. §6.2 (peak-nits variants) resolved same day, see below.
 4. **Done (2026-07-27).** Deleted the legacy operator entirely (AgX inset/sigmoid/outset,
    `gamutMapBt2020ToBt709`, the per-channel HDR rolloff, `pqEncode`, the dead `applyLook`) —
    ACES 2.0 is now the only SDR/HDR display transform, no mode switch. `CausticaConfig.Rt.Tonemap`
-   lost `MODE`/`acesLut()`; `ACES_EXPOSURE_EV` stays (renamed rationale from "vs. AgX" to "mid-grey
-   placement bias", same default 1.014 — a confirmed-good starting point carried forward, not
-   re-derived, since AgX is no longer around to compare against). `RtDisplayPipeline.dispatch`'s
-   push constants shrank to `(hdrEnabled, lutSize, acesExposure)` — `paperWhiteNits`/`headroom`
-   were only ever consumed by the deleted rolloff.
+   lost `MODE`/`acesLut()`. `RtDisplayPipeline.dispatch`'s push constants no longer carry
+   `paperWhiteNits`/`headroom`, which were only ever consumed by the deleted rolloff.
 
    **Also migrated `display.comp` → `display.comp.slang`** (Slang, matching `shaders/world/*`,
    rather than GLSL) while rewriting it — build.gradle already globs `**/*.comp.slang` and strips

@@ -41,10 +41,8 @@ struct ExposureState {
 
 struct Push {
     uint debugView;     // 1..9; this pass is only dispatched for debugView != 0
-    float acesExposure; // display seam's additional linear mid-grey placement bias
     float centerWeightSigma;
     float centerWeightFloor;
-    float contrast;
 };
 [[vk::push_constant]] Push pc;
 
@@ -112,10 +110,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float3 dbg;
     if (pc.debugView == 8u) {
         float luminance = dot(max(sceneImage[pix].rgb, float3(0.0)), BT2020_LUMA);
-        float exposedLuminance = luminance * max(exposureImage[int2(0, 0)], 0.0)
-                * max(pc.acesExposure, 0.0);
-        exposedLuminance = 0.18 * pow(max(exposedLuminance / 0.18, 1.0e-6),
-                clamp(pc.contrast, 0.25, 4.0));
+        float exposedLuminance = luminance * max(exposureImage[int2(0, 0)], 0.0);
         float evFromMidGrey = log2(max(exposedLuminance, 1.0e-6) / 0.18);
         dbg = exposureFalseColor(evFromMidGrey);
     } else if (pc.debugView == 9u) {
