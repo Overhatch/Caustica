@@ -49,6 +49,7 @@ public PathSegment tracePrimary(PathSegment seg,
             if (bounce == 0) {
                 gv_normal = float3(0.0, 0.0, 0.0);
                 gv_albedo = SKY_DIFF_ALBEDO;
+                gv_emissive = false;
                 gv_rough = 1.0;
                 gv_hitCamRel = rd * 1.0e6;
                 gv_motionUseRefracted = false;
@@ -75,6 +76,7 @@ public PathSegment tracePrimary(PathSegment seg,
                 gv_hitCamRel = hitPos - worldPush.camOffset;
                 gv_motionUseRefracted = false;
                 gv_motionObjDisp = payload.motionPrev;
+                gv_emissive = payloadEmission() > 0.0;
                 if (material == MATERIAL_PARTICLE) {
                     gv_albedo = payload.albedo;
                     gv_rough = 1.0;
@@ -135,6 +137,7 @@ public PathSegment tracePrimary(PathSegment seg,
             gv_normal = n;
             gv_rough = 0.0;
             gv_albedo = float3(0.0, 0.0, 0.0);
+            gv_emissive = false;
             gv_hitCamRel = hitPos - worldPush.camOffset;
             gv_motionUseRefracted = false;
             gv_motionObjDisp = isWater ? float3(0.0, 0.0, 0.0) : payload.motionPrev;

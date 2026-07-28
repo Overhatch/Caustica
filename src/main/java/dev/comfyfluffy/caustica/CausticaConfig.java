@@ -107,11 +107,13 @@ public final class CausticaConfig {
         FILE.setComment("tonemap",
                 " SDR + HDR display-transform: a baked ACES 2.0 output-transform LUT (see\n"
                         + " docs/DISPLAY_TRANSFORM_PLAN.md). aces-exposure-ev is a mid-grey placement bias,\n"
-                        + " applied before both LUT fetches; tune it together with exposure (see docs/EXPOSURE_PLAN.md).");
+                        + " applied before both LUT fetches; contrast is a scene-linear luminance exponent\n"
+                        + " around 18% grey. Tune them together with exposure (see docs/EXPOSURE_PLAN.md).");
         FILE.setComment("exposure",
                 " Auto-exposure metering and shaping (see docs/EXPOSURE_PLAN.md). curve is either 'full'\n"
                         + " for legacy full adaptation or four measured-EV:compensation-EV control points,\n"
-                        + " for example \"-6:-2.0, -3:-0.8, 0:0.0, 4:0.4\".");
+                        + " for example \"-6:-2.0, -3:-0.8, 0:0.0, 4:0.4\". sky-weight-cap and\n"
+                        + " emissive-weight-cap bound those populations' final metering shares.");
         FILE.setComment("hdr",
                 " HDR display output (ST.2084/PQ). When enabled the swapchain is created in PQ automatically\n"
                         + " (falls back to SDR if the surface doesn't advertise it). paper-white-nits / peak-nits\n"
@@ -733,6 +735,9 @@ public final class CausticaConfig {
             public static final FloatSetting SKY_WEIGHT_CAP =
                     clampedFloat("caustica.rt.exposure.skyWeightCap",
                             "exposure.sky-weight-cap", 0.25f, 0.0f, 1.0f);
+            public static final FloatSetting EMISSIVE_WEIGHT_CAP =
+                    clampedFloat("caustica.rt.exposure.emissiveWeightCap",
+                            "exposure.emissive-weight-cap", 0.10f, 0.0f, 1.0f);
 
             private Exposure() {
             }
@@ -789,6 +794,8 @@ public final class CausticaConfig {
              */
             public static final FloatSetting ACES_EXPOSURE_EV =
                     finiteFloat("caustica.rt.tonemap.acesExposureEv", "tonemap.aces-exposure-ev", 1.014f);
+            public static final FloatSetting CONTRAST =
+                    clampedFloat("caustica.rt.tonemap.contrast", "tonemap.contrast", 1.0f, 0.25f, 4.0f);
 
             private Tonemap() {
             }

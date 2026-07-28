@@ -47,6 +47,7 @@ final class RtExposurePipeline {
 
     private long boundColorView;
     private long boundDepthView;
+    private long boundAlbedoView;
     private long boundHistogramBufferForHist;
     private long boundHistogramBufferForResolve;
     private long boundExposureView;
@@ -76,19 +77,21 @@ final class RtExposurePipeline {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             LongBuffer p = stack.mallocLong(1);
 
-            VkDescriptorSetLayoutBinding.Buffer histBinds = VkDescriptorSetLayoutBinding.calloc(3, stack);
+            VkDescriptorSetLayoutBinding.Buffer histBinds = VkDescriptorSetLayoutBinding.calloc(4, stack);
             histBinds.get(0).binding(0).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             histBinds.get(1).binding(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             histBinds.get(2).binding(2).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
+            histBinds.get(3).binding(3).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                    .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             VkDescriptorSetLayoutCreateInfo histDslci = VkDescriptorSetLayoutCreateInfo.calloc(stack)
                     .sType$Default().pBindings(histBinds);
             check(VK10.vkCreateDescriptorSetLayout(vk, histDslci, null, p), "vkCreateDescriptorSetLayout(rt exposure hist)");
             long histDsl = p.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, histDsl, "exposure histogram descriptor set layout");
-            long histPool = createPool(vk, stack, 2, 1, "hist");
+            long histPool = createPool(vk, stack, 3, 1, "hist");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_POOL, histPool, "exposure histogram descriptor pool");
             long histSet = allocateSet(vk, stack, histPool, histDsl, "hist");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET, histSet, "exposure histogram descriptor set");
@@ -116,7 +119,7 @@ final class RtExposurePipeline {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_POOL, resolvePool, "exposure resolve descriptor pool");
             long resolveSet = allocateSet(vk, stack, resolvePool, resolveDsl, "resolve");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET, resolveSet, "exposure resolve descriptor set");
-            long resolveLayout = createPipelineLayout(vk, stack, resolveDsl, 72, "resolve");
+            long resolveLayout = createPipelineLayout(vk, stack, resolveDsl, 76, "resolve");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE_LAYOUT, resolveLayout, "exposure resolve pipeline layout");
             long resolveModule = loadModule(vk, stack, "exposure_resolve.comp.spv");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SHADER_MODULE, resolveModule, "exposure resolve shader module");
@@ -129,8 +132,9 @@ final class RtExposurePipeline {
         }
     }
 
-    void setResources(long colorView, long depthView, RtBuffer histogram, long exposureView, RtBuffer state) {
-        if (boundColorView != colorView || boundDepthView != depthView
+    void setResources(long colorView, long depthView, long albedoView,
+                      RtBuffer histogram, long exposureView, RtBuffer state) {
+        if (boundColorView != colorView || boundDepthView != depthView || boundAlbedoView != albedoView
                 || boundHistogramBufferForHist != histogram.handle) {
             try (MemoryStack stack = MemoryStack.stackPush()) {
                 VkDescriptorImageInfo.Buffer colorInfo = VkDescriptorImageInfo.calloc(1, stack);
@@ -139,17 +143,22 @@ final class RtExposurePipeline {
                 histInfo.get(0).buffer(histogram.handle).offset(0).range(histogram.size);
                 VkDescriptorImageInfo.Buffer depthInfo = VkDescriptorImageInfo.calloc(1, stack);
                 depthInfo.get(0).imageView(depthView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-                VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(3, stack);
+                VkDescriptorImageInfo.Buffer albedoInfo = VkDescriptorImageInfo.calloc(1, stack);
+                albedoInfo.get(0).imageView(albedoView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+                VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(4, stack);
                 writes.get(0).sType$Default().dstSet(histDescriptorSet).dstBinding(0)
                         .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(colorInfo);
                 writes.get(1).sType$Default().dstSet(histDescriptorSet).dstBinding(1)
                         .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).pBufferInfo(histInfo);
                 writes.get(2).sType$Default().dstSet(histDescriptorSet).dstBinding(2)
                         .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(depthInfo);
+                writes.get(3).sType$Default().dstSet(histDescriptorSet).dstBinding(3)
+                        .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo(albedoInfo);
                 VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
             }
             boundColorView = colorView;
             boundDepthView = depthView;
+            boundAlbedoView = albedoView;
             boundHistogramBufferForHist = histogram.handle;
         }
         if (boundHistogramBufferForResolve != histogram.handle || boundExposureView != exposureView
@@ -199,7 +208,7 @@ final class RtExposurePipeline {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, resolvePipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, resolvePipelineLayout, 0,
                     stack.longs(resolveDescriptorSet), null);
-            ByteBuffer push = stack.malloc(72);
+            ByteBuffer push = stack.malloc(76);
             push.putFloat(0, config.key());
             push.putFloat(4, config.minEv());
             push.putFloat(8, config.maxEv());
@@ -219,6 +228,7 @@ final class RtExposurePipeline {
             push.putFloat(60, curve.compensation2());
             push.putFloat(64, curve.scene3());
             push.putFloat(68, curve.compensation3());
+            push.putFloat(72, config.emissiveWeightCap());
             VK10.vkCmdPushConstants(cmd, resolvePipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, 1, 1, 1);
         }

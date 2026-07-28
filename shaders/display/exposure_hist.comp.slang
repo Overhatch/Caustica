@@ -2,10 +2,11 @@
 // not pre-RR, so the average isn't Jensen-biased by Monte-Carlo noise). See docs/EXPOSURE_PLAN.md.
 
 [[vk::binding(0, 0)]] [format("rgba16f")] RWTexture2D<float4> colorImage;
-// 0..255 = surface, 256..511 = sky. Keeping the populations separate lets resolve apply a
-// frame-global sky cap without a second full-image pass.
+// 0..255 = ordinary surface, 256..511 = sky, 512..767 = emissive surface. Keeping the
+// populations separate lets resolve apply frame-global caps without a second full-image pass.
 [[vk::binding(1, 0)]] RWStructuredBuffer<uint, Std430DataLayout> histBins;
 [[vk::binding(2, 0)]] [format("r32f")] RWTexture2D<float> depthImage; // render-res reversed-Z guide
+[[vk::binding(3, 0)]] [format("rgba16f")] RWTexture2D<float4> albedoImage; // a = emissive marker
 
 struct Push {
     uint stride;
@@ -20,15 +21,16 @@ static const float INV_LOG_RANGE = 1.0 / (LOG_MAX - LOG_MIN);
 static const float3 BT2020_LUMA = float3(0.2627, 0.6780, 0.0593);
 
 // One 16x16 workgroup == 256 threads == one thread per luminance bin. Each thread initializes and
-// flushes both its surface and sky bin. Per-pixel atomics stay in shared memory; only non-empty bins
+// flushes all three population bins. Per-pixel atomics stay in shared memory; only non-empty bins
 // pay global atomics.
-groupshared uint localBins[512];
+groupshared uint localBins[768];
 
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void main(uint3 dispatchId : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex) {
     localBins[groupIndex] = 0u;
     localBins[256u + groupIndex] = 0u;
+    localBins[512u + groupIndex] = 0u;
     GroupMemoryBarrierWithGroupSync();
 
     int2 pix = int2(dispatchId.xy * pc.stride);
@@ -54,9 +56,11 @@ void main(uint3 dispatchId : SV_DispatchThreadID, uint groupIndex : SV_GroupInde
 
             uint depthW, depthH;
             depthImage.GetDimensions(depthW, depthH);
-            int2 depthPix = min(int2(uv * float2(depthW, depthH)), int2(depthW, depthH) - 1);
-            bool sky = depthImage[depthPix] <= 1.0e-6;
-            uint weightedBin = bin + (sky ? 256u : 0u);
+            int2 guidePix = min(int2(uv * float2(depthW, depthH)), int2(depthW, depthH) - 1);
+            bool sky = depthImage[guidePix] <= 1.0e-6;
+            bool emissive = !sky && albedoImage[guidePix].a > 0.5;
+            uint populationOffset = sky ? 256u : (emissive ? 512u : 0u);
+            uint weightedBin = bin + populationOffset;
             if (fixedWeight > 0u) {
                 uint unused;
                 InterlockedAdd(localBins[weightedBin], fixedWeight, unused);
@@ -74,5 +78,10 @@ void main(uint3 dispatchId : SV_DispatchThreadID, uint groupIndex : SV_GroupInde
     if (skyCount > 0u) {
         uint unusedSky;
         InterlockedAdd(histBins[256u + groupIndex], skyCount, unusedSky);
+    }
+    uint emissiveCount = localBins[512u + groupIndex];
+    if (emissiveCount > 0u) {
+        uint unusedEmissive;
+        InterlockedAdd(histBins[512u + groupIndex], emissiveCount, unusedEmissive);
     }
 }

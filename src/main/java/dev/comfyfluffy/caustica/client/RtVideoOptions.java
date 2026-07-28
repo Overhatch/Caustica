@@ -41,6 +41,7 @@ public final class RtVideoOptions {
         List<OptionInstance<?>> options = new ArrayList<>(List.of(
             exposureMode(),
             manualEv(),
+            contrast(),
             spp(),
             maxBounces(),
             sunSize(),
@@ -85,6 +86,18 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(-50, 50),
             Math.clamp(Math.round(setting.value() * 10.0f), -50, 50),
             tenths -> setting.set(tenths / 10.0f));
+    }
+
+    private static OptionInstance<Integer> contrast() {
+        FloatSetting setting = CausticaConfig.Rt.Tonemap.CONTRAST;
+        return new OptionInstance<>(
+            "caustica.options.rt.contrast",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.contrast.tooltip")),
+            (caption, hundredths) -> Options.genericValueLabel(caption,
+                    Component.literal(String.format(Locale.ROOT, "%.2f", hundredths / 100.0f))),
+            new OptionInstance.IntRange(50, 150),
+            Math.clamp(Math.round(setting.value() * 100.0f), 50, 150),
+            hundredths -> setting.set(hundredths / 100.0f));
     }
 
     private static OptionInstance<Integer> spp() {

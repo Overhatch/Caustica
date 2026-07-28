@@ -34,6 +34,8 @@ struct ExposureState {
     float meteringSkyFrac;
     float curveCompensation;
     float effectiveSlope;
+    float meteringEmissiveScale;
+    float meteringEmissiveFrac;
 };
 [[vk::binding(9, 0)]] StructuredBuffer<ExposureState, Std430DataLayout> exposureState;
 
@@ -42,6 +44,7 @@ struct Push {
     float acesExposure; // display seam's additional linear mid-grey placement bias
     float centerWeightSigma;
     float centerWeightFloor;
+    float contrast;
 };
 [[vk::push_constant]] Push pc;
 
@@ -77,15 +80,16 @@ float3 exposureFalseColor(float ev) {
     return float3(1.00, 1.00, 1.00);
 }
 
-// Exactly the S2 weight used by the histogram: local Gaussian centre weighting multiplied by the
-// same frame-global sky scale computed by resolve from separate surface/sky histograms.
-float meteringWeight(float2 uv, float depth) {
+// Exactly the metering weight used by the histogram: local Gaussian centre weighting multiplied by
+// the same frame-global sky/emissive scale computed by resolve from separate populations.
+float meteringWeight(float2 uv, float depth, bool emissive) {
     float2 centered = uv * 2.0 - 1.0;
     float sigma = max(pc.centerWeightSigma, 0.01);
     float gaussian = exp(-0.5 * dot(centered, centered) / (sigma * sigma));
     float centerWeight = lerp(clamp(pc.centerWeightFloor, 0.0, 1.0), 1.0, gaussian);
-    float skyWeight = depth <= 1.0e-6 ? exposureState[0].meteringSkyScale : 1.0;
-    return centerWeight * skyWeight;
+    float populationWeight = depth <= 1.0e-6 ? exposureState[0].meteringSkyScale
+            : (emissive ? exposureState[0].meteringEmissiveScale : 1.0);
+    return centerWeight * populationWeight;
 }
 
 [shader("compute")]
@@ -110,10 +114,12 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         float luminance = dot(max(sceneImage[pix].rgb, float3(0.0)), BT2020_LUMA);
         float exposedLuminance = luminance * max(exposureImage[int2(0, 0)], 0.0)
                 * max(pc.acesExposure, 0.0);
+        exposedLuminance = 0.18 * pow(max(exposedLuminance / 0.18, 1.0e-6),
+                clamp(pc.contrast, 0.25, 4.0));
         float evFromMidGrey = log2(max(exposedLuminance, 1.0e-6) / 0.18);
         dbg = exposureFalseColor(evFromMidGrey);
     } else if (pc.debugView == 9u) {
-        float weight = meteringWeight(uv, gDepth[guidePix]);
+        float weight = meteringWeight(uv, gDepth[guidePix], gAlbedo[guidePix].a > 0.5);
         dbg = float3(weight, weight, weight);
     } else if (pc.debugView == 1u) {
         dbg = bt709ToBt2020(normalRough.xyz * 0.5 + 0.5);

@@ -42,7 +42,7 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
  */
 public final class RtDebugPresentPipeline {
     private static final String SHADER_DIR = "/caustica/rt/";
-    private static final int PUSH_BYTES = Integer.BYTES + 3 * Float.BYTES;
+    private static final int PUSH_BYTES = Integer.BYTES + 4 * Float.BYTES;
 
     private final RtContext ctx;
     private final long descriptorSetLayout;
@@ -168,7 +168,7 @@ public final class RtDebugPresentPipeline {
     }
 
     public void dispatch(VkCommandBuffer cmd, int width, int height, int debugView, float acesExposure,
-                         float centerWeightSigma, float centerWeightFloor) {
+                         float centerWeightSigma, float centerWeightFloor, float contrast) {
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "debug present compute")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSet), null);
@@ -177,6 +177,7 @@ public final class RtDebugPresentPipeline {
             push.putFloat(Integer.BYTES, acesExposure);
             push.putFloat(Integer.BYTES + Float.BYTES, centerWeightSigma);
             push.putFloat(Integer.BYTES + 2 * Float.BYTES, centerWeightFloor);
+            push.putFloat(Integer.BYTES + 3 * Float.BYTES, contrast);
             VK10.vkCmdPushConstants(cmd, pipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
         }

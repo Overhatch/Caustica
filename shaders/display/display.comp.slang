@@ -20,6 +20,7 @@ struct DisplayPush {
     int hdrEnabled;      // 0 = SDR only, 1 = also write the PQ HDR image
     float lutSize;       // toneLut/hdrToneLut texels per axis; both LUTs share one size (asserted at load)
     float acesExposure;  // linear mid-grey placement bias -- see CausticaConfig.Rt.Tonemap.ACES_EXPOSURE_EV
+    float contrast;      // luminance exponent around scene-linear 18% grey; 1 = identity
 };
 [[vk::push_constant]] DisplayPush pc;
 
@@ -49,7 +50,17 @@ float3 lutTexCoord(float3 uvw) {
 // the two stay appearance-matched at one exposure, which is the whole point of a peak-luminance-
 // parameterized operator (see docs/DISPLAY_TRANSFORM_PLAN.md).
 float3 exposed(float3 scene2020, float exposure) {
-    return max(scene2020 * exposure * pc.acesExposure, float3(0.0));
+    float3 color = max(scene2020 * exposure * pc.acesExposure, float3(0.0));
+    // Apply contrast in scene-linear light before either output transform. A display-code gamma after
+    // the LUT would mean different things in sRGB and PQ; this shared luminance exponent instead keeps
+    // SDR/HDR appearance matching and preserves chromaticity.
+    float luminance = dot(color, float3(0.2627, 0.6780, 0.0593));
+    if (luminance <= 1.0e-8) {
+        return float3(0.0);
+    }
+    float adjustedLuminance = 0.18 * pow(max(luminance / 0.18, 1.0e-6),
+            clamp(pc.contrast, 0.25, 4.0));
+    return color * (adjustedLuminance / luminance);
 }
 
 // Exposure -> log2 shaper -> trilinear LUT fetch. The LUT already bakes in ACES 2.0's gamut mapping to

@@ -29,9 +29,9 @@ public final class RtExposure {
     private ExposureCurve cachedCurve;
 
     // ExposureState byte layout (std430, see exposure_resolve.comp.slang) -- must match field-for-
-    // field. S2 appends sky-weight diagnostics after S4's already-reserved history fields so their
+    // field. Population/curve diagnostics append after S4's already-reserved history fields so their
     // existing offsets remain stable.
-    private static final int STATE_BYTES = 80;
+    private static final int STATE_BYTES = 88;
     private static final long OFF_PREVIOUS = 0L;
     private static final long OFF_INITIALIZED = 4L;
     private static final long OFF_EV_SCENE = 8L;
@@ -43,6 +43,8 @@ public final class RtExposure {
     private static final long OFF_METERING_SKY_FRAC = 68L;
     private static final long OFF_CURVE_COMPENSATION = 72L;
     private static final long OFF_EFFECTIVE_SLOPE = 76L;
+    private static final long OFF_METERING_EMISSIVE_SCALE = 80L;
+    private static final long OFF_METERING_EMISSIVE_FRAC = 84L;
     private static final long DIAG_LOG_INTERVAL_NANOS = 1_000_000_000L;
 
     public RtImage image() {
@@ -69,9 +71,9 @@ public final class RtExposure {
         }
         if (mode() == Mode.AUTO) {
             if (histogram == null) {
-                // Separate 256-bin surface/sky histograms let resolve enforce the sky cap exactly
-                // without a second full-image dispatch.
-                histogram = ctx.createBuffer(512L * Integer.BYTES,
+                // Separate ordinary-surface/sky/emissive histograms let resolve enforce both
+                // population caps exactly without a second full-image dispatch.
+                histogram = ctx.createBuffer(768L * Integer.BYTES,
                         VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK10.VK_BUFFER_USAGE_TRANSFER_DST_BIT, false,
                         "exposure histogram");
             }
@@ -82,12 +84,13 @@ public final class RtExposure {
         logOnce();
     }
 
-    public void record(RtContext ctx, VkCommandBuffer cmd, MemoryStack stack, RtImage traceColor, RtImage guideDepth) {
+    public void record(RtContext ctx, VkCommandBuffer cmd, MemoryStack stack,
+                       RtImage traceColor, RtImage guideDepth, RtImage guideAlbedo) {
         if (image == null) {
             throw new IllegalStateException("RT exposure image not created");
         }
         if (mode() == Mode.AUTO) {
-            recordAuto(ctx, cmd, stack, traceColor, guideDepth);
+            recordAuto(ctx, cmd, stack, traceColor, guideDepth, guideAlbedo);
             return;
         }
         try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure manual write")) {
@@ -126,11 +129,12 @@ public final class RtExposure {
     }
 
     private void recordAuto(RtContext ctx, VkCommandBuffer cmd, MemoryStack stack,
-                            RtImage traceColor, RtImage guideDepth) {
+                            RtImage traceColor, RtImage guideDepth, RtImage guideAlbedo) {
         if (pipeline == null || histogram == null || state == null) {
             throw new IllegalStateException("RT auto exposure resources not created");
         }
-        pipeline.setResources(traceColor.view, guideDepth.view, histogram, image.view, state);
+        pipeline.setResources(traceColor.view, guideDepth.view, guideAlbedo.view,
+                histogram, image.view, state);
         try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure histogram clear")) {
             VK10.vkCmdFillBuffer(cmd, histogram.handle, 0, histogram.size, 0);
         }
@@ -167,15 +171,19 @@ public final class RtExposure {
         float skyFrac = MemoryUtil.memGetFloat(state.mapped + OFF_METERING_SKY_FRAC);
         float curveCompensation = MemoryUtil.memGetFloat(state.mapped + OFF_CURVE_COMPENSATION);
         float effectiveSlope = MemoryUtil.memGetFloat(state.mapped + OFF_EFFECTIVE_SLOPE);
+        float emissiveScale = MemoryUtil.memGetFloat(state.mapped + OFF_METERING_EMISSIVE_SCALE);
+        float emissiveFrac = MemoryUtil.memGetFloat(state.mapped + OFF_METERING_EMISSIVE_FRAC);
         AutoConfig cfg = autoConfig();
         boolean pinnedLow = evTarget <= cfg.minEv() + 0.01f;
         boolean pinnedHigh = evTarget >= cfg.maxEv() - 0.01f;
         CausticaMod.LOGGER.info(
                 "RT exposure diag: evScene={} evTarget={}{} evApplied={} clipLow={}% clipHigh={}% "
-                        + "skyScale={} skyWeight={}% curveComp={} effectiveSlope={}",
+                        + "skyScale={} skyWeight={}% emissiveScale={} emissiveWeight={}% "
+                        + "curveComp={} effectiveSlope={}",
                 fmt(evScene), fmt(evTarget), pinnedLow ? " (at minEv clamp)" : pinnedHigh ? " (at maxEv clamp)" : "",
                 fmt(evApplied), fmt(clipLowFrac * 100.0f), fmt(clipHighFrac * 100.0f),
-                fmt(skyScale), fmt(skyFrac * 100.0f), fmt(curveCompensation), fmt(effectiveSlope));
+                fmt(skyScale), fmt(skyFrac * 100.0f), fmt(emissiveScale),
+                fmt(emissiveFrac * 100.0f), fmt(curveCompensation), fmt(effectiveSlope));
     }
 
     private static String fmt(float v) {
@@ -201,6 +209,7 @@ public final class RtExposure {
         MemoryUtil.memPutFloat(state.mapped + OFF_PREVIOUS, manualExposureScale());
         MemoryUtil.memPutInt(state.mapped + OFF_INITIALIZED, 0);
         MemoryUtil.memPutFloat(state.mapped + OFF_METERING_SKY_SCALE, 1.0f);
+        MemoryUtil.memPutFloat(state.mapped + OFF_METERING_EMISSIVE_SCALE, 1.0f);
         state.flush(0L, STATE_BYTES);
         lastFrameNanos = 0L;
         lastDiagLogNanos = 0L;
@@ -220,11 +229,13 @@ public final class RtExposure {
                 + ".." + autoConfig.highPercentile + ", stride=" + autoConfig.stride
                 + ", centerWeight=" + autoConfig.centerWeightSigma + "/" + autoConfig.centerWeightFloor
                 + ", skyCap=" + autoConfig.skyWeightCap
+                + ", emissiveCap=" + autoConfig.emissiveWeightCap
                 + ", curve=" + CausticaConfig.Rt.Exposure.CURVE.get() + ")"
                 : Float.toString(manualExposureScale());
-        CausticaMod.LOGGER.info("RT display exposure: mode={}, exposure={}, tonemap=aces2.0(exposureEv={}), "
-                        + "DLSS-RR exposure=NGX auto",
-                mode.configName, exposureText, CausticaConfig.Rt.Tonemap.ACES_EXPOSURE_EV.value());
+        CausticaMod.LOGGER.info("RT display exposure: mode={}, exposure={}, "
+                        + "tonemap=aces2.0(exposureEv={}, contrast={}), DLSS-RR exposure=NGX auto",
+                mode.configName, exposureText, CausticaConfig.Rt.Tonemap.ACES_EXPOSURE_EV.value(),
+                CausticaConfig.Rt.Tonemap.CONTRAST.value());
     }
 
     private static Mode mode() {
@@ -249,12 +260,14 @@ public final class RtExposure {
                 CausticaConfig.Rt.Exposure.CENTER_WEIGHT_SIGMA.value(),
                 CausticaConfig.Rt.Exposure.CENTER_WEIGHT_FLOOR.value(),
                 CausticaConfig.Rt.Exposure.SKY_WEIGHT_CAP.value(),
+                CausticaConfig.Rt.Exposure.EMISSIVE_WEIGHT_CAP.value(),
                 curveConfig());
     }
 
     record AutoConfig(float key, float minEv, float maxEv, float adaptUp, float adaptDown, float evBias,
                       float lowPercentile, float highPercentile, int stride,
                       float centerWeightSigma, float centerWeightFloor, float skyWeightCap,
+                      float emissiveWeightCap,
                       ExposureCurve curve) {
     }
 

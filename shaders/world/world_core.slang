@@ -12,7 +12,7 @@ import world_common;
 // every frame regardless of accumulation. gNormal.w carries LINEAR roughness (= GGX alpha, which is what
 // DLSS-RR documents for this input); gDepth carries HW reversed-Z depth.
 [[vk::binding(3, 0)]] [format("rgba16f")] public RWTexture2D<float4> gNormal;     // xyz world normal, w linear roughness
-[[vk::binding(4, 0)]] [format("rgba16f")] public RWTexture2D<float4> gAlbedo;     // rgb BT.2020 diffuse albedo
+[[vk::binding(4, 0)]] [format("rgba16f")] public RWTexture2D<float4> gAlbedo;     // rgb BT.2020 diffuse albedo; a emissive marker
 [[vk::binding(5, 0)]] [format("r32f")]    public RWTexture2D<float>  gDepth;      // HW reversed-Z depth
 [[vk::binding(6, 0)]] [format("rg16f")]   public RWTexture2D<float2> gMotion;     // screen-space motion (render px)
 [[vk::binding(7, 0)]] [format("rgba16f")] public RWTexture2D<float4> gSpecAlbedo; // BT.2020 exact-mirror reflected diffuse × reflectance; material reflectance otherwise

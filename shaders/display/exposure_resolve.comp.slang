@@ -6,7 +6,7 @@
 // resetSeq/evHistory are reserved for S4 (hard reset, median-of-N flash rejection) and are neither
 // read nor written here yet.
 
-[[vk::binding(0, 0)]] StructuredBuffer<uint, Std430DataLayout> histBins; // 256 surface + 256 sky bins
+[[vk::binding(0, 0)]] StructuredBuffer<uint, Std430DataLayout> histBins; // 256 ordinary + sky + emissive bins
 [[vk::binding(1, 0)]] [format("r32f")] RWTexture2D<float> exposureImage;
 
 struct ExposureState {
@@ -23,6 +23,8 @@ struct ExposureState {
     float meteringSkyFrac;  // S2: final weighted sky fraction after the cap
     float curveCompensation; // S3: compensation EV evaluated at evScene
     float effectiveSlope;    // S3: 1 - d(compensation)/d(evScene)
+    float meteringEmissiveScale; // frame-global multiplier applied to emissive surfaces
+    float meteringEmissiveFrac;  // final weighted emissive fraction after the cap
 };
 [[vk::binding(2, 0)]] RWStructuredBuffer<ExposureState, Std430DataLayout> stateBuf;
 
@@ -45,6 +47,7 @@ struct Push {
     float curveCompensation2;
     float curveScene3;
     float curveCompensation3;
+    float emissiveWeightCap;
 };
 [[vk::push_constant]] Push pc;
 
@@ -98,18 +101,44 @@ float curveEffectiveSlope(float sceneEv) {
 void main() {
     float surfacePopulation = 0.0;
     float skyPopulation = 0.0;
+    float emissivePopulation = 0.0;
     for (uint i = 0u; i < 256u; ++i) {
         surfacePopulation += float(histBins[i]);
         skyPopulation += float(histBins[256u + i]);
+        emissivePopulation += float(histBins[512u + i]);
     }
     float skyCap = clamp(pc.skyWeightCap, 0.0, 1.0);
+    float emissiveCap = clamp(pc.emissiveWeightCap, 0.0, 1.0);
     float skyScale = 1.0;
-    if (surfacePopulation > 0.0 && skyPopulation > 0.0 && skyCap < 1.0) {
-        skyScale = skyCap <= 0.0 ? 0.0
-                : min(1.0, (skyCap * surfacePopulation)
-                        / max((1.0 - skyCap) * skyPopulation, 1.0e-6));
+    float emissiveScale = 1.0;
+    // Preserve the previous behavior for views containing no ordinary surface: with no neutral
+    // population to meter against, suppressing a sky-only or lava-only frame would leave no signal.
+    // Otherwise solve the two final-share constraints exactly. If both raw populations exceed their
+    // caps, both constraints are active and ordinary surfaces occupy the remaining share.
+    if (surfacePopulation > 0.0) {
+        float rawTotal = surfacePopulation + skyPopulation + emissivePopulation;
+        bool capSky = skyPopulation > skyCap * rawTotal;
+        bool capEmissive = emissivePopulation > emissiveCap * rawTotal;
+        float weightedSky = skyPopulation;
+        float weightedEmissive = emissivePopulation;
+        if (capSky && capEmissive) {
+            float ordinaryShare = max(1.0 - skyCap - emissiveCap, 1.0e-6);
+            float cappedTotal = surfacePopulation / ordinaryShare;
+            weightedSky = skyCap * cappedTotal;
+            weightedEmissive = emissiveCap * cappedTotal;
+        } else if (capSky) {
+            weightedSky = skyCap <= 0.0 ? 0.0
+                    : skyCap * (surfacePopulation + emissivePopulation) / max(1.0 - skyCap, 1.0e-6);
+        } else if (capEmissive) {
+            weightedEmissive = emissiveCap <= 0.0 ? 0.0
+                    : emissiveCap * (surfacePopulation + skyPopulation) / max(1.0 - emissiveCap, 1.0e-6);
+        }
+        skyScale = skyPopulation > 0.0 ? min(1.0, weightedSky / skyPopulation) : 1.0;
+        emissiveScale = emissivePopulation > 0.0
+                ? min(1.0, weightedEmissive / emissivePopulation) : 1.0;
     }
-    float population = surfacePopulation + skyPopulation * skyScale;
+    float population = surfacePopulation + skyPopulation * skyScale
+            + emissivePopulation * emissiveScale;
     float total = max(population, 1.0);
     float lowPercentile = clamp(min(pc.lowPercentile, pc.highPercentile), 0.0, 1.0);
     float highPercentile = clamp(max(pc.lowPercentile, pc.highPercentile), 0.0, 1.0);
@@ -120,7 +149,8 @@ void main() {
     float weightedLogLum = 0.0;
     float weightedCount = 0.0;
     for (uint i = 0u; i < 256u; ++i) {
-        float count = float(histBins[i]) + float(histBins[256u + i]) * skyScale;
+        float count = float(histBins[i]) + float(histBins[256u + i]) * skyScale
+                + float(histBins[512u + i]) * emissiveScale;
         float start = cumulative;
         float end = cumulative + count;
         float takeStart = max(start, lowCount);
@@ -150,11 +180,15 @@ void main() {
     stateBuf[0].evScene = avgLogLum;
     stateBuf[0].evTarget = log2(max(target, 1.0e-6));
     stateBuf[0].evApplied = log2(max(exposure, 1.0e-6));
-    stateBuf[0].clipLowFrac = (float(histBins[0]) + float(histBins[256]) * skyScale) / total;
-    stateBuf[0].clipHighFrac = (float(histBins[255]) + float(histBins[511]) * skyScale) / total;
+    stateBuf[0].clipLowFrac = (float(histBins[0]) + float(histBins[256]) * skyScale
+            + float(histBins[512]) * emissiveScale) / total;
+    stateBuf[0].clipHighFrac = (float(histBins[255]) + float(histBins[511]) * skyScale
+            + float(histBins[767]) * emissiveScale) / total;
     stateBuf[0].meteringSkyScale = skyScale;
     stateBuf[0].meteringSkyFrac = skyPopulation * skyScale / total;
     stateBuf[0].curveCompensation = compensation;
     stateBuf[0].effectiveSlope = effectiveSlope;
+    stateBuf[0].meteringEmissiveScale = emissiveScale;
+    stateBuf[0].meteringEmissiveFrac = emissivePopulation * emissiveScale / total;
     exposureImage[int2(0, 0)] = exposure;
 }

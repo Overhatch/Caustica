@@ -14,6 +14,10 @@ import trace;
 
 public static float3 gv_normal = float3(0.0, 0.0, 0.0);
 public static float3 gv_albedo = float3(0.0, 0.0, 0.0);
+// The diffuse-albedo guide's alpha lane is not consumed by DLSS-RR. Preserve whether the visible
+// guide endpoint emits so downstream exposure metering can cap large lava/glowstone populations
+// without another material-ID image.
+public static bool gv_emissive = false;
 public static float gv_rough = 0.0;
 public static float3 gv_hitCamRel = float3(0.0, 0.0, 0.0);       // primary-surface hit position relative to the current camera
 public static bool gv_motionUseRefracted = false; // true when the MV tracks the refracted hit (its own reprojection delta)
@@ -140,13 +144,14 @@ public float2 resolveSpecularGuides(SpecSurface surface, float3 primaryDir,
 }
 
 public void setTransmissionGuide(float3 hitCamRel, float3 motionPrev, float3 normal,
-                          float roughness, float3 diffuseAlbedo) {
+                          float roughness, float3 diffuseAlbedo, bool emissive) {
     gv_hitCamRel = hitCamRel;
     gv_motionObjDisp = motionPrev;
     gv_motionUseRefracted = true;
     gv_normal = normal;
     gv_rough = roughness;
     gv_albedo = diffuseAlbedo;
+    gv_emissive = emissive;
 }
 
 // Deterministic ordinary guide behind the first transmitted interface. This is guide-only work:
@@ -167,7 +172,7 @@ public void resolveTransmissionGuide(float3 surfacePos, float3 transmittedDir,
         if (payload.hitT <= 0.0) {
             setTransmissionGuide((ro + direction * 1.0e6) - worldPush.camOffset,
                     float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 0.0), 1.0,
-                    guideFilter * SKY_DIFF_ALBEDO);
+                    guideFilter * SKY_DIFF_ALBEDO, false);
             return;
         }
 
@@ -180,7 +185,8 @@ public void resolveTransmissionGuide(float3 surfacePos, float3 transmittedDir,
                     ? payload.albedo
                     : payload.albedo * (1.0 - clamp(payloadMetalness(), 0.0, 1.0));
             setTransmissionGuide(interfacePos - worldPush.camOffset, payload.motionPrev,
-                    payload.normal, endpointRoughness, guideFilter * endpointAlbedo);
+                    payload.normal, endpointRoughness, guideFilter * endpointAlbedo,
+                    payloadEmission() > 0.0);
             return;
         }
         if (material != MATERIAL_WATER && material != MATERIAL_DIELECTRIC) return;
@@ -206,7 +212,7 @@ public void resolveTransmissionGuide(float3 surfacePos, float3 transmittedDir,
             // Never let a TIR reflection become ordinary diffuse/depth.
             setTransmissionGuide(interfacePos - worldPush.camOffset,
                     isWater ? float3(0.0, 0.0, 0.0) : float3(payload.motionPrev),
-                    interfaceNormal, 0.0, float3(0.0, 0.0, 0.0));
+                    interfaceNormal, 0.0, float3(0.0, 0.0, 0.0), false);
             return;
         }
         if (!isWater && entering) {
@@ -267,7 +273,7 @@ public void writeGuides(int2 pix, float3 primaryDir, float2 jndc, float2 size, f
 
     // Guide buffers: first-hit or coherently replaced attributes consumed by the denoiser/DLSS-RR.
     gNormal[pix] = float4(gv_normal, gv_rough);
-    gAlbedo[pix] = float4(gv_albedo, 1.0);
+    gAlbedo[pix] = float4(gv_albedo, gv_emissive ? 1.0 : 0.0);
     gDepth[pix] = depth;
     gMotion[pix] = motion;
     gSpecAlbedo[pix] = float4(specAlbedo, 1.0);

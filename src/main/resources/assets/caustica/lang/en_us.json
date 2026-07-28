@@ -9,6 +9,9 @@
 	"caustica.options.rt.manualEv": "Exposure EV",
 	"caustica.options.rt.manualEv.tooltip": "Exposure compensation in stops. In Manual, this is the fixed exposure. In Auto, this biases the auto exposure brighter or darker.",
 
+	"caustica.options.rt.contrast": "Contrast",
+	"caustica.options.rt.contrast.tooltip": "Adjust scene contrast around 18% grey without changing auto-exposure metering. 1.00 is neutral.",
+
 	"caustica.options.rt.spp": "Samples Per Pixel",
 	"caustica.options.rt.spp.tooltip": "Path-tracing samples taken per pixel each frame. Higher is cleaner but more demanding.",
 
