@@ -6,6 +6,8 @@
 // resetSeq/evHistory are reserved for S4 (hard reset, median-of-N flash rejection) and are neither
 // read nor written here yet.
 
+import display_common;
+
 [[vk::binding(0, 0)]] StructuredBuffer<uint, Std430DataLayout> histBins; // 256 ordinary + sky + emissive bins
 [[vk::binding(1, 0)]] [format("r32f")] RWTexture2D<float> exposureImage;
 
@@ -28,28 +30,7 @@ struct ExposureState {
 };
 [[vk::binding(2, 0)]] RWStructuredBuffer<ExposureState, Std430DataLayout> stateBuf;
 
-struct Push {
-    float key;
-    float minEv;
-    float maxEv;
-    float adaptUp;
-    float adaptDown;
-    float frameTimeSeconds;
-    float evBias;
-    float lowPercentile;
-    float highPercentile;
-    float skyWeightCap;
-    float curveScene0;
-    float curveCompensation0;
-    float curveScene1;
-    float curveCompensation1;
-    float curveScene2;
-    float curveCompensation2;
-    float curveScene3;
-    float curveCompensation3;
-    float emissiveWeightCap;
-};
-[[vk::push_constant]] Push pc;
+[[vk::push_constant]] ExposureResolvePush pc;
 
 static const float LOG_MIN = -12.0;
 static const float LOG_MAX = 12.0;
@@ -164,22 +145,38 @@ void main() {
     }
 
     float avgLogLum = weightedCount > 0.0 ? weightedLogLum / weightedCount : 0.0;
-    float compensation = curveCompensation(avgLogLum);
-    float effectiveSlope = curveEffectiveSlope(avgLogLum);
-    float target = pc.key * exp2(pc.evBias - avgLogLum + compensation);
-    target = clamp(target, exp2(pc.minEv), exp2(pc.maxEv));
+    // avgLogLum is log2 of the PRE-EXPOSED stored luminance. evScene is the absolute scene value on
+    // the EV100 scale -- that is what the compensation curve's control points are authored against
+    // (docs/SCENE_UNITS_PLAN.md §1), and what the diagnostics report.
+    float evScene = avgLogLum + pc.evOffset;
+    float compensation = curveCompensation(evScene);
+    float effectiveSlope = curveEffectiveSlope(evScene);
+    // Residual: what the display pass must still multiply the stored (already pre-exposed) value by.
+    // Deriving it from avgLogLum rather than evScene is deliberate and exact -- stored * residual =
+    // key * 2^(evBias + compensation) regardless of preExposure, so the pre-exposure cancels.
+    float residualTarget = pc.key * exp2(pc.evBias - avgLogLum + compensation);
+    // Clamp and smooth in ABSOLUTE exposure space. The residual is near 1.0 by construction (it is
+    // whatever preExposure failed to anticipate), so clamping or smoothing it would bound the wrong
+    // quantity and would fight preExposure drifting between frames.
+    // Fail safe, not to white: a non-positive/non-finite value here can only mean the push layout
+    // desynced, and clamping it to a tiny epsilon would divide the residual up to infinity and blow
+    // the whole frame out. 1.0 degrades to the pre-U1 pipeline instead, which is merely mis-exposed.
+    float preExposure = (isfinite(pc.preExposure) && pc.preExposure > 0.0) ? pc.preExposure : 1.0;
+    float target = clamp(residualTarget * preExposure, exp2(pc.minEv), exp2(pc.maxEv));
 
     bool initialized = stateBuf[0].initialized != 0u;
-    float prev = initialized ? max(stateBuf[0].previous, 1.0e-4) : target;
+    float prev = initialized ? max(stateBuf[0].previous, 1.0e-12) : target;
     float rate = target > prev ? pc.adaptUp : pc.adaptDown;
     float alpha = initialized ? 1.0 - exp(-pc.frameTimeSeconds / max(rate, 1.0e-4)) : 1.0;
     float exposure = lerp(prev, target, clamp(alpha, 0.0, 1.0));
 
+    // previous stays ABSOLUTE: it is both the smoothing history and the value RtExposure reads back
+    // to choose next frame's preExposure.
     stateBuf[0].previous = exposure;
     stateBuf[0].initialized = 1u;
-    stateBuf[0].evScene = avgLogLum;
-    stateBuf[0].evTarget = log2(max(target, 1.0e-6));
-    stateBuf[0].evApplied = log2(max(exposure, 1.0e-6));
+    stateBuf[0].evScene = evScene;
+    stateBuf[0].evTarget = log2(max(target, 1.0e-12));
+    stateBuf[0].evApplied = log2(max(exposure, 1.0e-12));
     stateBuf[0].clipLowFrac = (float(histBins[0]) + float(histBins[256]) * skyScale
             + float(histBins[512]) * emissiveScale) / total;
     stateBuf[0].clipHighFrac = (float(histBins[255]) + float(histBins[511]) * skyScale
@@ -190,5 +187,7 @@ void main() {
     stateBuf[0].effectiveSlope = effectiveSlope;
     stateBuf[0].meteringEmissiveScale = emissiveScale;
     stateBuf[0].meteringEmissiveFrac = emissivePopulation * emissiveScale / total;
-    exposureImage[int2(0, 0)] = exposure;
+    // The display pass consumes stored radiance, which raygen already scaled by preExposure, so it
+    // needs the residual rather than the absolute exposure. stored * residual == L * exposure.
+    exposureImage[int2(0, 0)] = exposure / preExposure;
 }

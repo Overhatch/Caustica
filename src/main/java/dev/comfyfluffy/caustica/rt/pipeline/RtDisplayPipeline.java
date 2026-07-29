@@ -25,6 +25,7 @@ import java.nio.LongBuffer;
 
 import dev.comfyfluffy.caustica.rt.RtContext;
 import dev.comfyfluffy.caustica.rt.RtDebugLabels;
+import dev.comfyfluffy.caustica.rt.gen.DisplayPushData;
 
 import static dev.comfyfluffy.caustica.rt.RtContext.check;
 
@@ -32,7 +33,7 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
 public final class RtDisplayPipeline {
     private static final String SHADER_DIR = "/caustica/rt/";
     /** Push constants: int hdrEnabled, float lutSize, float gamma, float HDR peak nits. */
-    private static final int PUSH_BYTES = 4 * Integer.BYTES;
+    private static final int PUSH_BYTES = DisplayPushData.BYTE_SIZE;
 
     private final RtContext ctx;
     private final long descriptorSetLayout;
@@ -180,11 +181,8 @@ public final class RtDisplayPipeline {
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "display compute")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSet), null);
-            ByteBuffer push = stack.malloc(PUSH_BYTES);
-            push.putInt(0, hdrEnabled ? 1 : 0);
-            push.putFloat(4, (float) lutSize);
-            push.putFloat(8, gamma);
-            push.putFloat(12, hdrPeakNits);
+            ByteBuffer push = stack.malloc(DisplayPushData.BYTE_SIZE);
+            new DisplayPushData(hdrEnabled ? 1 : 0, (float) lutSize, gamma, hdrPeakNits).write(push);
             VK10.vkCmdPushConstants(cmd, pipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
         }

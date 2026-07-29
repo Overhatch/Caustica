@@ -27,6 +27,7 @@ import java.nio.LongBuffer;
 import dev.comfyfluffy.caustica.rt.RtContext;
 import dev.comfyfluffy.caustica.rt.RtDebugLabels;
 import dev.comfyfluffy.caustica.rt.accel.RtBuffer;
+import dev.comfyfluffy.caustica.rt.gen.DebugPresentPushData;
 
 import static dev.comfyfluffy.caustica.rt.RtContext.check;
 
@@ -42,7 +43,7 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
  */
 public final class RtDebugPresentPipeline {
     private static final String SHADER_DIR = "/caustica/rt/";
-    private static final int PUSH_BYTES = Integer.BYTES + 2 * Float.BYTES;
+    private static final int PUSH_BYTES = DebugPresentPushData.BYTE_SIZE;
 
     private final RtContext ctx;
     private final long descriptorSetLayout;
@@ -172,10 +173,8 @@ public final class RtDebugPresentPipeline {
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "debug present compute")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSet), null);
-            ByteBuffer push = stack.malloc(PUSH_BYTES);
-            push.putInt(0, debugView);
-            push.putFloat(Integer.BYTES, centerWeightSigma);
-            push.putFloat(Integer.BYTES + Float.BYTES, centerWeightFloor);
+            ByteBuffer push = stack.malloc(DebugPresentPushData.BYTE_SIZE);
+            new DebugPresentPushData(debugView, centerWeightSigma, centerWeightFloor).write(push);
             VK10.vkCmdPushConstants(cmd, pipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
         }

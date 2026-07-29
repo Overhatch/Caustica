@@ -23,6 +23,12 @@ public final class CausticaClient implements ClientModInitializer {
 	public void onInitializeClient() {
 		CausticaMod.LOGGER.info("Caustica client initialized");
 
+		// Class-init runs DebugScreenEntries.register(...) via its ID field; touching the class here
+		// makes the entry discoverable in F3's entry list. Off by default -- the player opts in the
+		// same way as any other optional vanilla entry (e.g. GPU utilization).
+		@SuppressWarnings("unused")
+		Object registerExposureDebugEntry = RtExposureDebugEntry.ID;
+
 		// The GpuDevice exists well before the first tick, so a one-shot at tick start
 		// runs on the render thread with the device idle between frames.
 		ClientTickEvents.START_CLIENT_TICK.register(client -> {

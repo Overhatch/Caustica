@@ -148,9 +148,18 @@ mostly bookkeeping.
 
 - Widen `ExposureState` to a struct: `evScene`, `evTarget`, `evApplied`, `clipLowFrac`,
   `clipHighFrac`, `resetSeq`, plus the S3 history ring. Read it CPU-side one frame late (debug
-  only — no fence needed, a stale value is fine for a HUD).
-- Debug HUD line behind the existing frame-stats toggle: `EV scene/target/applied`, effective
-  slope, and the fraction of pixels clipping at each end.
+  only — no fence needed, a stale value is fine for a HUD). **Done.**
+- Throttled log line behind `FrameStats.ENABLED` with the full diagnostic set (evScene/evTarget/
+  evApplied, clip fractions, sky/emissive scale+weight, curve compensation, effective slope). **Done**
+  — `RtExposure.logDiagnosticsIfDue()`.
+- **F3 debug-screen entry** (2026-07-29): `RtExposureDebugEntry`, registered via MC 26.2's
+  `DebugScreenEntries` (a genuine no-mixin registration API — access-widened by
+  `fabric-transitive-access-wideners-v1` specifically for this, superseding the older
+  mixin-into-`DebugScreenOverlay` approach every earlier MC version needed). One line —
+  `EV100 scene, applied EV` in auto mode or the manual EV in manual mode — via
+  `RtExposure.debugSummaryLine()`, unthrottled (F3's own render cadence is throttle enough).
+  Off by default like any other optional F3 entry; the player opts in through vanilla's own
+  entry-list UI, no config flag of ours involved. **Done.**
 - Two new `debugView` modes (the plumbing exists —
   [CausticaConfig.java:534](../src/main/java/dev/comfyfluffy/caustica/CausticaConfig.java),
   `writeDebugView` in [guides.slang](../shaders/world/guides.slang)): **false-colour exposure**

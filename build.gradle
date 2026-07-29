@@ -198,6 +198,7 @@ def generateShaderRecords = tasks.register("generateShaderRecords", GenerateShad
 	group = "build"
 	description = "Generates typed Java shader records and serializers from Slang reflection."
 	worldSourceDir = file("shaders/world")
+	displaySourceDir = file("shaders/display")
 	probeSource = file("shaders/world/world_layout_probe.slang")
 	slangc = resolveVulkanTool("slangc")
 	spirvVal = resolveVulkanTool("spirv-val")

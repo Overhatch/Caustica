@@ -332,6 +332,11 @@ public final class RtComposite {
         return this.failed;
     }
 
+    /** Read-only access to the auto-exposure controller, for diagnostics (F3 entry, frame stats log). */
+    public RtExposure exposure() {
+        return exposure;
+    }
+
     /**
      * Whether the current frame must retain vanilla world rendering while RT resource state converges.
      *
@@ -521,6 +526,10 @@ public final class RtComposite {
             // manual -> auto at runtime (video settings), the auto-mode histogram/state/pipeline must be
             // allocated before recordFrame's exposure.record() below needs them, or it throws.
             exposure.ensureResources(ctx);
+            // Latch pre-exposure for the whole frame: recordFrame's world push and the exposure
+            // resolve both consume it and must see the identical value, or the raygen multiply and
+            // the display divide stop cancelling. See RtExposure.beginFrame().
+            exposure.beginFrame();
             refreshPipelineShapeIfNeeded(ctx);
             RtPipeline active = ensureWorld(ctx);
             if (materialEpochTraceGate) {
@@ -970,7 +979,10 @@ public final class RtComposite {
                     new Float4(terrain.lightGridOriginX(), terrain.lightGridOriginY(), terrain.lightGridOriginZ(), 16f),
                     new Int4(terrain.lightGridDimX(), terrain.lightGridDimY(), terrain.lightGridDimZ(), 0),
                     terrain.lightCount(),
-                    CausticaConfig.Rt.Lights.RIS_CANDIDATES.value()
+                    CausticaConfig.Rt.Lights.RIS_CANDIDATES.value(),
+                    // Must be the SAME value the exposure resolve divides out this frame (it reads it
+                    // from the same RtExposure accessor), or the two stop cancelling.
+                    exposure.preExposure()
             ).write(push);
             pushBuf.flush(0L, WORLD_PUSH_SIZE);
             // Upload any entity textures registered this frame into the bindless set before the trace.

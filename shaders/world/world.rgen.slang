@@ -407,5 +407,7 @@ void main() {
         }
         recordIndex = packed.nextRecord;
     }
-    outImage[pix] = float4(frameRadiance / float(spp), 1.0);
+    // Pre-exposure is applied here and nowhere else: the entire path-traced result above is in
+    // absolute scene units, and only the fp16 store is normalized. See docs/SCENE_UNITS_PLAN.md §2.
+    outImage[pix] = float4(frameRadiance * (worldPush.preExposure / float(spp)), 1.0);
 }

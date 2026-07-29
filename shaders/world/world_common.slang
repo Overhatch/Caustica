@@ -65,6 +65,11 @@ public struct WorldPush {
     public int4     lightGridDims;       // xyz dense grid dimensions, w reserved
     public uint     lightCount;       // packed Light records in pc.lightBufAddr
     public uint     risCandidates;    // RIS candidate count M per diffuse vertex (0 = emitter NEE off)
+    // Pre-exposure (docs/SCENE_UNITS_PLAN.md §2): scalar applied to radiance at the outImage write
+    // ONLY, so all light transport above stays in absolute scene units. Keeps stored fp16 values
+    // near mid-grey at any scene brightness; the display pass divides it back out, so the two cancel
+    // exactly and this cannot change the image. 1.0 disables it.
+    public float    preExposure;
 };
 
 // 32-byte hot area-light record. Linear ACEScg radiance uses packed R11G11B10; the

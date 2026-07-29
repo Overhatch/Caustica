@@ -702,7 +702,11 @@ public final class CausticaConfig {
         }
 
         public static final class Exposure {
-            public static final String DEFAULT_CURVE = "-6:-2.0, -3:-0.8, 0:0.0, 4:0.4";
+            // Control points are measured-EV100 : compensation-EV (see docs/SCENE_UNITS_PLAN.md §1).
+            // NOTE: these shifted +3 when metering moved from log2(scene value) to EV100 in U0 --
+            // same curve, restated on the new x-axis, so the rendered result is unchanged. They are
+            // NOT yet the plan's §4 physical values; that is U4, after the light constants land.
+            public static final String DEFAULT_CURVE = "-3:-2.0, 0:-0.8, 3:0.0, 7:0.4";
             public static final StringSetting MODE =
                     string("caustica.rt.exposure.mode", "exposure.mode", "auto", Exposure::sanitizeMode);
             public static final StringSetting CURVE =
@@ -737,6 +741,17 @@ public final class CausticaConfig {
             public static final FloatSetting EMISSIVE_WEIGHT_CAP =
                     clampedFloat("caustica.rt.exposure.emissiveWeightCap",
                             "exposure.emissive-weight-cap", 0.10f, 0.0f, 1.0f);
+            /**
+             * Pre-exposure: raygen multiplies scene radiance by the previous frame's exposure before
+             * the fp16 write, and the display pass divides it back out, so stored values sit near
+             * {@code key} instead of spanning the ~26 EV physical photometric units require (see
+             * {@code docs/SCENE_UNITS_PLAN.md} §2 — the standard Frostbite / UE / Unity HDRP
+             * technique). The two cancel algebraically, so <b>toggling this must not change the
+             * image</b>; it exists as an A/B switch for exactly that check, and as an escape hatch
+             * if DLSS-RR ever proves sensitive to its history being at the previous frame's scale.
+             */
+            public static final BooleanSetting PRE_EXPOSURE =
+                    bool("caustica.rt.exposure.preExposure", "exposure.pre-exposure", true);
 
             private Exposure() {
             }

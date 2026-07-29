@@ -2,6 +2,7 @@
 // Exposing WorldPush as a structured-buffer element makes Slang's JSON reflection include the
 // complete Std430DataLayout: field types, byte offsets, total size, matrix mode, and array counts.
 import world_common;
+import display_common;
 
 struct WorldPushLayoutProbe {
     WorldPush values[2]; // array stride is the complete, tail-padded WorldPush byte size
@@ -23,5 +24,48 @@ void main(uint3 id : SV_DispatchThreadID) {
         float sink = worldPushLayoutProbe[0].values[0].invViewProj[0][0]
                 + materialHeaderLayoutProbe[0].values[0].params.x
                 + float(pushConstantsLayoutProbe.frameIndex);
+    }
+}
+
+// Each display-chain push-constant struct (shaders/display/display_common.slang) gets its own tiny
+// entry point below: SPIR-V permits only one push-constant block reachable per entry point, so
+// probing four distinct push-constant structs in one module needs four distinct entry points, each
+// touching exactly one. All four are still reported in the same reflection-json pass because
+// reflection parameters are enumerated module-wide, not per-entry-point -- see the main() probe
+// above for the equivalent structured-buffer case.
+
+[[vk::push_constant]] ExposureHistPush exposureHistPushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeExposureHistPush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = float(exposureHistPushProbe.stride);
+    }
+}
+
+[[vk::push_constant]] ExposureResolvePush exposureResolvePushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeExposureResolvePush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = exposureResolvePushProbe.key + exposureResolvePushProbe.preExposure;
+    }
+}
+
+[[vk::push_constant]] DisplayPush displayPushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeDisplayPush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = float(displayPushProbe.hdrEnabled) + displayPushProbe.hdrPeakNits;
+    }
+}
+
+[[vk::push_constant]] DebugPresentPush debugPresentPushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeDebugPresentPush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = float(debugPresentPushProbe.debugView) + debugPresentPushProbe.centerWeightFloor;
     }
 }

@@ -5,6 +5,7 @@ import dev.comfyfluffy.caustica.CausticaConfig;
 import dev.comfyfluffy.caustica.CausticaMod;
 import dev.comfyfluffy.caustica.rt.RtContext;
 import dev.comfyfluffy.caustica.rt.RtDebugLabels;
+import dev.comfyfluffy.caustica.rt.RtSceneUnits;
 import dev.comfyfluffy.caustica.rt.accel.RtBuffer;
 import dev.comfyfluffy.caustica.rt.accel.RtImage;
 import org.lwjgl.system.MemoryStack;
@@ -27,6 +28,8 @@ public final class RtExposure {
     private long lastDiagLogNanos;
     private String cachedCurveSpec;
     private ExposureCurve cachedCurve;
+    /** This frame's latched pre-exposure; see {@link #beginFrame()}. */
+    private float framePreExposure = 1.0f;
 
     // ExposureState byte layout (std430, see exposure_resolve.comp.slang) -- must match field-for-
     // field. Population/curve diagnostics append after S4's already-reserved history fields so their
@@ -95,7 +98,9 @@ public final class RtExposure {
         }
         try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure manual write")) {
             VkClearColorValue color = VkClearColorValue.calloc(stack);
-            color.float32(0, manualExposureScale());
+            // Residual, not absolute: raygen already applied preExposure (which in manual mode IS
+            // manualExposureScale, making this exactly 1.0). See preExposure().
+            color.float32(0, manualExposureScale() / Math.max(preExposure(), 1.0e-12f));
             VkImageSubresourceRange.Buffer range = VkImageSubresourceRange.calloc(1, stack);
             range.get(0).aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
                     .baseMipLevel(0).levelCount(1).baseArrayLayer(0).layerCount(1);
@@ -176,18 +181,45 @@ public final class RtExposure {
         AutoConfig cfg = autoConfig();
         boolean pinnedLow = evTarget <= cfg.minEv() + 0.01f;
         boolean pinnedHigh = evTarget >= cfg.maxEv() - 0.01f;
+        // evScene is EV100 (docs/SCENE_UNITS_PLAN.md §1); evTarget/evApplied are log2 of the ABSOLUTE
+        // exposure multiplier, i.e. pre-exposure already divided back out, so they stay comparable
+        // across frames regardless of what preExposure happened to be.
         CausticaMod.LOGGER.info(
-                "RT exposure diag: evScene={} evTarget={}{} evApplied={} clipLow={}% clipHigh={}% "
-                        + "skyScale={} skyWeight={}% emissiveScale={} emissiveWeight={}% "
-                        + "curveComp={} effectiveSlope={}",
+                "RT exposure diag: evScene(EV100)={} evTarget={}{} evApplied={} preExposure={} "
+                        + "clipLow={}% clipHigh={}% skyScale={} skyWeight={}% emissiveScale={} "
+                        + "emissiveWeight={}% curveComp={} effectiveSlope={}",
                 fmt(evScene), fmt(evTarget), pinnedLow ? " (at minEv clamp)" : pinnedHigh ? " (at maxEv clamp)" : "",
-                fmt(evApplied), fmt(clipLowFrac * 100.0f), fmt(clipHighFrac * 100.0f),
+                fmt(evApplied), fmt(preExposure()), fmt(clipLowFrac * 100.0f), fmt(clipHighFrac * 100.0f),
                 fmt(skyScale), fmt(skyFrac * 100.0f), fmt(emissiveScale),
                 fmt(emissiveFrac * 100.0f), fmt(curveCompensation), fmt(effectiveSlope));
     }
 
     private static String fmt(float v) {
         return String.format(java.util.Locale.ROOT, "%.2f", v);
+    }
+
+    /**
+     * One-line summary for the F3 debug screen ({@code RtExposureDebugEntry}). Unlike
+     * {@link #logDiagnosticsIfDue()} this is not throttled and not gated on
+     * {@code CausticaConfig.Rt.FrameStats.ENABLED} -- F3 only calls it once the player has enabled
+     * that entry, and the game's own render cadence is throttle enough. Returns {@code null} when
+     * there is nothing meaningful to show yet (state buffer not created).
+     */
+    public String debugSummaryLine() {
+        if (state == null || state.mapped == 0L) {
+            return null;
+        }
+        if (mode() != Mode.AUTO) {
+            return String.format(java.util.Locale.ROOT, "RT exposure: manual %s EV", fmt(manualEv()));
+        }
+        float evScene = MemoryUtil.memGetFloat(state.mapped + OFF_EV_SCENE);
+        float evTarget = MemoryUtil.memGetFloat(state.mapped + OFF_EV_TARGET);
+        float evApplied = MemoryUtil.memGetFloat(state.mapped + OFF_EV_APPLIED);
+        AutoConfig cfg = autoConfig();
+        String clamp = evTarget <= cfg.minEv() + 0.01f ? " (min clamp)"
+                : evTarget >= cfg.maxEv() - 0.01f ? " (max clamp)" : "";
+        return String.format(java.util.Locale.ROOT, "RT exposure: EV100 %s, applied %s EV%s",
+                fmt(evScene), fmt(evApplied), clamp);
     }
 
     private float frameTimeSeconds() {
@@ -260,14 +292,72 @@ public final class RtExposure {
                 CausticaConfig.Rt.Exposure.CENTER_WEIGHT_FLOOR.value(),
                 CausticaConfig.Rt.Exposure.SKY_WEIGHT_CAP.value(),
                 CausticaConfig.Rt.Exposure.EMISSIVE_WEIGHT_CAP.value(),
-                curveConfig());
+                curveConfig(),
+                preExposure());
+    }
+
+    /**
+     * Latches this frame's pre-exposure. MUST be called once per frame before the world push
+     * constants are written, and must not be re-latched afterwards.
+     *
+     * <p>The raygen multiply and the resolve's divide have to use the <em>same</em> value or they
+     * stop cancelling and the frame comes out mis-scaled. Both read {@link #preExposure()}, but at
+     * different points in CPU time, while the GPU is asynchronously writing {@code previous} with no
+     * synchronisation — so reading the mapped buffer at each use site could observe two different
+     * values within one frame. Latching once removes that race; the residual absorbs whatever the
+     * latched value failed to predict.
+     */
+    public void beginFrame() {
+        framePreExposure = computePreExposure();
+    }
+
+    /**
+     * The scalar raygen multiplies into scene radiance before the fp16 write (U1,
+     * {@code docs/SCENE_UNITS_PLAN.md} §2), so stored values sit near {@code key} at any absolute
+     * scene brightness instead of spanning the ~26 EV that physical units require.
+     *
+     * <p>Correctness does not depend on this being <em>current</em> — the display pass divides by
+     * exactly the same latched value, so any pre-exposure cancels algebraically. Staleness only
+     * affects how well-centred the stored values are, which is why last frame's readback is fine and
+     * no fence is needed. 1.0 disables the mechanism and is exactly the pre-U1 pipeline.
+     */
+    public float preExposure() {
+        return framePreExposure;
+    }
+
+    private float computePreExposure() {
+        if (!CausticaConfig.Rt.Exposure.PRE_EXPOSURE.value()) {
+            return 1.0f;
+        }
+        // Manual mode has a known fixed absolute exposure, so pre-exposing by it makes the residual
+        // exactly 1.0 -- the best-centred choice available, and it needs no readback.
+        if (mode() != Mode.AUTO) {
+            return manualExposureScale();
+        }
+        if (state == null || state.mapped == 0L) {
+            return 1.0f;
+        }
+        // Deliberately NOT Exposure.clampScale: its 1e-4 floor is a bound on the artistic exposure
+        // multiplier, and physical units (U2) put noon at ~3e-5 absolute, which that floor would
+        // truncate -- silently de-centring exactly the case pre-exposure exists to handle. The
+        // controller's own minEv/maxEv already bound this value; here we only reject garbage.
+        float previous = MemoryUtil.memGetFloat(state.mapped + OFF_PREVIOUS);
+        return Float.isFinite(previous) && previous > 0.0f ? previous : 1.0f;
     }
 
     record AutoConfig(float key, float minEv, float maxEv, float adaptUp, float adaptDown, float evBias,
                       float lowPercentile, float highPercentile, int stride,
                       float centerWeightSigma, float centerWeightFloor, float skyWeightCap,
                       float emissiveWeightCap,
-                      ExposureCurve curve) {
+                      ExposureCurve curve, float preExposure) {
+        /**
+         * Offset taking the resolve's {@code log2(metered stored luminance)} to EV100. The metered
+         * buffer holds {@code L * preExposure}, so the pre-exposure has to come back out before the
+         * unit convention's offset applies. See {@code docs/SCENE_UNITS_PLAN.md} §1/§2.
+         */
+        float evOffset() {
+            return RtSceneUnits.EV100_OFFSET - (float) (Math.log(Math.max(preExposure, 1.0e-12f)) / Math.log(2.0));
+        }
     }
 
     private ExposureCurve curveConfig() {

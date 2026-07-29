@@ -1,6 +1,8 @@
 // Strided log2-luminance histogram over the post-RR trace color (see RtExposure -- metered here,
 // not pre-RR, so the average isn't Jensen-biased by Monte-Carlo noise). See docs/EXPOSURE_PLAN.md.
 
+import display_common;
+
 [[vk::binding(0, 0)]] [format("rgba16f")] RWTexture2D<float4> colorImage;
 // 0..255 = ordinary surface, 256..511 = sky, 512..767 = emissive surface. Keeping the
 // populations separate lets resolve apply frame-global caps without a second full-image pass.
@@ -8,12 +10,7 @@
 [[vk::binding(2, 0)]] [format("r32f")] RWTexture2D<float> depthImage; // render-res reversed-Z guide
 [[vk::binding(3, 0)]] [format("rgba16f")] RWTexture2D<float4> albedoImage; // a = emissive marker
 
-struct Push {
-    uint stride;
-    float centerWeightSigma;
-    float centerWeightFloor;
-};
-[[vk::push_constant]] Push pc;
+[[vk::push_constant]] ExposureHistPush pc;
 
 static const float LOG_MIN = -12.0;
 static const float LOG_MAX = 12.0;

@@ -22,6 +22,13 @@ abstract class GenerateShaderRecords extends DefaultTask {
     @PathSensitive(PathSensitivity.RELATIVE)
     abstract DirectoryProperty getWorldSourceDir()
 
+    // Only needed so the probe file (shaders/world/world_layout_probe.slang) can `import
+    // display_common;` across directories -- Slang's default module search is the importing file's
+    // own directory, which does not cover shaders/display/. Passed to slangc as an extra -I.
+    @InputDirectory
+    @PathSensitive(PathSensitivity.RELATIVE)
+    abstract DirectoryProperty getDisplaySourceDir()
+
     @InputFile
     @PathSensitive(PathSensitivity.RELATIVE)
     abstract RegularFileProperty getProbeSource()
@@ -134,7 +141,8 @@ abstract class GenerateShaderRecords extends DefaultTask {
         }
     }
 
-    private static String generateJava(Map rootType, int byteSize, String className) {
+    // NOT private: see the comment on extractPushConstantType -- same closure-dispatch issue.
+    static String generateJava(Map rootType, int byteSize, String className) {
         def fields = rootType.fields as List<Map>
         def arrays = fields.findAll { it.type.kind == "array" }
         def vectors = new LinkedHashSet<String>()
@@ -199,12 +207,40 @@ abstract class GenerateShaderRecords extends DefaultTask {
         sb.toString()
     }
 
+    // (reflection parameter name, expected Slang struct name, generated Java class name) for every
+    // plain push-constant struct probed directly (no structured-buffer array wrapper needed, unlike
+    // WorldPush/MaterialHeader -- see the two probeXxx blocks below main() in the probe file).
+    private static final List<List<String>> PUSH_CONSTANT_PROBES = [
+            ["pushConstantsLayoutProbe", "WorldPushConstants", "WorldPushConstantsData"],
+            ["exposureHistPushProbe", "ExposureHistPush", "ExposureHistPushData"],
+            ["exposureResolvePushProbe", "ExposureResolvePush", "ExposureResolvePushData"],
+            ["displayPushProbe", "DisplayPush", "DisplayPushData"],
+            ["debugPresentPushProbe", "DebugPresentPush", "DebugPresentPushData"],
+    ]
+
+    // NOT private: Gradle decorates this abstract task with a generated subclass, and Groovy's
+    // dynamic method dispatch from inside the PUSH_CONSTANT_PROBES.each {} closure below fails to
+    // resolve private static methods through that generated subclass.
+    static Map extractPushConstantType(Object reflection, String probeName, String structName) {
+        def pushParameter = reflection.parameters.find { it.name == probeName }
+        if (pushParameter?.type?.elementType?.name != structName) {
+            throw new GradleException("Slang reflection omitted or misshaped ${probeName} (expected ${structName})")
+        }
+        pushParameter.type.elementType as Map
+    }
+
+    static int extractPushConstantByteSize(Object reflection, String probeName) {
+        def pushParameter = reflection.parameters.find { it.name == probeName }
+        pushParameter.type.elementVarLayout.binding.size as int
+    }
+
     @TaskAction
     void generate() {
         def reflectionFile = new File(temporaryDir, "shader-records-reflection.json")
         def probeSpv = new File(temporaryDir, "shader-layout-probe.spv")
         execOps.exec {
             commandLine slangc.get(), probeSource.get().asFile.absolutePath,
+                    "-I", displaySourceDir.get().asFile.absolutePath,
                     "-target", "spirv", "-profile", "spirv_1_5", "-matrix-layout-column-major",
                     "-warnings-as-errors", "all", "-warnings-disable", "41012",
                     "-reflection-json", reflectionFile.absolutePath, "-o", probeSpv.absolutePath
@@ -230,13 +266,6 @@ abstract class GenerateShaderRecords extends DefaultTask {
         Map materialHeaderType = materialProbeArray.type.elementType as Map
         int materialHeaderByteSize = materialProbeArray.type.uniformStride as int
 
-        def pushParameter = reflection.parameters.find { it.name == "pushConstantsLayoutProbe" }
-        if (pushParameter?.type?.elementType?.name != "WorldPushConstants") {
-            throw new GradleException("Slang reflection omitted pushConstantsLayoutProbe")
-        }
-        Map pushConstantsType = pushParameter.type.elementType as Map
-        int pushConstantsByteSize = pushParameter.type.elementVarLayout.binding.size as int
-
         def generatedRoot = outDir.get().asFile
         if (generatedRoot.exists() && !generatedRoot.deleteDir()) {
             throw new GradleException("failed to clear generated shader record sources under ${generatedRoot}")
@@ -245,9 +274,14 @@ abstract class GenerateShaderRecords extends DefaultTask {
         packageDir.mkdirs()
         new File(packageDir, "WorldPushData.java").setText(
                 generateJava(worldType, worldByteSize, "WorldPushData"), "UTF-8")
-        new File(packageDir, "WorldPushConstantsData.java").setText(
-                generateJava(pushConstantsType, pushConstantsByteSize, "WorldPushConstantsData"), "UTF-8")
         new File(packageDir, "MaterialHeaderData.java").setText(
                 generateJava(materialHeaderType, materialHeaderByteSize, "MaterialHeaderData"), "UTF-8")
+
+        PUSH_CONSTANT_PROBES.each { probeName, structName, className ->
+            Map type = extractPushConstantType(reflection, probeName, structName)
+            int byteSize = extractPushConstantByteSize(reflection, probeName)
+            new File(packageDir, "${className}.java").setText(
+                    generateJava(type, byteSize, className), "UTF-8")
+        }
     }
 }

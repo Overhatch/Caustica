@@ -26,6 +26,8 @@ import java.nio.LongBuffer;
 import dev.comfyfluffy.caustica.rt.RtContext;
 import dev.comfyfluffy.caustica.rt.RtDebugLabels;
 import dev.comfyfluffy.caustica.rt.accel.RtBuffer;
+import dev.comfyfluffy.caustica.rt.gen.ExposureHistPushData;
+import dev.comfyfluffy.caustica.rt.gen.ExposureResolvePushData;
 
 import static dev.comfyfluffy.caustica.rt.RtContext.check;
 
@@ -95,7 +97,7 @@ final class RtExposurePipeline {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_POOL, histPool, "exposure histogram descriptor pool");
             long histSet = allocateSet(vk, stack, histPool, histDsl, "hist");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET, histSet, "exposure histogram descriptor set");
-            long histLayout = createPipelineLayout(vk, stack, histDsl, 12, "hist");
+            long histLayout = createPipelineLayout(vk, stack, histDsl, ExposureHistPushData.BYTE_SIZE, "hist");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE_LAYOUT, histLayout, "exposure histogram pipeline layout");
             long histModule = loadModule(vk, stack, "exposure_hist.comp.spv");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SHADER_MODULE, histModule, "exposure histogram shader module");
@@ -119,7 +121,7 @@ final class RtExposurePipeline {
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_POOL, resolvePool, "exposure resolve descriptor pool");
             long resolveSet = allocateSet(vk, stack, resolvePool, resolveDsl, "resolve");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_DESCRIPTOR_SET, resolveSet, "exposure resolve descriptor set");
-            long resolveLayout = createPipelineLayout(vk, stack, resolveDsl, 76, "resolve");
+            long resolveLayout = createPipelineLayout(vk, stack, resolveDsl, ExposureResolvePushData.BYTE_SIZE, "resolve");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE_LAYOUT, resolveLayout, "exposure resolve pipeline layout");
             long resolveModule = loadModule(vk, stack, "exposure_resolve.comp.spv");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SHADER_MODULE, resolveModule, "exposure resolve shader module");
@@ -191,10 +193,9 @@ final class RtExposurePipeline {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, histPipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, histPipelineLayout, 0,
                     stack.longs(histDescriptorSet), null);
-            ByteBuffer push = stack.malloc(12);
-            push.putInt(0, config.stride());
-            push.putFloat(4, config.centerWeightSigma());
-            push.putFloat(8, config.centerWeightFloor());
+            ByteBuffer push = stack.malloc(ExposureHistPushData.BYTE_SIZE);
+            new ExposureHistPushData(config.stride(), config.centerWeightSigma(), config.centerWeightFloor())
+                    .write(push);
             VK10.vkCmdPushConstants(cmd, histPipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             int stride = config.stride();
             int sampleWidth = (width + stride - 1) / stride;
@@ -208,27 +209,15 @@ final class RtExposurePipeline {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, resolvePipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, resolvePipelineLayout, 0,
                     stack.longs(resolveDescriptorSet), null);
-            ByteBuffer push = stack.malloc(76);
-            push.putFloat(0, config.key());
-            push.putFloat(4, config.minEv());
-            push.putFloat(8, config.maxEv());
-            push.putFloat(12, config.adaptUp());
-            push.putFloat(16, config.adaptDown());
-            push.putFloat(20, frameTimeSeconds);
-            push.putFloat(24, config.evBias());
-            push.putFloat(28, config.lowPercentile());
-            push.putFloat(32, config.highPercentile());
-            push.putFloat(36, config.skyWeightCap());
+            ByteBuffer push = stack.malloc(ExposureResolvePushData.BYTE_SIZE);
             RtExposure.ExposureCurve curve = config.curve();
-            push.putFloat(40, curve.scene0());
-            push.putFloat(44, curve.compensation0());
-            push.putFloat(48, curve.scene1());
-            push.putFloat(52, curve.compensation1());
-            push.putFloat(56, curve.scene2());
-            push.putFloat(60, curve.compensation2());
-            push.putFloat(64, curve.scene3());
-            push.putFloat(68, curve.compensation3());
-            push.putFloat(72, config.emissiveWeightCap());
+            new ExposureResolvePushData(
+                    config.key(), config.minEv(), config.maxEv(), config.adaptUp(), config.adaptDown(),
+                    frameTimeSeconds, config.evBias(), config.lowPercentile(), config.highPercentile(),
+                    config.skyWeightCap(), curve.scene0(), curve.compensation0(), curve.scene1(),
+                    curve.compensation1(), curve.scene2(), curve.compensation2(), curve.scene3(),
+                    curve.compensation3(), config.emissiveWeightCap(), config.evOffset(), config.preExposure()
+            ).write(push);
             VK10.vkCmdPushConstants(cmd, resolvePipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, 1, 1, 1);
         }

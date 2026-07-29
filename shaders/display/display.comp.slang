@@ -4,6 +4,8 @@
 // ACEScg; exposure is applied from the compositor-owned 1x1 image right here, then both outputs are
 // a single log2-shaped LUT fetch.
 
+import display_common;
+
 [[vk::binding(0, 0)]] [format("rgba8")]   RWTexture2D<float4> outputImage; // LDR world target image
 [[vk::binding(1, 0)]] [format("rgba16f")] RWTexture2D<float4> rtImage;     // scene-linear ACEScg RT radiance
 [[vk::binding(2, 0)]] [format("r32f")]    RWTexture2D<float>  exposureImage; // 1x1 linear exposure scale
@@ -16,12 +18,6 @@
 // Hdr.PEAK_NITS -- see RtComposite), matching hdrImage exactly, so no separate encode is needed either.
 [[vk::binding(5, 0)]] Sampler3D hdrToneLut;
 
-struct DisplayPush {
-    int hdrEnabled;      // 0 = SDR only, 1 = also write the PQ HDR image
-    float lutSize;       // toneLut/hdrToneLut texels per axis; both LUTs share one size (asserted at load)
-    float gamma;         // post-display artistic gamma; below 1 brightens midtones
-    float hdrPeakNits;   // mastering peak baked into the currently bound HDR ACES LUT
-};
 [[vk::push_constant]] DisplayPush pc;
 
 // MUST exactly match SHAPER_LO_STOPS/SHAPER_HI_STOPS in tools/bake_display_lut.py -- these are the two

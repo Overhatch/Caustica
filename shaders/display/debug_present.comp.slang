@@ -11,6 +11,8 @@
 // display-resolution output. Debug mode deliberately leaves DLSS-RR and its jitter enabled, so this
 // pass shows the actual guide inputs used by RR rather than changing the renderer being inspected.
 
+import display_common;
+
 [[vk::binding(0, 0)]] [format("rgba8")]   RWTexture2D<float4> outputImage;
 [[vk::binding(1, 0)]] [format("rgba16f")] RWTexture2D<float4> gNormal;     // xyz world normal, w linear roughness
 [[vk::binding(2, 0)]] [format("rgba16f")] RWTexture2D<float4> gAlbedo;     // rgb ACEScg diffuse albedo
@@ -39,12 +41,7 @@ struct ExposureState {
 };
 [[vk::binding(9, 0)]] StructuredBuffer<ExposureState, Std430DataLayout> exposureState;
 
-struct Push {
-    uint debugView;     // 1..9; this pass is only dispatched for debugView != 0
-    float centerWeightSigma;
-    float centerWeightFloor;
-};
-[[vk::push_constant]] Push pc;
+[[vk::push_constant]] DebugPresentPush pc;
 
 static const float3 ACESCG_LUMA = float3(0.27222872, 0.67408177, 0.05368952);
 
