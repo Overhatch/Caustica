@@ -118,6 +118,25 @@ public final class RtComposite {
     // Finite sun/moon angular sizes let NEE shadow rays sample the light disk (soft, contact-hardening
     // penumbrae). Radii in degrees; the real sun/moon are ~0.27°, but a touch larger reads pleasantly.
     private static final int WATER_ANCHOR_MASK = 4095;
+    // Celestial NEE light levels, in the photometric units of {@link RtSceneUnits} (see
+    // docs/SCENE_UNITS_PLAN.md §3). WorldPush.lightRadiance is consumed by world.rgen as the light's
+    // ILLUMINANCE at normal incidence (lux) — the NEE term is brdf·E·ndl with no solid-angle factor, and
+    // the diffuse BRDF's 1/π is what turns 100,000 lux into the plan's 31,800 cd/m² white / 5,730 cd/m²
+    // 18%-grey noon surface. It is therefore independent of SUN_ANGULAR_RADIUS, which only jitters the
+    // shadow ray and so only sets penumbra softness.
+    //
+    // SUN_ILLUMINANCE_TOA is the photometric solar constant (top of atmosphere); the shared
+    // atmosphereTransmittance march below brings it to ~117,000 lux at a zenith sun and reddens/dims it
+    // through sunset on exactly the curve the visible sky follows. world.rmiss anchors the atmosphere
+    // in-scatter and the drawn sun disc on the same figure.
+    private static final float SUN_ILLUMINANCE_TOA = 128000.0f;
+    /** Full-moon ground illuminance, lux. Scaled below by the lit fraction of the current phase. */
+    private static final float MOON_ILLUMINANCE_FULL = 1.0f;
+    // Cool moonlight tint, the previous (0.30, 0.36, 0.55) ratio renormalised to BT.709 luma 1 so it
+    // sets colour only and MOON_ILLUMINANCE_FULL alone sets level.
+    private static final float MOON_TINT_R = 0.831112f;
+    private static final float MOON_TINT_G = 0.997335f;
+    private static final float MOON_TINT_B = 1.523706f;
     private static final Identifier SUN_ID = Identifier.withDefaultNamespace("sun");
     private static final Identifier[] MOON_IDS = createMoonIds();
     // Celestial rotation axis (the pole the sun/moon arc about): perpendicular to the east-west arc,
@@ -1181,11 +1200,10 @@ public final class RtComposite {
             // smoothstep below carries the remainder to exactly zero before the moon takes over.
             atmosphereTransmittance(sunX, sunY, sunZ, trans);
             float fade = smoothstep(-0.05f, 0.005f, sunY);
-            float sunPeak = 21.0f;
             lx = sunX; ly = sunY; lz = sunZ;
-            rr = sunPeak * trans[0] * fade;
-            rg = sunPeak * trans[1] * fade;
-            rb = sunPeak * trans[2] * fade;
+            rr = SUN_ILLUMINANCE_TOA * trans[0] * fade;
+            rg = SUN_ILLUMINANCE_TOA * trans[1] * fade;
+            rb = SUN_ILLUMINANCE_TOA * trans[2] * fade;
             lightRadius = CausticaConfig.Rt.Composite.SUN_ANGULAR_RADIUS.value();
         } else {
             // Moon: dim cool light, ramping up from zero at the sun→moon handoff (sunY = -0.05, where
@@ -1195,11 +1213,11 @@ public final class RtComposite {
             atmosphereTransmittance(moonX, moonY, moonZ, trans);
             float moonStrength = smoothstep(0.04f, 0.22f, -sunY);
             float litFraction = 1.0f - Math.abs(moonPhase - 4.0f) / 4.0f; // 0 new .. 1 full
-            float moonPeak = 0.20f * (0.15f + 0.85f * litFraction);
+            float moonPeak = MOON_ILLUMINANCE_FULL * (0.15f + 0.85f * litFraction);
             lx = moonX; ly = moonY; lz = moonZ;
-            rr = 0.30f * moonPeak * moonStrength * trans[0];
-            rg = 0.36f * moonPeak * moonStrength * trans[1];
-            rb = 0.55f * moonPeak * moonStrength * trans[2];
+            rr = MOON_TINT_R * moonPeak * moonStrength * trans[0];
+            rg = MOON_TINT_G * moonPeak * moonStrength * trans[1];
+            rb = MOON_TINT_B * moonPeak * moonStrength * trans[2];
             lightRadius = CausticaConfig.Rt.Composite.MOON_ANGULAR_RADIUS.value();
         }
         CelestialUv uv = celestialUv(moonPhase);

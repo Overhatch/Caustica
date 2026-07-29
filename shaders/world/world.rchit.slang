@@ -248,8 +248,8 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         float3 particleAlbedo709 = srgbToLinear(
                 entityAlbedoTex[NonUniformResourceIndex(pslot)].SampleLevel(puv, particleLod).rgb)
                 * srgbToLinear(pr.tint.rgb);
-        payload.albedo = half3(bt709ToAcesCg(particleAlbedo709));
-        payload.normal = half3(pn);
+        packAlbedo(payload, bt709ToAcesCg(particleAlbedo709));
+        packNormal(payload, pn);
         payload.hitT = RayTCurrent();
         // Per-particle motion vector: interpolate the captured per-vertex displacement (uniform across
         // the billboard's verts) with the same indices/barycentrics as the UV. dispAddr == 0 falls back
@@ -312,8 +312,8 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
                 header.params.x, header.params.y, pr.normal.w, material == MATERIAL_OPAQUE);
         n = surface.normal;
 
-        payload.albedo = half3(albedo * surface.ao);
-        payload.normal = half3(n);
+        packAlbedo(payload, albedo * surface.ao);
+        packNormal(payload, n);
         payload.hitT = RayTCurrent();
         // Per-vertex motion vector: interpolate the captured per-vertex displacement with the same
         // indices/barycentrics used for the UV above. Rotation and skeletal/lid animation use a
@@ -392,10 +392,10 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         n = glassSurface.normal;
         // Translucent blocks (glass, ice, …) are breakable too — apply the same overlay here, reusing
         // gtex (already sampled above) rather than re-fetching blockAlbedoAtlas.
-        payload.albedo = half3(bt709ToAcesCg(applyBreaking(
+        packAlbedo(payload, bt709ToAcesCg(applyBreaking(
                 opticalColor709 * glassSurface.ao, rayCone, WorldRayOrigin(),
                 WorldRayDirection(), RayTCurrent(), n)));
-        payload.normal = half3(n);
+        packNormal(payload, n);
         payload.hitT = RayTCurrent();
         payload.motionPrev = half3(0.0h, 0.0h, 0.0h);
         payload.f0 = half3(glassSurface.f0);
@@ -411,7 +411,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     // Beer–Lambert absorption. Opaque terrain uses textured albedo.
     float3 tint709 = srgbToLinear(tint);
     float3 albedo709 = srgbToLinear(blockAlbedoAtlas.SampleLevel(uv, blockLod).rgb) * tint709;
-    payload.albedo = half3(bt709ToAcesCg(
+    packAlbedo(payload, bt709ToAcesCg(
             materialHeader.model == MATERIAL_WATER ? tint709 : albedo709));
     payload.hitT = RayTCurrent();
     payload.motionPrev = half3(0.0h, 0.0h, 0.0h); // static terrain: camera-only motion vector
@@ -422,19 +422,19 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     float ew = pr.normal.w;
     bool nonSolid = ew >= 1.5;
     float emission = nonSolid ? ew - 2.0 : ew; // heuristic emission source (block light level)
-    Surface surface = evaluateMaterial(materialHeader, uv, blockLod, float3(payload.albedo), n,
+    Surface surface = evaluateMaterial(materialHeader, uv, blockLod, unpackAlbedo(payload), n,
             tp0, tp1, tp2, uv0, uv1, uv2, vdir,
             materialHeader.params.x, materialHeader.params.y, emission, nonSolid);
     n = surface.normal;
-    payload.albedo *= half(surface.ao);
+    packAlbedo(payload, unpackAlbedo(payload) * surface.ao);
     // Block-breaking overlay: opaque/cutout terrain (water skips — fluids aren't breakable). Evaluate
     // it after normal mapping so decal projection uses the same shading orientation as the old path.
     if (material != MATERIAL_WATER) {
-        payload.albedo = half3(bt709ToAcesCg(applyBreaking(
+        packAlbedo(payload, bt709ToAcesCg(applyBreaking(
                 albedo709 * surface.ao, rayCone, WorldRayOrigin(),
                 WorldRayDirection(), RayTCurrent(), n)));
     }
-    payload.normal = half3(n);
+    packNormal(payload, n);
     payload.f0 = half3(surface.f0);
     payloadSetPacked(payload, material, surface.roughness, surface.metalness,
             surface.emission, surface.sss, materialHeader.params.z, materialHeader.params.w,

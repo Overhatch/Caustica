@@ -49,10 +49,35 @@ public final class RtMaterialRegistry {
     // (formerly duplicated as a literal in world.rgen.slang and RtLightCollector). Baked into every
     // emissive RtMaterialDesc.emissionStrength at compile time (compileDesc/compileEntityDesc), times
     // any resource-pack emission.strength multiplier; see header()'s packing and RtMaterialOverrides.
-    private static final float EMISSIVE_STRENGTH = 5.0f;
+    //
+    // Photometric: cd/m² of the emitting surface, per {@link dev.comfyfluffy.caustica.rt.RtSceneUnits}
+    // (docs/SCENE_UNITS_PLAN.md §3).
+    //
+    // Anchored on LUMINOUS EXITANCE, not on flame luminance: a full-strength emitter face radiates about
+    // 1,000 lm/m², so one 1 m² block face is a ~1,000 lm lamp — a 75 W-equivalent bulb, which is what a
+    // glowstone block is meant to be in a room. Lambertian exitance M = π·L, so L = 1000/π = 318 cd/m².
+    //
+    // U3 first shipped 15,000 cd/m² (wood-flame luminance) and it was ~5.5 EV hot, because the plan's
+    // sanity check assumed a ~0.1 m torch quad while the emission mask puts that same luminance across a
+    // whole block face: 15,000 cd/m² over 1 m² is 47,000 lm, a stadium floodlight per glowstone. Measured
+    // in game (U5) a well-lit city interior metered EV100 12.5 — brighter than an overcast noon. At 318
+    // the same interior lands at ~7.0, against the plan's "lit indoor" reference of 6.5.
+    //
+    // A flame really is far brighter per unit area than a glowstone block, so one baseline cannot be
+    // right for both; the mask supplies coverage, not intensity. Exitance is the correct thing to anchor
+    // because it is what the emitter contributes to the room, and it happens to land a torch's small
+    // emissive footprint near 40 lm — a candle to a small torch — so the single knob is defensible until
+    // the per-material audit (SCENE_UNITS_PLAN §6 Q4) actually happens. That audit is still not done.
+    public static final float EMISSIVE_STRENGTH = 2000.0f;
     private static final int EMISSION_STRENGTH_SHIFT = 8;
     private static final int EMISSION_STRENGTH_MASK = 65535;
-    private static final float MAX_EMISSION_STRENGTH = 32.0f;
+    // Ceiling of the 16-bit fixed-point strength field, raised with the baseline above. HALF_MAX is the
+    // real transport ceiling downstream — Payload.emissionSss is a half2 lane and Light.le is packed
+    // R11G11B10 — so clamping here rather than higher keeps the encoded value representable end to end.
+    // The quantisation step is MAX/65535 ≈ 1 cd/m², i.e. 0.007% at the baseline. A resource pack's
+    // maximum 5x multiplier would reach 75,000 and clamps to this: a 0.19 EV reduction on something
+    // already several EV past display white, so invisible.
+    private static final float MAX_EMISSION_STRENGTH = 65504.0f;
     private static final int MAX_LOD_SHIFT = 24;
 
     private static final int MODEL_VARIANTS = 2; // ordinary opaque/cutout and transparent dielectric

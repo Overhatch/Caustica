@@ -59,7 +59,7 @@ public PathSegment tracePrimary(PathSegment seg,
             return terminal;
         }
 
-        float3 n = payload.normal;
+        float3 n = payloadNormal();
         float3 hitPos = ro + rd * payload.hitT;
         uint material = payloadMaterial();
         if (material != MATERIAL_WATER && material != MATERIAL_DIELECTRIC) {
@@ -69,8 +69,9 @@ public PathSegment tracePrimary(PathSegment seg,
             rough = exactSpecular ? 0.0 : rough;
             float metal = material == MATERIAL_PARTICLE
                     ? 0.0 : clamp(payloadMetalness(), 0.0, 1.0);
+            float3 hitAlbedo = payloadAlbedo();
             float3 diffAlb = material == MATERIAL_PARTICLE
-                    ? float3(payload.albedo) : float3(payload.albedo) * (1.0 - metal);
+                    ? hitAlbedo : hitAlbedo * (1.0 - metal);
             if (bounce == 0) {
                 gv_normal = n;
                 gv_hitCamRel = hitPos - worldPush.camOffset;
@@ -78,7 +79,7 @@ public PathSegment tracePrimary(PathSegment seg,
                 gv_motionObjDisp = payload.motionPrev;
                 gv_emissive = payloadEmission() > 0.0;
                 if (material == MATERIAL_PARTICLE) {
-                    gv_albedo = payload.albedo;
+                    gv_albedo = hitAlbedo;
                     gv_rough = 1.0;
                     gv_spec = makeSpecSurface(gv_hitCamRel, n, 1.0,
                                               float3(0.0, 0.0, 0.0));
@@ -126,7 +127,7 @@ public PathSegment tracePrimary(PathSegment seg,
 
         float transmission = clamp(payloadTransmission(), 0.0, 1.0);
         Medium entered = makeDielectricMedium(isWater, max(payloadIor(), 1.0),
-                                              payload.albedo, transmission);
+                                              payloadAlbedo(), transmission);
         float etaI = medium.current.ior;
         float etaT = entering ? entered.ior : medium.outer.ior;
         float F = fresnelDielectric(clamp(dot(-rd, n), 0.0, 1.0), etaI, etaT);
@@ -154,7 +155,7 @@ public PathSegment tracePrimary(PathSegment seg,
                 resolveTransmissionGuide(hitPos, transmittedDir, geometricNormal,
                         guideMedium, transmitBias, rayConeWidth, rayConeSpread,
                         !isWater && entering
-                                ? float3(payload.albedo) : float3(1.0, 1.0, 1.0));
+                                ? payloadAlbedo() : float3(1.0, 1.0, 1.0));
             }
         }
 

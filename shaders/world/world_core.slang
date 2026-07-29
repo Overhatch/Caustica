@@ -33,6 +33,14 @@ public struct VisibilityResult {
 
 
 
+// Views onto the module-level payload's hand-packed surface words (see Payload.surface0..2). Hit shaders
+// take their payload as a parameter and call the world_common forms directly; these exist so raygen-side
+// code reads the same as the payloadRoughness()/payloadEmission() accessors below it.
+public float3 payloadAlbedo() { return unpackAlbedo(payload); }
+public float3 payloadNormal() { return unpackNormal(payload); }
+/** Sky radiance on a miss — absolute scene units, full fp32. Only meaningful when hitT < 0. */
+public float3 payloadSky() { return unpackSky(payload); }
+
 public uint payloadMaterial() { return payload.flags & PAYLOAD_MATERIAL_MASK; }
 // Set by world.rchit on any dielectric hit (see PAYLOAD_DIELECTRIC_ENTERING) — whether the ray was
 // travelling into the volume (vs. out of it) at this hit's face.
@@ -54,7 +62,7 @@ public static const float PI = 3.14159265359;
 public static const float INV_PI = 0.31830988618;
 
 // The analytic sky (gradient + sun/moon discs + stars) is computed in world.rmiss. On a miss, raygen
-// reads payload.albedo and accumulates that sky radiance. The directional NEE light is pushed separately
+// reads payloadSky() and accumulates that radiance. The directional NEE light is pushed separately
 // as worldPush.lightDir / worldPush.lightRadiance / worldPush.sunDir.
 public static const float SURF_BIAS = 0.005;  // offset secondary-ray origins along the normal (anti-acne)
 public static const float RAY_TMIN = 0.001;   // tiny tmin: the normal offset already clears the surface

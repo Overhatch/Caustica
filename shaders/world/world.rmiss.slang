@@ -1,7 +1,11 @@
 // Ray miss = sky. Per-frame sky data comes from the WorldPush BDA buffer addressed by the 8-byte push
 // constant. The shader writes full sky radiance (Rayleigh/Mie/ozone atmosphere + transmittance-tinted
-// sun/moon discs + soft horizon + starfield) into payload.albedo; raygen consumes that value for both
-// accumulated radiance and bounce-0 denoiser guides.
+// sun/moon discs + soft horizon + starfield) into the payload's surface words, which world.rgen reads
+// back with payloadSky() and accumulates.
+//
+// Every constant here is photometric (cd/m² and lux) and derived from a published figure — see
+// docs/SCENE_UNITS_PLAN.md §3. Absolute sky spans far more than a half can hold, which is why those
+// payload words are hand-packed and the miss view of them is a full float3.
 //
 // Celestial discs (sun/moon) are gated by a packed payload flag, which raygen sets per-ray from the path
 // state: true on the primary ray and after every specular/dielectric bounce (so the sun/moon show up in
@@ -19,21 +23,56 @@ import world_common;
 static const float PI = 3.14159265359;
 float pow2(float x) { return x * x; }
 
-// Near-white top-of-atmosphere disc radiances: the visible warm/red tint comes from multiplying by
-// transmittanceToSpace(dir) at draw time — at noon the sun reads warm-white, at the horizon it reddens
-// on exactly the sky's own sunset curve.
-static const float3 SUN_DISC_RADIANCE  = float3(24.0, 23.0, 21.5);
-static const float3 MOON_DISC_RADIANCE = float3(1.7, 1.85, 2.2) / 4.0; // lit-side moon (HDR, bright at night exposure)
+// ---- Photometric anchors (docs/SCENE_UNITS_PLAN.md §3). A scene value is luminance in cd/m², so every
+// celestial constant below is derived from one of these two published figures and is individually
+// checkable, instead of only being meaningful relative to its neighbours.
+//
+// SUN_ILLUMINANCE is the photometric solar constant — illuminance on a surface normal to the sun at the
+// top of the atmosphere. RtComposite.skyPush anchors the NEE sunlight on the SAME figure, times the
+// shared atmosphereTransmittance march, which lands ~117,000 lux under a zenith sun: the standard
+// "clear noon ≈ 100,000 lux" reference, 0.23 EV high, reddening and dimming into the horizon on exactly
+// the curve the visible sky follows.
+static const float SUN_ILLUMINANCE  = 128000.0; // lux, normal incidence, top of atmosphere
+static const float MOON_ILLUMINANCE = 1.0;     // lux, full moon at the ground
 // Vibrance applied to the atmosphere in-scatter only (not discs/stars/night ambient): luminance-
 // preserving, so GI energy is unchanged.
 static const float SKY_SATURATION = 1.2;
 // VISIBLE disc half-angles, matched to vanilla: the sun/moon quads are drawn at half-width 30/20 at
 // distance 100 → half-angle = atan(0.30) / atan(0.20). Decoupled from the NEE light radius (≈0.6°).
-static const float SUN_DISC_HALF_ANGLE  = 0.29146; // atan(30/100), vanilla sun size
-static const float MOON_DISC_HALF_ANGLE = 0.19740; // atan(20/100), vanilla moon size
-// Faint night-sky ambient so the night isn't pure black where the atmosphere in-scatter falls to zero.
-static const float3 NIGHT_ZENITH  = float3(0.004, 0.008, 0.022) / 5.0;
-static const float3 NIGHT_HORIZON = float3(0.015, 0.022, 0.045) / 5.0;
+static const float SUN_DISC_TAN  = 0.30;           // vanilla sun quad, half-width 30 at distance 100
+static const float MOON_DISC_TAN = 0.20;           // vanilla moon quad, half-width 20 at distance 100
+static const float SUN_DISC_HALF_ANGLE  = 0.29146; // atan(SUN_DISC_TAN)
+static const float MOON_DISC_HALF_ANGLE = 0.19740; // atan(MOON_DISC_TAN)
+// squareBody projects a gnomonic square spanning 2·tan(halfAngle) on a side, so the drawn body covers
+// (2·tan)² sr.
+static const float SUN_DISC_SOLID_ANGLE  = 4.0 * SUN_DISC_TAN * SUN_DISC_TAN;   // 0.36 sr
+static const float MOON_DISC_SOLID_ANGLE = 4.0 * MOON_DISC_TAN * MOON_DISC_TAN; // 0.16 sr
+// Disc radiance is derived from illuminance and the solid angle the body is actually DRAWN at
+// (L = E / Ω), deliberately not from its true surface luminance. Vanilla's sun sprite is ~62× the real
+// sun's angular radius, i.e. ~3900× its solid angle; painting it at the physical 1.6e9 cd/m² would put
+// ~3900× the sun's power into every path that sees the disc. Specular and dielectric bounces do see it,
+// and they already took the sun through NEE, so that double-count would go from harmless today (the
+// disc is far dimmer than the NEE light) to dominant, with fireflies off every glossy lobe. Deriving
+// from illuminance keeps the drawn disc's total power equal to the sun's at whatever size it is drawn,
+// and costs nothing visually — 3.6e5 cd/m² still sits ~15 EV over an 18%-grey noon surface, which the
+// ACES 2.0 output transform renders as pure white exactly like 1.6e9 would. The `core`/`m` sprite
+// shaping below only removes power from here, never adds, so the estimate stays conservative.
+//
+// The tints are the previous hand-picked warm/cool ratios renormalised to BT.709 luma 1, so they set
+// colour only and never level; the visible warm/red cast still comes from multiplying by
+// transmittanceToSpace(dir) at draw time.
+static const float3 SUN_DISC_TINT  = float3(1.038768, 0.995486, 0.930563); // (24, 23, 21.5) at luma 1
+static const float3 MOON_DISC_TINT = float3(0.922219, 1.003591, 1.193460); // (1.7, 1.85, 2.2) at luma 1
+static const float3 SUN_DISC_RADIANCE  = SUN_DISC_TINT * (SUN_ILLUMINANCE / SUN_DISC_SOLID_ANGLE);
+static const float3 MOON_DISC_RADIANCE = MOON_DISC_TINT * (MOON_ILLUMINANCE / MOON_DISC_SOLID_ANGLE);
+// Faint night-sky ambient so the night isn't pure black where the atmosphere in-scatter falls to zero:
+// airglow plus integrated starlight, ~0.0005 cd/m². Tints renormalised to luma 1 like the discs, so the
+// blue cast survives the level change. Whether a moonless night wants an explicit gameplay floor on top
+// of this is a design decision the plan defers (§6 Q3) — this constant is now the physical value, not
+// the fudge that used to stand in for one.
+static const float  NIGHT_LUMINANCE = 0.005;
+static const float3 NIGHT_ZENITH  = float3(0.490173, 0.980344, 2.695945) * NIGHT_LUMINANCE;
+static const float3 NIGHT_HORIZON = float3(0.676517, 0.992225, 2.029550) * NIGHT_LUMINANCE;
 
 // ---- Physically-based atmosphere (Nishita / O'Neil single scattering + ozone absorption). A view ray
 // is marched through the atmospheric shell; at each step the transmittance toward the sun is integrated
@@ -52,7 +91,12 @@ static const float  MIE_G      = 0.758;            // Mie anisotropy (forward-sc
 static const float3 OZONE_BETA = float3(0.650e-6, 1.881e-6, 0.085e-6);
 static const float  OZONE_CENTER_H = 25000.0;
 static const float  OZONE_WIDTH_H  = 15000.0;
-static const float  SUN_INTENSITY = 22.0;
+// The march takes irradiance in and produces radiance out (β has units 1/m, the phase functions 1/sr),
+// so the same photometric solar constant the NEE light uses is the physically correct input here — no
+// separate atmosphere-only scale. Back-of-envelope this puts the zenith sky near 1e4 cd/m² at noon,
+// the right order for the ~5,000 cd/m² reference; SCENE_UNITS_PLAN §6 Q1 wants one in-game reading to
+// confirm the march carries no baked-in normalisation.
+static const float  SUN_INTENSITY = SUN_ILLUMINANCE;
 static const int    ATMOS_PRIMARY_STEPS = 16;
 static const int    ATMOS_LIGHT_STEPS   = 8;
 
@@ -288,13 +332,13 @@ void main(inout Payload payload) {
         }
     }
 
-    // albedo is a half3 lane, so the sky's HDR radiance is clamped to half's finite range rather than
-    // allowed to round up to +inf and propagate as NaN through the path throughput. This is a guard, not
-    // a correction: the brightest term here is SUN_DISC_RADIANCE at 24.0, far under the 65504 ceiling.
-    float3 colAcesCg = bt709ToAcesCg(max(col, float3(0.0)));
-    payload.albedo = half3(clamp(colAcesCg, float3(0.0), float3(HALF_MAX)));
+    // The sky goes out in absolute scene units at full fp32 — packSky writes the payload's three surface
+    // words as raw floats rather than as halves, which is why the sun disc's 3.6e5 cd/m² needs neither a
+    // pre-exposure scale nor a clamp to stay representable here. The fp16 ceiling reappears only at
+    // world.rgen's outImage store, where docs/SCENE_UNITS_PLAN.md §2 puts the sun-disc clamp anyway.
+    // packSky also overwrites the normal view, so there is no separate normal clear below.
+    packSky(payload, bt709ToAcesCg(max(col, float3(0.0))));
     payload.hitT = -1.0;
-    payload.normal = half3(0.0h, 0.0h, 0.0h);
     payload.motionPrev = half3(0.0h, 0.0h, 0.0h);
     payload.f0 = half3(0.0h, 0.0h, 0.0h);
     payload.flags = 0u;

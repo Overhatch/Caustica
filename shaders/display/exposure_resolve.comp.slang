@@ -1,6 +1,6 @@
 // Single-invocation exposure controller: percentile-trimmed mean of log2 luminance -> key -> clamp ->
-// exponential smoothing (in LINEAR exposure-scale space -- see docs/EXPOSURE_PLAN.md D4/S4, not yet
-// changed to EV-space smoothing). ExposureState is widened past the original (previous, initialized)
+// exponential smoothing in EV space (docs/EXPOSURE_PLAN.md S4). ExposureState is widened past the
+// original (previous, initialized)
 // pair with S0's read-only diagnostics (evScene/evTarget/evApplied/clipLowFrac/clipHighFrac), read
 // back one frame late on the CPU for the debug log line in RtExposure -- see docs/EXPOSURE_PLAN.md S0.
 // resetSeq/evHistory are reserved for S4 (hard reset, median-of-N flash rejection) and are neither
@@ -166,9 +166,18 @@ void main() {
 
     bool initialized = stateBuf[0].initialized != 0u;
     float prev = initialized ? max(stateBuf[0].previous, 1.0e-12) : target;
-    float rate = target > prev ? pc.adaptUp : pc.adaptDown;
+    // Smooth in EV space, not in linear exposure space (docs/EXPOSURE_PLAN.md S4). Linear smoothing is
+    // wildly asymmetric for reasons that have nothing to do with the time constants: lerping toward a
+    // much LARGER target crosses most of the ratio in the first frame, while lerping toward a much
+    // SMALLER one decays through it geometrically. Measured in game, that made day->night snap in a
+    // frame and night->day take ~3.5s of white screen -- the exact opposite of how eyes work, and it
+    // survived any choice of adaptUp/adaptDown because the asymmetry was in the interpolation itself.
+    // In EV space a 15 EV swing takes the same 3.4*tau either way, so the time constants below are the
+    // only thing that sets the asymmetry, and they can express the real one: light adaptation is quick,
+    // dark adaptation is slow.
+    float rate = target > prev ? pc.adaptDarken : pc.adaptBrighten;
     float alpha = initialized ? 1.0 - exp(-pc.frameTimeSeconds / max(rate, 1.0e-4)) : 1.0;
-    float exposure = lerp(prev, target, clamp(alpha, 0.0, 1.0));
+    float exposure = exp2(lerp(log2(prev), log2(target), clamp(alpha, 0.0, 1.0)));
 
     // previous stays ABSOLUTE: it is both the smoothing history and the value RtExposure reads back
     // to choose next frame's preExposure.

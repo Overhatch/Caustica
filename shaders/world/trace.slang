@@ -37,9 +37,12 @@ public float3 offsetSurfaceOrigin(float3 position, float3 surfaceNormal,
 // information into a trace and is initialized to a neutral value here.
 public Payload makeRadiancePayload(uint flags, uint rayCone) {
     Payload p;
-    p.albedo = half3(0.0h, 0.0h, 0.0h);
-    p.normal = half3(0.0h, 0.0h, 0.0h);
-    p.hitT = -1.0; // miss sentinel: world.rmiss writes only albedo, so a miss leaves this negative
+    // Zeroes the packed albedo/normal words directly: both the hit and the miss view read zero out of
+    // them (half 0 and float 0 are the same bit pattern), so this is neutral for either case.
+    p.surface0 = 0u;
+    p.surface1 = 0u;
+    p.surface2 = 0u;
+    p.hitT = -1.0; // miss sentinel: world.rmiss writes only the surface words, so a miss leaves this negative
     p.motionPrev = half3(0.0h, 0.0h, 0.0h);
     p.f0 = half3(0.0h, 0.0h, 0.0h);
     p.flags = flags;
@@ -74,9 +77,12 @@ public void traceGuide(uint cullMask, float3 ro, float tmin, float3 rd, float tm
 
 public Payload makeShadowPayload() {
     Payload shadowPayload;
-    shadowPayload.albedo = half3(1.0h, 1.0h, 1.0h);
+    shadowPayload.surface0 = 0u;
+    shadowPayload.surface1 = 0u;
+    shadowPayload.surface2 = 0u;
+    // The albedo view is this ray's accumulated transmittance; the any-hits multiply into it.
+    packAlbedo(shadowPayload, float3(1.0, 1.0, 1.0));
     shadowPayload.hitT = -1.0; // water-crossing sentinel, filled by the water any-hit
-    shadowPayload.normal = half3(0.0h, 0.0h, 0.0h);
     shadowPayload.motionPrev = half3(0.0h, 0.0h, 0.0h);
     shadowPayload.f0 = half3(0.0h, 0.0h, 0.0h);
     // world_guide.rmiss clears this sentinel. An accepted opaque hit skips closest-hit and therefore
@@ -91,10 +97,10 @@ public Payload makeShadowPayload() {
 
 public VisibilityResult visibility(float3 origin, float3 dir, float tmax) {
     // Vulkan requires an identical payload structure for every stage reachable by this trace. The shadow
-    // path uses only albedo as accumulated transmittance and hitT as the nearest-water crossing.
+    // path uses only the albedo view as accumulated transmittance and hitT as the nearest-water crossing.
     Payload shadowPayload = makeShadowPayload();
     // Shadow SBT records run any-hit only for cutout/translucent/water. Cutout alpha-tests; translucent
-    // and water tint shadowPayload.albedo and pass through. Solid blocks terminate traversal. There is no
+    // and water tint that transmittance and pass through. Solid blocks terminate traversal. There is no
     // closest shader worth executing. The lightweight guide miss clears the flags sentinel so this path
     // needs only ordinary TraceRay and no invocation-reorder capability.
     TraceRay(topLevelAS,
@@ -103,7 +109,7 @@ public VisibilityResult visibility(float3 origin, float3 dir, float tmax) {
             makeRay(origin, RAY_TMIN, dir, tmax), shadowPayload);
     VisibilityResult result;
     result.transmittance = shadowPayload.flags == 0u
-            ? shadowPayload.albedo : float3(0.0, 0.0, 0.0);
+            ? unpackAlbedo(shadowPayload) : float3(0.0, 0.0, 0.0);
     result.waterHitT = shadowPayload.hitT;
     return result;
 }

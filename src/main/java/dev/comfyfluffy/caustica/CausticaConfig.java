@@ -109,9 +109,19 @@ public final class CausticaConfig {
                         + " docs/DISPLAY_TRANSFORM_PLAN.md). gamma is a luminance-preserving artistic\n"
                         + " correction applied after both LUTs (1 is neutral; below 1 brightens midtones).");
         FILE.setComment("exposure",
-                " Auto-exposure metering and shaping (see docs/EXPOSURE_PLAN.md). curve is either 'full'\n"
-                        + " for legacy full adaptation or four measured-EV:compensation-EV control points,\n"
-                        + " for example \"-6:-2.0, -3:-0.8, 0:0.0, 4:0.4\". sky-weight-cap and\n"
+                " Auto-exposure metering and shaping (see docs/EXPOSURE_PLAN.md). Scene values are\n"
+                        + " photometric since docs/SCENE_UNITS_PLAN.md U2: metered EV is EV100, and measured in\n"
+                        + " game that is about +17.5 on noon sand, +7 in daylight shade, +1.5 on a lit night\n"
+                        + " street, -8 on a starlit sky. curve is either 'full' for legacy full adaptation or\n"
+                        + " four measured-EV100:compensation-EV control points; compensation is how far below\n"
+                        + " the noon reference that scene should RENDER, so a more negative floor means darker\n"
+                        + " nights. adapt-darken / adapt-brighten are adaptation time constants in seconds,\n"
+                        + " applied in EV space and named for what the scene did; darkening is slower on\n"
+                        + " purpose, the way eyes work. min-ev/max-ev bound the ABSOLUTE exposure multiplier\n"
+                        + " (about -17 at noon, +3.5 on a starlit sky) and are guard rails, not the controller\n"
+                        + " -- widening max-ev lets exposure run away on a dark frame. manual-ev is on that\n"
+                        + " same absolute scale in manual mode, so a daylight scene wants about -17 there,\n"
+                        + " while in auto mode it is an EV bias on top of the curve. sky-weight-cap and\n"
                         + " emissive-weight-cap bound those populations' final metering shares.");
         FILE.setComment("hdr",
                 " HDR display output (ST.2084/PQ). When enabled the swapchain is created in PQ automatically\n"
@@ -702,11 +712,27 @@ public final class CausticaConfig {
         }
 
         public static final class Exposure {
-            // Control points are measured-EV100 : compensation-EV (see docs/SCENE_UNITS_PLAN.md §1).
-            // NOTE: these shifted +3 when metering moved from log2(scene value) to EV100 in U0 --
-            // same curve, restated on the new x-axis, so the rendered result is unchanged. They are
-            // NOT yet the plan's §4 physical values; that is U4, after the light constants land.
-            public static final String DEFAULT_CURVE = "-3:-2.0, 0:-0.8, 3:0.0, 7:0.4";
+            // Control points are measured-EV100 : compensation-EV (see docs/SCENE_UNITS_PLAN.md §1/§4).
+            // Rendered median (log) = log2(key) + comp(evScene), so comp IS the rendered offset in EV
+            // from the noon reference.
+            //
+            // Fitted to MEASURED in-game EV100 (U5, 2026-07-29) rather than to the plan's reference
+            // table, and to the emissive baseline as corrected in the same pass:
+            //   noon sand       +17.45 -> -0.01   renders at key, the reference
+            //   noon blue sky   +16.50 -> -0.17
+            //   daylight shade   +7.00 -> -1.82
+            //   lit night room   +7.00 -> -1.82   (same measured luminance as daylight shade)
+            //   night street     +1.50 -> -3.01
+            //   starlit sky      -8.00 -> -5.00   (floor)
+            // Effective slope 0.79 / 0.78 / 0.83 across the three segments -- flatter than the previous
+            // 0.86, which is the fix for "it targets mid-grey everywhere": 25 EV of scene range now
+            // compresses to 5.0 EV of rendered difference instead of 3.5.
+            //
+            // Daylight shade and a lit interior at night measure the SAME (~EV 7), so no luminance-only
+            // curve can separate them -- what does is the asymmetric temporal adaptation above, which
+            // holds a low exposure when you step from noon sun into shade. That is a real limit of this
+            // controller, not a tuning miss.
+            public static final String DEFAULT_CURVE = "0:-4.0, 2:-2.4, 8:0.0, 15:1.0";
             public static final StringSetting MODE =
                     string("caustica.rt.exposure.mode", "exposure.mode", "auto", Exposure::sanitizeMode);
             public static final StringSetting CURVE =
@@ -715,14 +741,38 @@ public final class CausticaConfig {
             public static final FloatSetting MANUAL_EV =
                     finiteFloat("caustica.rt.exposure.manualEv", "exposure.manual-ev", 0.0f);
             public static final FloatSetting KEY = exposureScale("caustica.rt.exposure.key", "exposure.key", 0.18f);
+            // Bounds on the ABSOLUTE exposure multiplier. Sized from what the curve above actually asks
+            // for at the measured scene extremes: -16.9 EV at noon sand, +3.5 EV at the starlit-sky
+            // floor. A clamp should be a guard rail, not the controller, so these sit just outside that.
+            //
+            // max-ev was +10 and blew out the frame: with 13 EV of headroom above what the curve wants,
+            // exposure ran away whenever the camera held something very dark, and anything bright
+            // entering the frame then arrived pre-blown. +5 keeps 1.5 EV over the curve's own demand.
+            //
+            // min-ev deliberately does NOT cover a zoomed-in sun (which asks for about -20.8): letting
+            // the whole frame go black because the sun is in shot is worse than clamping it. The sky
+            // metering cap already bounds the sun's share, so in practice this only engages on a
+            // near-full-screen sun.
             public static final FloatSetting MIN_EV =
-                    finiteFloat("caustica.rt.exposure.minEv", "exposure.min-ev", -1.5f);
+                    finiteFloat("caustica.rt.exposure.minEv", "exposure.min-ev", -15.0f);
             public static final FloatSetting MAX_EV =
-                    finiteFloat("caustica.rt.exposure.maxEv", "exposure.max-ev", 4.0f);
-            public static final FloatSetting ADAPT_UP =
-                    exposureScale("caustica.rt.exposure.adaptUp", "exposure.adapt-up", 0.12f);
-            public static final FloatSetting ADAPT_DOWN =
-                    exposureScale("caustica.rt.exposure.adaptDown", "exposure.adapt-down", 0.35f);
+                    finiteFloat("caustica.rt.exposure.maxEv", "exposure.max-ev", 0.0f);
+            /**
+             * Adaptation time constants in seconds, applied in EV space by the resolve. Named for what
+             * the SCENE did: walking into a dark cave is "darken" (exposure has to rise), stepping back
+             * out is "brighten".
+             *
+             * <p>Asymmetric on purpose, and in the direction human vision actually works — light
+             * adaptation takes seconds, dark adaptation takes minutes. Every shipping game compresses
+             * that, but keeping the sign right is what makes a sunrise read as a sunrise instead of as a
+             * lens. Renamed from {@code adapt-up}/{@code adapt-down}, which described which way the
+             * exposure multiplier moved and therefore read backwards; an old config's keys are ignored
+             * rather than reinterpreted, because their values meant the opposite of these.
+             */
+            public static final FloatSetting ADAPT_DARKEN =
+                    exposureScale("caustica.rt.exposure.adaptDarken", "exposure.adapt-darken", 2.0f);
+            public static final FloatSetting ADAPT_BRIGHTEN =
+                    exposureScale("caustica.rt.exposure.adaptBrighten", "exposure.adapt-brighten", 0.4f);
             public static final FloatSetting LOW_PERCENTILE =
                     clampedFloat("caustica.rt.exposure.lowPercentile", "exposure.low-percentile", 0.50f, 0.0f, 1.0f);
             public static final FloatSetting HIGH_PERCENTILE =
@@ -764,8 +814,14 @@ public final class CausticaConfig {
                 return Math.max(MIN_EV.value(), MAX_EV.value());
             }
 
+            /**
+             * Sanity bound on an exposure multiplier, not an artistic one. Widened with {@link #MIN_EV}
+             * / {@link #MAX_EV} in U2: the old {@code 1e-4} floor sat above the 3.8e-6 that {@code -18
+             * EV} asks for, so it would have truncated a physically ordinary noon exposure. The
+             * controller's own min-ev/max-ev is what actually bounds this; here we only reject garbage.
+             */
             public static float clampScale(float value) {
-                return Math.clamp(value, 1.0e-4f, 1.0e4f);
+                return Math.clamp(value, 1.0e-8f, 1.0e8f);
             }
 
             private static String sanitizeMode(String value) {

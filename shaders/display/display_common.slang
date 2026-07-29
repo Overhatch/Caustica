@@ -21,8 +21,11 @@ public struct ExposureResolvePush {
     public float key;
     public float minEv;
     public float maxEv;
-    public float adaptUp;
-    public float adaptDown;
+    // Adaptation time constants, in seconds, applied in EV space (see exposure_resolve's smoothing
+    // step). Named for what the SCENE did, not for which way the exposure multiplier moved: a darkening
+    // scene needs MORE exposure, so adaptDarken is the branch where target > prev.
+    public float adaptDarken;
+    public float adaptBrighten;
     public float frameTimeSeconds;
     public float evBias;
     public float lowPercentile;

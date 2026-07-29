@@ -212,7 +212,7 @@ final class RtExposurePipeline {
             ByteBuffer push = stack.malloc(ExposureResolvePushData.BYTE_SIZE);
             RtExposure.ExposureCurve curve = config.curve();
             new ExposureResolvePushData(
-                    config.key(), config.minEv(), config.maxEv(), config.adaptUp(), config.adaptDown(),
+                    config.key(), config.minEv(), config.maxEv(), config.adaptDarken(), config.adaptBrighten(),
                     frameTimeSeconds, config.evBias(), config.lowPercentile(), config.highPercentile(),
                     config.skyWeightCap(), curve.scene0(), curve.compensation0(), curve.scene1(),
                     curve.compensation1(), curve.scene2(), curve.compensation2(), curve.scene3(),

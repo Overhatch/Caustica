@@ -123,9 +123,10 @@ public float2 resolveSpecularGuides(SpecSurface surface, float3 primaryDir,
                 && (reflectedMaterial == MATERIAL_OPAQUE
                     || reflectedMaterial == MATERIAL_PARTICLE)
                 && payloadEmission() <= 0.0) {
+            float3 reflectedAlbedo = payloadAlbedo();
             float3 reflectedDiffuse = reflectedMaterial == MATERIAL_PARTICLE
-                    ? float3(payload.albedo)
-                    : float3(payload.albedo) * (1.0 - clamp(payloadMetalness(), 0.0, 1.0));
+                    ? reflectedAlbedo
+                    : reflectedAlbedo * (1.0 - clamp(payloadMetalness(), 0.0, 1.0));
             if (max(reflectedDiffuse.r, max(reflectedDiffuse.g, reflectedDiffuse.b)) > 0.001) {
                 specAlbedo = surface.albedo * reflectedDiffuse;
             }
@@ -181,11 +182,12 @@ public void resolveTransmissionGuide(float3 surfacePos, float3 transmittedDir,
         if (material == MATERIAL_OPAQUE || material == MATERIAL_PARTICLE) {
             float endpointRoughness = material == MATERIAL_PARTICLE
                     ? 1.0 : clamp(payloadRoughness(), 0.0, 1.0);
+            float3 hitAlbedo = payloadAlbedo();
             float3 endpointAlbedo = material == MATERIAL_PARTICLE
-                    ? payload.albedo
-                    : payload.albedo * (1.0 - clamp(payloadMetalness(), 0.0, 1.0));
+                    ? hitAlbedo
+                    : hitAlbedo * (1.0 - clamp(payloadMetalness(), 0.0, 1.0));
             setTransmissionGuide(interfacePos - worldPush.camOffset, payload.motionPrev,
-                    payload.normal, endpointRoughness, guideFilter * endpointAlbedo,
+                    payloadNormal(), endpointRoughness, guideFilter * endpointAlbedo,
                     payloadEmission() > 0.0);
             return;
         }
@@ -193,7 +195,7 @@ public void resolveTransmissionGuide(float3 surfacePos, float3 transmittedDir,
 
         bool isWater = material == MATERIAL_WATER;
         bool entering = payloadDielectricEntering();
-        float3 geometricNormal = normalize(payload.normal);
+        float3 geometricNormal = normalize(payloadNormal());
         float3 interfaceNormal = geometricNormal;
         if (isWater && (worldPush.flags & 16u) != 0u) {
             float waterFootprint = rayConeWidth
@@ -205,7 +207,7 @@ public void resolveTransmissionGuide(float3 surfacePos, float3 transmittedDir,
 
         float transmission = clamp(payloadTransmission(), 0.0, 1.0);
         Medium entered = makeDielectricMedium(isWater, max(payloadIor(), 1.0),
-                                              payload.albedo, transmission);
+                                              payloadAlbedo(), transmission);
         float etaT = entering ? entered.ior : medium.outer.ior;
         float3 nextDirection = refract(direction, interfaceNormal, medium.current.ior / etaT);
         if (dot(nextDirection, nextDirection) <= 0.0) {
@@ -216,7 +218,7 @@ public void resolveTransmissionGuide(float3 surfacePos, float3 transmittedDir,
             return;
         }
         if (!isWater && entering) {
-            guideFilter *= payload.albedo;
+            guideFilter *= payloadAlbedo();
         }
         if (entering) {
             mediumPush(medium, entered);

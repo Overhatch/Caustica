@@ -13,10 +13,12 @@ package dev.comfyfluffy.caustica.rt;
  * modelled: "luminance" means the AP1/D60 Y of the stored ACEScg triple, consistent with
  * {@code ACESCG_LUMA} in the metering shaders.
  *
- * <p><b>Status:</b> the unit definition and the EV100 metering scale below are live, but the light
- * constants themselves are not physical yet — that is stage U2 of the plan. Until then the reported
- * EV100 is internally consistent (and the curve is expressed on it) but is not yet the true
- * photometric value, so it cannot be compared against the plan's reference table.
+ * <p><b>Status:</b> live through stage U4 — the unit definition, the EV100 metering scale, the light
+ * constants ({@code RtComposite.SUN_ILLUMINANCE_TOA} / {@code MOON_ILLUMINANCE_FULL},
+ * {@code world.rmiss.slang}'s disc + atmosphere + night constants,
+ * {@code RtMaterialRegistry.EMISSIVE_STRENGTH}) and the compensation curve are all on this scale, so
+ * the reported EV100 is meant to be the true photometric value and IS comparable against the plan's
+ * reference table. Confirming that in game within ~1 EV is stage U5 and has not been done.
  */
 public final class RtSceneUnits {
     /** cd/m² that a scene value of {@code 1.0} represents. The unit definition; see class docs. */

@@ -91,13 +91,14 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
             float3 tint709 = lerp(float3(1.0),
                     srgbToLinear(texel.rgb) * srgbToLinear(epr.tint.rgb), texel.a);
             float3 tint = bt709ToAcesCg(tint709);
-            payload.albedo *= half3(tint * clamp(materialHeader.params.w, 0.0, 1.0));
+            packAlbedo(payload, unpackAlbedo(payload) * tint * clamp(materialHeader.params.w, 0.0, 1.0));
             IgnoreHit();
         }
         if (instanceKind == ENTITY_BIT && shadowRay && materialHeader.model == MATERIAL_WATER) {
             float3 tint = bt709ToAcesCg(
                     srgbToLinear(texel.rgb) * srgbToLinear(epr.tint.rgb));
-            payload.albedo *= half3(lerp(float3(1.0, 1.0, 1.0), tint, WATER_SHADOW_TINT)
+            packAlbedo(payload, unpackAlbedo(payload)
+                    * lerp(float3(1.0, 1.0, 1.0), tint, WATER_SHADOW_TINT)
                     * clamp(materialHeader.params.w, 0.0, 1.0));
             payload.hitT = payload.hitT < 0.0 ? RayTCurrent() : min(payload.hitT, RayTCurrent());
             IgnoreHit();
@@ -114,7 +115,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     if (bucket == BUCKET_WATER) {
         TerrainPrim pr = ConstPtr<TerrainPrim>(sec.primAddr)[tri];
         float3 tint = bt709ToAcesCg(srgbToLinear(pr.tint.rgb));
-        payload.albedo *= half3(lerp(float3(1.0), tint, WATER_SHADOW_TINT));
+        packAlbedo(payload, unpackAlbedo(payload) * lerp(float3(1.0), tint, WATER_SHADOW_TINT));
         // Record the NEAREST water crossing (any-hit order is arbitrary) in the shadow payload's hitT
         // lane. For an underwater shading point this is the exit point of its sun shadow ray, where
         // world.rgen evaluates the wave-refraction caustic. visibility() seeds the -1 sentinel.
@@ -130,7 +131,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     // Modeled as Beer-Lambert absorption (matching the water medium in world.rgen): a per-channel
     // extinction derived from how dark the average is, scaled by the average alpha (how much of the
     // sprite is glass-colorant vs. see-through frame), so saturated panes darken transmitted light
-    // non-linearly. Multiplying into payload.albedo compounds correctly across stacked panes.
+    // non-linearly. Multiplying into the albedo view compounds correctly across stacked panes.
     if (bucket == BUCKET_TRANSLUCENT) {
         TerrainPrim pr = ConstPtr<TerrainPrim>(sec.primAddr)[tri];
         MaterialHeader materialHeader = ConstPtr<MaterialHeader>(pc.materialTableAddr)[pr.materialId];
@@ -140,7 +141,8 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         // The neutral floor is a flat per-hit dimming, NOT scaled by alpha: vanilla clear glass has a low
         // natural alpha, so folding it into the alpha-scaled term crushed it to near-zero for exactly the
         // white/clear-glass case it's meant to cover.
-        payload.albedo *= half3(exp(-colorExtinction * materialHeader.average.a - TRANSLUCENT_NEUTRAL_EXTINCTION));
+        packAlbedo(payload, unpackAlbedo(payload)
+                * exp(-colorExtinction * materialHeader.average.a - TRANSLUCENT_NEUTRAL_EXTINCTION));
         IgnoreHit();
     }
 

@@ -55,8 +55,14 @@ final class RtLightCollector {
     /**
      * An emitter whose rectangle-mean radiance luminance is below this is too weak to bother sampling:
      * keep it out of the buffer (always-gathered on hits instead).
+     *
+     * <p>Expressed as a fraction of the emissive baseline rather than as an absolute radiance, because
+     * "too weak to sample" is a statement about this emitter relative to a full-strength one, not about
+     * cd/m². Written absolute (0.005 against a baseline of 5) it silently changed meaning by 3.5 decades
+     * when U2/U3 moved the baseline to physical units — exactly the mutual-tuning coupling
+     * {@code docs/SCENE_UNITS_PLAN.md} exists to remove.
      */
-    private static final float LE_LUM_EPS = 0.005f;
+    private static final float LE_LUM_EPS = 0.001f * RtMaterialRegistry.EMISSIVE_STRENGTH;
 
     /** Samples per axis over the quad's (a,b) parameter square; matches the emission grid resolution. */
     private static final int SCAN = RtEmissionGrid.SIZE;

@@ -86,9 +86,10 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
 #endif
 
         if (payload.hitT < 0.0) {
-            // world.rmiss writes sky radiance (gradient + sun/moon disc + stars) into payload.albedo. The
+            // world.rmiss writes sky radiance (gradient + sun/moon disc + stars) into the payload's
+            // surface words as a full float3, so this is absolute scene units with nothing to undo. The
             // packed show-celestial flag decides whether this path segment may see the bright disc.
-            float3 sky = payload.albedo;
+            float3 sky = payloadSky();
             L += throughput * sky; // escaped to sky
             break;
         }
@@ -101,7 +102,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             throughput *= exp(-medium.current.extinction * payload.hitT);
         }
 
-        float3 n = payload.normal; // oriented toward the incoming ray by the closest-hit
+        float3 n = payloadNormal(); // oriented toward the incoming ray by the closest-hit
         float3 hitPos = ro + rd * payload.hitT;
         rayConeWidth = max(rayConeWidth + rayConeSpread * max(payload.hitT, 0.0), RAY_CONE_MIN_WIDTH);
         uint material = payloadMaterial();
@@ -125,7 +126,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             }
             bool isWater = material == MATERIAL_WATER;
             bool entering = payloadDielectricEntering();
-            float3 tint = payload.albedo;
+            float3 tint = payloadAlbedo();
             float transmission = clamp(payloadTransmission(), 0.0, 1.0);
 
             // Ripple the (near-flat) surface normal before any Fresnel/guide use → glints, broken
@@ -185,7 +186,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // off secondary rays, so this only fires at bounce 0; they receive direct light and one diffuse
         // path continuation into the scene, but never appear in shadows/reflections/GI or emit radiance.
         if (material == MATERIAL_PARTICLE) {
-            float3 albedo = payload.albedo;
+            float3 albedo = payloadAlbedo();
 
             float3 lightDir = worldPush.lightDir.xyz;
             float lightHalfAngle = worldPush.lightDir.w;
@@ -227,7 +228,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             continue;
         }
 
-        float3 albedo = payload.albedo;
+        float3 albedo = payloadAlbedo();
         float sss = payloadSss(); // LabPBR SSS strength (0 when absent)
         float3 p = hitPos + n * SURF_BIAS;
         float3 v = -rd; // view direction (toward the camera / incoming ray)
@@ -407,7 +408,14 @@ void main() {
         }
         recordIndex = packed.nextRecord;
     }
-    // Pre-exposure is applied here and nowhere else: the entire path-traced result above is in
-    // absolute scene units, and only the fp16 store is normalized. See docs/SCENE_UNITS_PLAN.md §2.
-    outImage[pix] = float4(frameRadiance * (worldPush.preExposure / float(spp)), 1.0);
+    // Pre-exposure is applied here and nowhere else: the entire path-traced result above is in absolute
+    // scene units, and only the fp16 store is normalized. See docs/SCENE_UNITS_PLAN.md §2.
+    //
+    // This clamp is the plan's sun-disc clamp, and it now covers every radiance source rather than only
+    // the sky: outImage is rgba16f, so anything over 65504 would round to +inf and propagate as NaN
+    // through the denoiser. Pre-exposed, it only bites when a pixel would render >65504x mid-grey — the
+    // sun mid-transition, a firefly off a tiny emitter — and ACES 2.0 renders anything a few EV over
+    // white as white, so it costs nothing visible.
+    float3 stored = frameRadiance * (worldPush.preExposure / float(spp));
+    outImage[pix] = float4(clamp(stored, float3(0.0), float3(HALF_MAX)), 1.0);
 }

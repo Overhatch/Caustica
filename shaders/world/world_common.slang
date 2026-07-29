@@ -119,20 +119,38 @@ public struct LightGridSpan {
 // TerrainPrim.flags bit 0: this emissive quad is in the light buffer (RtLightCollector membership).
 public static const uint TERRAIN_PRIM_IN_LIGHT_BUFFER = 1u;
 
-// Largest finite half. The payload's half3 lanes carry HDR values (sky radiance most of all), so
-// producers clamp to this instead of letting the conversion round up to +inf.
+// Largest finite half. Producers of fp16 HDR storage clamp to this instead of letting the conversion
+// round up to +inf and propagate as NaN — world.rgen's rgba16f outImage store most of all, which is the
+// one place the whole path integral's absolute radiance meets a half.
 public static const float HALF_MAX = 65504.0;
 
 // Radiance-ray payload (location 0). Member order and types are a cross-stage ABI.
 //
-// The three-component lanes are half3: they cost 6 bytes instead of 12, and payload storage is reserved
-// per trace call site, so every byte here is paid twice per radiance trace (once for TraceRay, once for
-// Invoke) and is preserved across the SER reorder. hitT stays f32 — it reaches 10000 blocks and the hit
-// position is reconstructed from it, where half's ~4-block spacing at that magnitude would be visible.
+// Three-component quantities are packed into half pairs rather than declared as float3: they cost 6 bytes
+// instead of 12, and payload storage is reserved per trace call site, so every byte here is paid twice per
+// radiance trace (once for TraceRay, once for Invoke) and is preserved across the SER reorder. hitT stays
+// f32 — it reaches 10000 blocks and the hit position is reconstructed from it, where half's ~4-block
+// spacing at that magnitude would be visible.
 public struct Payload {
-    // Sky radiance on a miss, so this carries HDR values well above 1; half tops out at 65504.
-    public half3  albedo;      // hit: block albedo. miss: sky radiance.
-    public half3  normal;      // hit: geometric normal, viewer-oriented.
+    // surface0..2 are a hand-packed UNION of the two things a radiance ray can come back with. Reach them
+    // only through unpackAlbedo/packAlbedo, unpackNormal/packNormal, unpackSky/packSky — the raw words
+    // have no meaning without knowing which case you are in.
+    //
+    //   hit  — half3 albedo + half3 normal: the same six halves the two half3 lanes used to hold, so hit
+    //          precision is bit-identical to before this was hand-packed
+    //   miss — float3 sky radiance, full fp32
+    //
+    // The miss case is the entire reason these are hand-packed. Sky is in absolute photometric units and
+    // the sun disc alone is ~3.6e5 cd/m² (docs/SCENE_UNITS_PLAN.md §3), well past half's 65504 ceiling — a
+    // half3 could not carry it without first normalising by the frame's exposure, which made a storage
+    // format's limitation into a dependency on the exposure controller. A hit has no sky and a miss has
+    // neither albedo nor normal, so reinterpreting the same twelve bytes buys the range for free and keeps
+    // the payload exactly the size it was.
+    //
+    // The albedo lane doubles as the shadow ray's accumulated transmittance (see makeShadowPayload).
+    public uint   surface0;    // hit: half2(albedo.r, albedo.g) | miss: asuint(sky.r)
+    public uint   surface1;    // hit: half2(albedo.b, normal.x) | miss: asuint(sky.g)
+    public uint   surface2;    // hit: half2(normal.y, normal.z) | miss: asuint(sky.b)
     public float  hitT;        // >= 0 on hit, < 0 on miss.
     public half3  motionPrev;  // per-vertex world displacement since last frame.
     public half3  f0;          // specular F0.
@@ -217,7 +235,9 @@ public static const uint MATERIAL_FEATURE_STOCHASTIC_ALPHA = 16u;
 // full features word's spare 16 bits (8..23) go to it instead of the 8 bits the old override-only field used.
 public static const uint MATERIAL_EMISSION_STRENGTH_SHIFT = 8u;
 public static const uint MATERIAL_EMISSION_STRENGTH_MASK = 65535u;
-public static const float MATERIAL_MAX_EMISSION_STRENGTH = 32.0;
+// Mirrors RtMaterialRegistry.MAX_EMISSION_STRENGTH — HALF_MAX, the ceiling emission can survive through
+// Payload.emissionSss (half2) and Light.le (R11G11B10). Emission is in cd/m² since SCENE_UNITS_PLAN U3.
+public static const float MATERIAL_MAX_EMISSION_STRENGTH = 65504.0;
 public static const uint MATERIAL_MAX_LOD_SHIFT = 24u;
 public static const uint MATERIAL_MAX_LOD_MASK = 255u;
 
@@ -257,6 +277,45 @@ public uint packHalf2(float2 v) {
 
 public float2 unpackHalf2(uint p) {
     return float2(f16tof32(p & 0xFFFFu), f16tof32(p >> 16));
+}
+
+// ---- Payload.surface0..2 accessors. Two views of the same twelve bytes; see the struct for why.
+//
+// The hit view straddles surface1 (albedo.b in its low half, normal.x in its high half), so the two
+// setters are read-modify-write on that word. That is a couple of ALU ops on a value already in
+// registers, and it buys a payload that did not have to grow. Each setter touches only its own halves,
+// so writing one before the other is initialised is safe — nothing here does arithmetic on the half it
+// is preserving.
+public float3 unpackAlbedo(Payload p) {
+    return float3(unpackHalf2(p.surface0), unpackHalf2(p.surface1).x);
+}
+
+public void packAlbedo(inout Payload p, float3 albedo) {
+    p.surface0 = packHalf2(albedo.xy);
+    p.surface1 = (p.surface1 & 0xFFFF0000u) | (f32tof16(albedo.z) & 0xFFFFu);
+}
+
+public float3 unpackNormal(Payload p) {
+    return float3(unpackHalf2(p.surface1).y, unpackHalf2(p.surface2));
+}
+
+public void packNormal(inout Payload p, float3 normal) {
+    p.surface1 = (p.surface1 & 0x0000FFFFu) | (f32tof16(normal.x) << 16);
+    p.surface2 = packHalf2(normal.yz);
+}
+
+// Miss view: full fp32, so absolute photometric sky needs no pre-exposure round trip through the payload
+// and no clamp to keep it finite. The fp16 ceiling still applies at the outImage store in world.rgen,
+// which is where docs/SCENE_UNITS_PLAN.md §2 puts the sun-disc clamp and where it now guards every
+// radiance source rather than only the sky.
+public float3 unpackSky(Payload p) {
+    return float3(asfloat(p.surface0), asfloat(p.surface1), asfloat(p.surface2));
+}
+
+public void packSky(inout Payload p, float3 sky) {
+    p.surface0 = asuint(sky.x);
+    p.surface1 = asuint(sky.y);
+    p.surface2 = asuint(sky.z);
 }
 
 // The ray tracer's transport contract is scene-linear ACEScg (AP1/D60). Minecraft assets and

@@ -1,15 +1,25 @@
 # Scene Units Plan — physical photometric units + pre-exposure
 
-Status: **U0 + U1 implemented** (2026-07-29, compiles + tests pass, NOT yet GPU-verified); U2–U5
-outstanding. Written 2026-07-29 against `bt2020-only`.
+Status: **U0–U4 implemented, U5 first pass measured in game** (2026-07-29). U2's constants validate
+within 0.25 EV; U3's emissive baseline did not and has been re-anchored. Written against `bt2020-only`.
 
 > **U0/U1 landed.** Metering and the compensation curve now run on EV100 (`RtSceneUnits`), and
 > pre-exposure is plumbed end-to-end behind `exposure.pre-exposure` (default on). Both stages are
 > **algebraically exact no-ops** — verified symbolically across scene luminances spanning 6 decades
 > and pre-exposure values from 1e−3 to 7.5, rendered output identical in every case, and the curve's
-> +3 x-axis shift is exact. **The light constants are still the old arbitrary scale**, so the
-> reported EV100 is internally consistent but not yet physically true — do not compare it against
-> §1's table until U2 lands.
+> +3 x-axis shift is exact.
+>
+> **U2/U3/U4 landed together** — they have to, because physical light values with the old exposure
+> clamps saturate everywhere and physical values under the old curve slide along it. Two corrections
+> to this plan came out of the implementation (the NEE convention in §3 and the disc-radiance
+> derivation), both written up in place below.
+>
+> **U5's first in-game pass then confirmed U2 and refuted U3's baseline** — see §7. Sun illuminance,
+> disc radiance, night-sky luminance and the atmosphere march all land within 0.25 EV of derivation,
+> including both corrections, which had been reasoned rather than measured. `EMISSIVE_STRENGTH` was
+> ~5.5 EV hot and is now anchored on luminous exitance instead of flame luminance. The same pass fixed
+> the exposure controller's temporal asymmetry (it was in the interpolation, not the time constants),
+> lowered `max-ev`, and re-fitted the curve to measured anchors.
 >
 > **Incident, fixed:** the first landing hand-wrote `ExposureResolvePush`'s byte offsets on both
 > sides (shader struct + `RtExposurePipeline`'s `ByteBuffer.putFloat` calls) and inserted the two new
@@ -118,132 +128,303 @@ explicitly:
 - **The display LUT shaper range is likewise unaffected** — it sees `stored · residual = L ·
   exposure`, algebraically identical to today.
 
+**The payload was storage too (found in U2, fixed by widening it).** `Payload.albedo` was a `half3`
+lane, and on a miss it carries the sky — which after U2 reaches 3.6e5 cd/m² on the sun disc, 2.4 EV
+past half's 65504 ceiling. Clamping there would have landed the sun at ~2× display white: a dull grey
+disc, not a sun.
+
+The first fix pre-exposed the sky into the payload and divided it back out in `world.rgen`. That
+worked but was the wrong shape: it made a *storage format's* limitation into a dependency on the
+exposure controller, on a path that has no business knowing about exposure at all. So the payload
+carries a `float3` instead. `Payload.albedo`/`Payload.normal` are gone, replaced by three hand-packed
+words with two views:
+
+- **hit** — `half3` albedo + `half3` normal, the same six halves the two lanes held, so hit precision
+  is bit-identical (`unpackAlbedo`/`packAlbedo`, `unpackNormal`/`packNormal`)
+- **miss** — full fp32 sky radiance (`unpackSky`/`packSky`)
+
+A hit has no sky and a miss has neither albedo nor normal, so the union is free: **the payload is
+exactly the size it was**, three 32-bit words where two `half3`s stood. The cost is a
+read-modify-write on the middle word, which straddles `albedo.b` and `normal.x` — a couple of ALU ops
+on registers, against a payload that is paid for twice per radiance trace and preserved across the
+SER reorder.
+
+Pre-exposure is now what it should be: **one multiply at the `outImage` store, and nowhere else.**
+That is also where the sun-disc clamp lives, and it now guards *every* radiance source rather than
+only the sky — a firefly off a tiny emitter can no longer round to `+inf` in `rgba16f` and propagate
+as NaN through the denoiser either.
+
 **Risk: DLSS-RR temporal stability.** RR's history is at the previous frame's pre-exposure scale.
 Two things make this benign: the exposure controller is already temporally smoothed (τ ≈ 0.4–0.8 s),
 so frame-to-frame change is well under 1%; and the standard mitigation if it ever does bite is to
 quantize `preExposure` to power-of-2 steps so it changes rarely and exactly. Do not pre-quantize
 preemptively — measure first.
 
-**Sun-disc clamp still required.** Even pre-exposed, a true 1.6e9 cd/m² disc overflows during
-transitions (dark terrain metered while the sun is in frame → large preExposure → overflow). Clamp
-at the fp16 write. Visually free: ACES 2.0 renders anything more than a few EV over white as pure
-white, so 1e6 and 1.6e9 nits are indistinguishable.
+**Sun-disc clamp still required.** Even pre-exposed, a bright disc overflows during transitions (dark
+terrain metered while the sun is in frame → large preExposure → overflow). Clamp at the fp16 write.
+Visually free: ACES 2.0 renders anything more than a few EV over white as pure white, so 1e6 and
+1.6e9 nits are indistinguishable. *(Implemented at `world.rgen`'s `outImage` store, where it covers
+every radiance source, not only the sky.)*
 
 ## 3. Light constants
 
-Targets. Every value derives from a published figure, so each is individually checkable rather than
-mutually tuned.
+Every value derives from a published figure, so each is individually checkable rather than mutually
+tuned. **Shipped values** (U2/U3), with the two corrections this table needed marked ⚠:
 
-| Constant | Today | Physical target | Source |
+| Constant | Was | Shipped | Source |
 |---|---|---|---|
-| Sun illuminance (noon, clear) | — (implicit) | **100,000 lux** | standard clear-sky noon |
-| `sunPeak` (NEE radiance, `RtComposite.skyPush`) | 21.0 | **`100000 / Ω(radius)`** = 2.90e8 @ 0.6° | E = L·Ω |
-| `SUN_DISC_RADIANCE` | 24.0 | ~1.6e9, **clamped at write** | solar disc luminance |
-| Moon illuminance (full) | — | **0.25 lux** | full-moon ground illuminance |
-| `moonPeak` (NEE radiance) | 0.20 | **`0.25 / Ω(radius)`** = 116 @ 1.5° | E = L·Ω |
-| `MOON_DISC_RADIANCE` | 0.45 | **~3,000 cd/m²** | sunlit rock, albedo 0.12 |
-| `SUN_INTENSITY` (atmosphere) | 22.0 | **~127,000** (solar constant, photometric) | needs in-game calibration, §6 |
-| `NIGHT_ZENITH` / `NIGHT_HORIZON` | 0.0008 / 0.003 | **~0.0005 cd/m²** | airglow + starlight |
-| `EMISSIVE_STRENGTH` | 5.0 | **~15,000 cd/m²** (torch flame) | wood flame luminance |
+| `SUN_ILLUMINANCE_TOA` (NEE, `RtComposite.skyPush`) ⚠ | 21.0 | **128,000 lux** | photometric solar constant |
+| — after `atmosphereTransmittance`, zenith sun | — | ~117,000 lux | vs the 100,000 lux reference, +0.23 EV |
+| `SUN_DISC_RADIANCE` ⚠ | 24.0 | **`SUN_ILLUMINANCE / 0.36 sr`** = 3.56e5 cd/m² | E = L·Ω at the size we draw it |
+| `MOON_ILLUMINANCE_FULL` (NEE) ⚠ | 0.20 | **0.25 lux** | full-moon ground illuminance |
+| `MOON_DISC_RADIANCE` ⚠ | 0.45 | **`MOON_ILLUMINANCE / 0.16 sr`** = 1.56 cd/m² | same |
+| `SUN_INTENSITY` (atmosphere) | 22.0 | **= `SUN_ILLUMINANCE`, 128,000** | irradiance in, radiance out |
+| `NIGHT_ZENITH` / `NIGHT_HORIZON` | 0.0008 / 0.003 | **0.0005 cd/m²** (luma) | airglow + starlight |
+| `EMISSIVE_STRENGTH` | 5.0 | **318 cd/m²** | ~1,000 lm/m² exitance, `L = M/π` (was 15,000; §7) |
 
-**Latent bug found while deriving this:** `sunPeak` is a hardcoded constant
-([RtComposite.java](../src/main/java/dev/comfyfluffy/caustica/rt/RtComposite.java), `skyPush`)
-while `SUN_ANGULAR_RADIUS` is configurable (0.6° default,
-[CausticaConfig.java:549](../src/main/java/dev/comfyfluffy/caustica/CausticaConfig.java)). Since
-irradiance `E = L · Ω` and `Ω ∝ sin²(radius)`, widening the sun for softer shadows currently also
-*brightens the whole scene* — changing a shadow-softness knob changes exposure. Deriving radiance
-from illuminance fixes this by construction, and is a good argument for the change independent of
-everything else.
+All the coloured constants are now `luma-1 tint × level`, so a tint edit can only change hue and a
+level edit can only change brightness. The tints are the previous hand-picked ratios renormalised, so
+nothing changed colour in this pass.
+
+### ⚠ Correction 1: `lightRadiance` is illuminance, not radiance
+
+This plan's first draft derived the NEE constants as `E / Ω(radius)`. That is wrong for this
+renderer. `world.rgen`'s NEE term is
+
+```
+L += throughput * brdf * worldPush.lightRadiance * ndl * vis;
+```
+
+with **no solid-angle factor anywhere** — `sampleSquare` only jitters the direction, it carries no
+pdf. Both lobes confirm it: the diffuse term is `albedo/π · E · ndl` and the specular is
+`D·G·F/(4·ndv) · E`, which are the textbook *directional-light* forms with `E` an irradiance. So
+`lightRadiance` is **illuminance at normal incidence, in lux**, and the correct value is 100,000-ish
+directly — not 2.90e8. The draft's figure was 11.5 EV hot.
+
+The `1/π` in the diffuse BRDF is what reproduces §1's table exactly: 100,000 lux → 31,830 cd/m² off
+white, 5,730 cd/m² off 18% grey, EV100 +15.5. That agreement is the check that the convention is now
+right.
+
+**The "latent bug" this plan reported is therefore retracted.** It claimed `SUN_ANGULAR_RADIUS`
+doubles as a brightness knob because `E = L·Ω`. With `lightRadiance` an illuminance there is no `Ω`
+in the estimator at all, so the radius only jitters the shadow ray: it sets penumbra softness and
+nothing else, which is what a shadow-softness knob should do. Nothing to fix.
+
+### ⚠ Correction 2: disc radiance is derived from the size we *draw*, not the body's true luminance
+
+The draft asked for the physical solar-disc luminance, 1.6e9 cd/m². That does not survive contact
+with the fact that **vanilla's sun sprite is ~62× the real sun's angular radius** — ~3900× the solid
+angle. Painting a 3900×-oversized disc at the true surface luminance injects ~3900× the sun's power
+into every path that sees it. Specular and dielectric bounces do see it (`showCelestial`), and those
+paths already took the sun through NEE, so the existing specular double-count would go from harmless
+(today the disc is ~244× *weaker* than the NEE light, which is why nobody notices) to ~45× dominant,
+with fireflies off every glossy lobe.
+
+So the discs derive from illuminance and the solid angle they are actually drawn at, `L = E / Ω`,
+where `squareBody` spans `2·tan(halfAngle)` a side ⇒ `Ω = (2·tan)²`. That keeps the drawn body's
+total power equal to the real body's at whatever size it is drawn, and **costs nothing visually**:
+3.56e5 cd/m² is still ~15 EV over an 18%-grey noon surface, and ACES 2.0 renders that as pure white
+exactly like 1.6e9 would. The sprite shaping (`core`, `m`) only removes power from this figure, never
+adds, so the estimate stays conservative. If the discs read too small or too dull in U5, the fix is
+to shrink the *drawn* size toward physical — not to inflate radiance, because drawn size is precisely
+what couples radiance to energy.
 
 Sanity check on the emissive figure: a torch quad ~0.1 × 0.1 m at 15,000 cd/m² gives intensity
 `I = L·A` = 150 cd, so ~17 lux at 3 m — dim-room level, and real torches are ~10–50 cd. The right
-order of magnitude, unlike today's value which puts a torch 2.3 EV under the sun.
+order of magnitude, unlike the old value which put a torch 2.3 EV under the sun.
 
-## 4. Exposure curve, derived
+### Constants that had to move with the baseline
 
-With metering in EV100, the compensation curve's control points can be read against §1's table.
-Rendered median (log) = `log2(key) + comp(evScene)`, so `comp` **is** the rendered offset in EV
-from the noon reference.
+Raising `EMISSIVE_STRENGTH` by 3.5 decades exposed two absolute constants that were quietly
+calibrated against the old one:
+
+- `RtMaterialRegistry.MAX_EMISSION_STRENGTH`, the ceiling of the 16-bit fixed-point strength field,
+  was 32.0 — it would have clamped every emitter to 32 cd/m². Now `HALF_MAX` (65504), which is the
+  genuine transport ceiling downstream (`Payload.emissionSss` is a `half2` lane, `Light.le` is packed
+  R11G11B10). Quantisation is ~1 cd/m², 0.007% at the baseline.
+- `RtLightCollector.LE_LUM_EPS`, the "too weak to bother NEE-sampling" cutoff, was 0.005 absolute
+  against a baseline of 5 — i.e. 0.001 of full strength. Left alone it would have admitted emitters
+  3000× fainter than intended into the light buffer. Now written as `0.001 × EMISSIVE_STRENGTH`,
+  which is what it always meant.
+
+Both are the coupling this document exists to remove, caught only because the baseline moved far
+enough to make the breakage obvious. Worth assuming there are more of these and that U5 is where they
+surface.
+
+## 4. Exposure curve, measured
+
+Rendered median (log) = `log2(key) + comp(evScene)`, so `comp` **is** the rendered offset in EV from
+the noon reference. Originally derived from §1's reference table; **re-fitted to measured in-game
+EV100 in U5** (see §7), which is what it now ships as:
 
 ```
-exposure.curve = "-10:-3.5, 0:-2.0, 10:-0.6, 15.5:0.0"
+exposure.curve = "-8:-5.0, 2:-2.9, 8:-1.6, 17.5:0.0"
 ```
 
-| Scene | EV100 | rendered, vs noon |
-|---|---|---|
-| Noon clear | +15.5 | 0.00 |
-| Overcast | +12.2 | −0.36 |
-| Sunset | +8.8 | −0.76 |
-| Lit indoor / shade | +6.5 | −1.09 |
-| Torch-lit cave | +2.8 | −1.61 |
-| Full moon | −3.1 | −2.47 |
-| Starlight / deep dark | −10.1 | −3.50 (floor) |
+| Scene | EV100 (measured) | comp | rendered median | exposure EV |
+|---|---|---|---|---|
+| Noon sand | +17.45 | −0.01 | 0.179 | −16.9 |
+| Noon blue sky | +16.50 | −0.17 | 0.160 | −16.1 |
+| Daylight shade (jungle) | +7.00 | −1.82 | 0.051 | −8.3 |
+| Lit interior, night | +7.00 | −1.82 | 0.051 | −8.3 |
+| Lit street, night | +1.50 | −3.00 | 0.022 | −4.0 |
+| Starlit sky | −8.00 | −5.00 (floor) | 0.006 | +3.5 |
 
-Effective slope is 0.85 / 0.86 / 0.89 across the three segments — deliberately uniform, so the
-curve is "partial adaptation at ~0.86" rather than an arbitrary shape. Note the physical 25.6 EV
-scene range compresses to 3.5 EV of rendered difference; that compression is exactly the artistic
-decision the curve exists to express, now made explicitly in one place instead of being smeared
-across fifteen light constants.
+Effective slope is 0.79 / 0.78 / 0.83 across the three segments — flatter than the 0.86 the first
+derivation used, which is the fix for *"it still targets mid-grey everywhere"*: 25 EV of scene range
+now compresses to **5.0 EV** of rendered difference rather than 3.5.
 
-**Exposure clamps must widen substantially.** The multiplier now spans:
+**A limit worth stating rather than tuning around: daylight shade and a lit interior at night measure
+the same.** Both land at EV100 ≈ 7, so no luminance-only curve can render them differently — and
+photographically that is correct, a shaded lawn and a lit room really do meter alike. What separates
+them for a viewer is adaptation *state*, not luminance, which is why the temporal asymmetry below is
+load-bearing rather than a polish item.
 
-| Scene | exposure multiplier | EV |
-|---|---|---|
-| Noon | 3.14e−5 | **−14.96** |
-| Overcast | 2.45e−4 | −12.00 |
-| Torch cave | 0.069 | −3.86 |
-| Full moon | 2.27 | +1.18 |
-| Deep dark | 159 | **+7.31** |
+**Exposure clamps.** The multiplier spans −16.9 EV (noon sand) to +3.5 EV (starlit sky). Shipped:
+**`min-ev = -18`, `max-ev = +5`**, and `Exposure.clampScale`'s bound widened from `1e-4 … 1e4` to
+`1e-8 … 1e8`.
 
-Current `min-ev = -1.5` / `max-ev = 4.0` clamp to a 5.5 EV window and would saturate everywhere.
-New defaults: **`min-ev = -18`, `max-ev = +10`** (margin at both ends). Also raise
-`Exposure.clampScale`'s `1e-4 … 1e4` bound — `−18 EV` is 3.8e−6, below the current floor.
+`max-ev` was `+10` and blew the frame out in play. With 13 EV of headroom above anything the curve
+asks for, exposure ran away whenever the camera held something very dark, so anything bright entering
+frame arrived pre-blown. **A clamp should be a guard rail, not the controller** — `+5` keeps 1.5 EV
+over the curve's own demand and nothing more. `min-ev` deliberately does *not* cover a zoomed-in sun
+(which asks for −20.8): letting the whole frame go black because the sun is in shot is worse than
+clamping it.
+
+### Temporal adaptation — the asymmetry was in the interpolation
+
+Measured in game, night→day took ~3.5 s of blown-white screen while day→night snapped in a frame.
+That is backwards from human vision (light adaptation: seconds; dark adaptation: minutes) and it
+**could not be fixed with the time constants**, because the asymmetry was not coming from them.
+
+The controller smoothed in *linear* exposure space. Lerping toward a much larger target crosses most
+of the ratio in the first frame; lerping toward a much smaller one decays through it geometrically.
+For a 15 EV swing with a 0.35 s constant that is ~0.08 s one way and ~3.6 s the other, whatever the
+constants say.
+
+Fixed by smoothing `log2(exposure)` (EXPOSURE_PLAN S4). A 15 EV swing now takes `3.4·τ` in either
+direction, so the constants are the only thing setting the asymmetry — and they can finally express
+the real one:
+
+| Config | was | now | 15 EV swing |
+|---|---|---|---|
+| `adapt-brighten` (scene got brighter) | `adapt-down` 0.35 | **0.4 s** | 1.4 s |
+| `adapt-darken` (scene got darker) | `adapt-up` 0.12 | **2.0 s** | 6.8 s |
+
+Renamed because `up`/`down` described which way the exposure *multiplier* moved, which reads backwards
+— a darkening scene needs *more* exposure. Old keys are ignored rather than reinterpreted, since their
+values meant the opposite of the new ones.
 
 ## 5. Stages
 
-**U0 — EV100 reporting only.** Add the `+3` offset (and the `−log2(preExposure)` term, zero until
+**U0 — EV100 reporting only.** *(done)* Add the `+3` offset (and the `−log2(preExposure)` term, zero until
 U1) to the metered EV in the resolve's `evScene` diagnostic and the debug readout. No visual
 change; makes the existing S0 observability speak the same scale the rest of this plan uses.
 
-**U1 — pre-exposure plumbing, no constant changes.** Raygen multiplies by `preExposure`; the
+**U1 — pre-exposure plumbing, no constant changes.** *(done)* Raygen multiplies by `preExposure`; the
 resolve subtracts it back out and writes the residual to the exposure image. **This stage is a
 visual no-op** — every product `L · exposure` is algebraically unchanged — which makes it directly
 verifiable: the image must look identical, and any difference is a bug. Land it before touching a
 single light value.
 
-**U2 — sun / moon / sky constants** (§3), including deriving NEE radiance from illuminance and the
-configured angular radius. Widen the exposure clamps (§4) *in the same commit* — with physical
-values and the old clamps, exposure saturates and the image is unusable.
+**U2 — sun / moon / sky constants** (§3). *(done)* NEE levels are illuminances, not `E/Ω` radiances
+(Correction 1); disc radiances derive from the drawn solid angle (Correction 2); the payload's
+surface lanes were hand-packed so the sky travels as a `float3` (§2). Exposure clamps widened in the
+same change, as required.
 
-**U3 — emissive constants.** `EMISSIVE_STRENGTH` plus an audit of per-material JSON multipliers.
-Highest art-facing risk: emitters are the values most likely to have absorbed compensation for
-AgX's old 4 EV highlight ceiling.
+**U3 — emissive constants.** *(done; baseline corrected by U5, audit still deferred)*
+`EMISSIVE_STRENGTH` shipped at 15,000 cd/m² and was **~5.5 EV hot** — see §7. Now 318 cd/m², anchored
+on luminous exitance. `MAX_EMISSION_STRENGTH` / `LE_LUM_EPS` moved with it. **The per-material JSON
+multiplier audit is still not done** — every emitter shares the one baseline times whatever
+multiplier it already had. See §6 Q4.
 
-**U4 — curve retune** against the shipped values, starting from §4's derivation and adjusted by
-eye. This is the only stage that is genuinely subjective.
+**U4 — curve retune.** *(done, fitted to measurement)* `DEFAULT_CURVE` is §4's table. The first
+version was §1's reference table restated; the shipped one is fitted to measured in-game EV100 and
+carries more compression (5.0 EV of rendered range, effective slope ~0.80).
 
-**U5 — validation.** The reference scenes of §1 plus the glowstone/lava scene
-[DISPLAY_TRANSFORM_PLAN.md](DISPLAY_TRANSFORM_PLAN.md) §4 already calls for. Confirm measured EV100
-in the debug readout matches the table within ~1 EV — that is the whole payoff, and it is a real
-pass/fail rather than an aesthetic judgement.
+**U5 — validation.** *(first pass done 2026-07-29 — see §7. Second pass owed on the fixes it
+produced.)* The reference scenes of §1 plus the glowstone/lava scene
+[DISPLAY_TRANSFORM_PLAN.md](DISPLAY_TRANSFORM_PLAN.md) §4 already calls for.
 
 ## 6. Open questions
 
-1. **Does `SUN_INTENSITY = 127,000` actually produce ~5,000 cd/m² zenith sky?** The Nishita march
-   uses physical Rayleigh/Mie/ozone coefficients, so units *should* work out with irradiance in,
-   radiance out — but the implementation may carry baked-in normalizations. Needs one in-game
-   calibration pass reading zenith luminance off the debug view; treat the table value as a
-   starting point, not a result.
-2. **Does the sun-disc clamp interact with MIS?** The visible disc (`world.rmiss`) and the NEE light
-   are already decoupled — different angular radii, and a `showCelestial` gate hides the disc from
-   diffuse continuations specifically to avoid double-counting
-   ([world.rgen.slang:61](../shaders/world/world.rgen.slang)). So clamping the visible disc should
-   not perturb the NEE estimator. Worth confirming rather than assuming, since energy conservation
-   between the two paths is exactly what that gate is managing.
-3. **Should night get an explicit ambient floor?** Physically, moonless starlight is unplayable and
-   every shipping game lifts it. Currently the `NIGHT_ZENITH`/`NIGHT_HORIZON` fudge does this
-   implicitly. Better to make it an explicit, named gameplay floor than a fudged sky constant — but
-   that is a design decision, deferred until U4 shows how dark it actually reads.
-4. **Do per-material emissive multipliers need rescaling or re-authoring?** If they were authored as
-   ratios against `EMISSIVE_STRENGTH` they rescale for free; if they absorbed AgX-era compensation
-   individually, they need a pass. Unknown until U3.
+1. **Does `SUN_INTENSITY = 128,000` actually produce ~5,000 cd/m² zenith sky?** **ANSWERED (§7).**
+   Measured noon blue sky is EV100 +16.50 = 11,600 cd/m², within 0.23 EV of the hand integral. The
+   march carries no baked-in normalisation — it is dimensionally sound and its units work out. The sky
+   does sit ~1 EV over the textbook 5,000 cd/m², which is a property of the model's Rayleigh/Mie/ozone
+   parameters rather than of the scale, and is inside U5's ~1 EV tolerance. Nothing to change.
+2. **Does the sun-disc clamp interact with MIS?** *(mostly resolved by Correction 2, one part still
+   open.)* Clamping cannot perturb the NEE estimator: the visible disc and the NEE light are
+   decoupled, and the `showCelestial` gate hides the disc from diffuse continuations
+   ([world.rgen.slang:65](../shaders/world/world.rgen.slang)). What Correction 2 surfaced is a
+   different, pre-existing issue in the same machinery: the gate is per-lobe, not per-roughness, so a
+   *glossy* continuation both takes the sun through NEE and sees the disc — a genuine double-count,
+   today harmless only because the disc is far dimmer than the NEE light. Deriving disc radiance from
+   illuminance keeps it harmless. Making it correct means gating the disc off finite-roughness
+   specular lobes as well, which is a real MIS change and out of this plan's scope.
+3. **Should night get an explicit ambient floor?** *(still open.)* The constant itself is confirmed —
+   a starlit sky measures EV100 −8.00 against a predicted −7.97 — so what U5 sees is genuinely what
+   physics looks like. Whether it is *playable* was not established, because the first pass was spent
+   in a lit city where emitters dominated. Retest against the corrected emissive baseline. If it needs
+   lifting, add a named gameplay floor rather than re-fudging the sky constant.
+4. **Do per-material emissive multipliers need rescaling or re-authoring?** *(still open, and now
+   the most interesting one.)* They rescale for free if they were authored as honest ratios against
+   `EMISSIVE_STRENGTH`, and need individual work if any absorbed AgX-era compensation. §7 corrected
+   the shared baseline but did not distinguish the two cases. It also showed why a single baseline is
+   only ever an approximation here: a flame is genuinely far brighter per unit area than a glowstone
+   block, and the emission mask carries coverage, not intensity — so the audit's real output should be
+   per-material *exitance*, not a multiplier tweak.
+
+## 7. U5, first pass — measured 2026-07-29
+
+F3 `evScene` readings, and what the shipped constants predict:
+
+| Scene | measured EV100 | predicted | error |
+|---|---|---|---|
+| Noon sand | +17.45 | implies albedo 0.601; MC sand ACEScg luma ≈ 0.60 | **~0** |
+| Sun disc, zoomed | +21.30 | 355,556 × ~0.90 transmittance = 320,000 cd/m² | **+0.01 EV** |
+| Blue sky, noon | +16.50 | hand-integrated 9,860 cd/m² | +0.23 EV |
+| Starlit sky | −8.00 | `NIGHT_LUMINANCE` 0.0005 cd/m² → −7.97 | **+0.03 EV** |
+| Daylight shade (jungle) | +7.00 | — | — |
+| Lit city interior, night | +12.50 | — | see below |
+| Lit city street, night | +7.00 | — | see below |
+
+**The whole of U2 validates.** Sun illuminance, disc radiance, night-sky luminance and the atmosphere
+march all land within 0.25 EV of derivation — including both of §3's corrections, which were reasoned
+rather than measured when they shipped. §6 Q1 is answered: the Nishita march carries **no** baked-in
+normalisation, and the zenith sky sits ~1 EV over the textbook 5,000 cd/m² figure, which is a property
+of the model's parameters rather than of its units.
+
+**U3 does not.** A well-lit city interior metered **EV100 12.5 — brighter than an overcast noon**,
+which is absurd for a room at night. Cause: 15,000 cd/m² is *flame* luminance, and the plan's own
+sanity check justified it against a ~0.1 m torch quad — but the emission mask puts that same luminance
+across a whole block face. 15,000 cd/m² over 1 m² is **47,000 lm from one glowstone**, a stadium
+floodlight. Re-anchored on luminous exitance instead: a full-strength face radiates ~1,000 lm/m², so
+one block face is a ~1,000 lm / 75 W-equivalent lamp and `L = M/π = 318 cd/m²`. That is −5.56 EV,
+which puts the measured interior at **7.0** against §1's "lit indoor" reference of 6.5.
+
+The general lesson, and the reason this is worth writing down: the light constants were checkable and
+three of four were right, but **the emissive one was anchored to the wrong physical quantity** —
+surface luminance of a flame, for a value that is applied per unit area of block face. Exitance is the
+quantity that actually describes "what this emitter does to the room".
+
+### Fixed in the same pass
+
+- **Adaptation asymmetry was backwards**, and the cause was linear-space smoothing rather than the
+  time constants — see §4's temporal section. This is the one the player feels most.
+- **`max-ev = +10` blew out the frame**; now `+5`. See §4.
+- **Curve re-fitted** to measured anchors, with more compression.
+
+### Still open from this pass
+
+- **The full moon reads faint in a lit city.** Dominated by emitters being 5.5 EV hot, so the fix
+  above swings 5.5 EV in the moon's favour and may settle it. If it does not, the residual is
+  Correction 2's trade-off: the moon is drawn ~43× oversize, so its energy-consistent radiance is
+  1.56 cd/m² against a real moon's 3,000. Options, in increasing order of correctness — (a) accept
+  it; (b) shrink the *drawn* moon toward its real 0.26° and raise radiance to 3,000, which is fully
+  physical but makes the moon a dot and abandons the vanilla silhouette; (c) resolve §6 Q2 by gating
+  the disc off finite-roughness specular lobes, after which only delta mirrors see it and it can carry
+  true luminance safely. (c) is the right end state. **Do not inflate radiance at the drawn size** —
+  that is exactly the coupling Correction 2 exists to prevent.
+- Q3 (night ambient floor) and Q4 (per-material emissive audit) are untouched and now testable
+  against a correct emissive baseline.

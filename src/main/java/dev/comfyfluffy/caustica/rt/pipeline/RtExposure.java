@@ -238,6 +238,11 @@ public final class RtExposure {
         // and the reserved S4 fields (resetSeq, evHistory) should start clean too, not carry over
         // whatever garbage a fresh VMA allocation happened to contain.
         MemoryUtil.memSet(state.mapped, 0, STATE_BYTES);
+        // Under physical units (U2) this seed can be ~15 EV off for an auto-mode daylight scene, since
+        // manual-ev defaults to 0. That is a two-frame transient, not a bug: initialized == 0 makes the
+        // resolve snap to its computed target rather than smooth toward it, and the frame after that
+        // meters against a preExposure derived from it. Deliberately not special-cased -- a seed that
+        // guessed at scene brightness would be a second, unowned exposure model.
         MemoryUtil.memPutFloat(state.mapped + OFF_PREVIOUS, manualExposureScale());
         MemoryUtil.memPutInt(state.mapped + OFF_INITIALIZED, 0);
         MemoryUtil.memPutFloat(state.mapped + OFF_METERING_SKY_SCALE, 1.0f);
@@ -256,7 +261,7 @@ public final class RtExposure {
         AutoConfig autoConfig = autoConfig();
         String exposureText = mode == Mode.AUTO
                 ? "auto(key=" + autoConfig.key + ", minEv=" + autoConfig.minEv + ", maxEv=" + autoConfig.maxEv
-                + ", adaptUp=" + autoConfig.adaptUp + ", adaptDown=" + autoConfig.adaptDown
+                + ", adaptDarken=" + autoConfig.adaptDarken + ", adaptBrighten=" + autoConfig.adaptBrighten
                 + ", evBias=" + autoConfig.evBias + ", percentiles=" + autoConfig.lowPercentile
                 + ".." + autoConfig.highPercentile + ", stride=" + autoConfig.stride
                 + ", centerWeight=" + autoConfig.centerWeightSigma + "/" + autoConfig.centerWeightFloor
@@ -282,8 +287,8 @@ public final class RtExposure {
                 CausticaConfig.Rt.Exposure.KEY.value(),
                 CausticaConfig.Rt.Exposure.minEv(),
                 CausticaConfig.Rt.Exposure.maxEv(),
-                CausticaConfig.Rt.Exposure.ADAPT_UP.value(),
-                CausticaConfig.Rt.Exposure.ADAPT_DOWN.value(),
+                CausticaConfig.Rt.Exposure.ADAPT_DARKEN.value(),
+                CausticaConfig.Rt.Exposure.ADAPT_BRIGHTEN.value(),
                 manualEv(),
                 CausticaConfig.Rt.Exposure.LOW_PERCENTILE.value(),
                 CausticaConfig.Rt.Exposure.HIGH_PERCENTILE.value(),
@@ -345,7 +350,7 @@ public final class RtExposure {
         return Float.isFinite(previous) && previous > 0.0f ? previous : 1.0f;
     }
 
-    record AutoConfig(float key, float minEv, float maxEv, float adaptUp, float adaptDown, float evBias,
+    record AutoConfig(float key, float minEv, float maxEv, float adaptDarken, float adaptBrighten, float evBias,
                       float lowPercentile, float highPercentile, int stride,
                       float centerWeightSigma, float centerWeightFloor, float skyWeightCap,
                       float emissiveWeightCap,
