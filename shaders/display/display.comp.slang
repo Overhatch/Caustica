@@ -1,14 +1,14 @@
-// Maps the display-res scene-linear BT.2020 RT image to sRGB SDR and, when enabled, PQ/BT.2020 HDR,
+// Maps the display-res scene-linear ACEScg RT image to sRGB SDR and, when enabled, PQ/BT.2020 HDR,
 // via baked ACES 2.0 display-transform LUTs (see tools/bake_display_lut.py,
 // docs/DISPLAY_TRANSFORM_PLAN.md). Tonemap seam: the path tracer and DLSS-RR use scene-linear
-// BT.2020; exposure is applied from the compositor-owned 1x1 image right here, then both outputs are
+// ACEScg; exposure is applied from the compositor-owned 1x1 image right here, then both outputs are
 // a single log2-shaped LUT fetch.
 
 [[vk::binding(0, 0)]] [format("rgba8")]   RWTexture2D<float4> outputImage; // LDR world target image
-[[vk::binding(1, 0)]] [format("rgba16f")] RWTexture2D<float4> rtImage;     // scene-linear BT.2020 RT radiance
+[[vk::binding(1, 0)]] [format("rgba16f")] RWTexture2D<float4> rtImage;     // scene-linear ACEScg RT radiance
 [[vk::binding(2, 0)]] [format("r32f")]    RWTexture2D<float>  exposureImage; // 1x1 linear exposure scale
 [[vk::binding(3, 0)]] [format("rgba16f")] RWTexture2D<float4> hdrImage;    // PQ-encoded ([0,1], ST.2084) HDR display
-// Baked ACES 2.0 SDR display transform. Domain is exposed scene-linear BT.2020, log2-shaped; range is
+// Baked ACES 2.0 SDR display transform. Domain is exposed scene-linear ACEScg, log2-shaped; range is
 // sRGB-OETF-encoded BT.709, matching outputImage exactly, so no further gamut step or encode is needed.
 [[vk::binding(4, 0)]] Sampler3D toneLut;
 // Baked ACES 2.0 HDR display transform. Same shaper domain as toneLut; range is already ST.2084/PQ-
@@ -44,8 +44,8 @@ float3 lutTexCoord(float3 uvw) {
     return uvw * ((pc.lutSize - 1.0) / pc.lutSize) + float3(0.5 / pc.lutSize);
 }
 
-float3 exposed(float3 scene2020, float exposure) {
-    return max(scene2020 * exposure, float3(0.0));
+float3 exposed(float3 sceneAcesCg, float exposure) {
+    return max(sceneAcesCg * exposure, float3(0.0));
 }
 
 // Artistic gamma after the view/display transform. Apply the curve to display luminance and scale
@@ -128,15 +128,15 @@ float3 displayGammaHdr(float3 pqColor) {
 // Exposure -> log2 shaper -> trilinear LUT fetch. The LUT already bakes in ACES 2.0's gamut mapping to
 // BT.709 and the sRGB OETF, so its output goes straight to outputImage. Single mip (RtToneLut), so an
 // explicit level-0 SampleLevel is exact, not an approximation.
-float3 tonemap(float3 scene2020, float exposure) {
-    float3 uvw = shaperEncode(exposed(scene2020, exposure));
+float3 tonemap(float3 sceneAcesCg, float exposure) {
+    float3 uvw = shaperEncode(exposed(sceneAcesCg, exposure));
     return displayGammaSdr(toneLut.SampleLevel(lutTexCoord(uvw), 0.0).rgb);
 }
 
 // Same shaper as tonemap() but sampling the HDR LUT, whose range is already PQ-encoded BT.2020 -- no
 // separate encode or paperWhite/headroom mapping needed.
-float3 tonemapHdr(float3 scene2020, float exposure) {
-    float3 uvw = shaperEncode(exposed(scene2020, exposure));
+float3 tonemapHdr(float3 sceneAcesCg, float exposure) {
+    float3 uvw = shaperEncode(exposed(sceneAcesCg, exposure));
     return displayGammaHdr(hdrToneLut.SampleLevel(lutTexCoord(uvw), 0.0).rgb);
 }
 

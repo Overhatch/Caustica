@@ -13,12 +13,12 @@
 
 [[vk::binding(0, 0)]] [format("rgba8")]   RWTexture2D<float4> outputImage;
 [[vk::binding(1, 0)]] [format("rgba16f")] RWTexture2D<float4> gNormal;     // xyz world normal, w linear roughness
-[[vk::binding(2, 0)]] [format("rgba16f")] RWTexture2D<float4> gAlbedo;     // rgb BT.2020 diffuse albedo
+[[vk::binding(2, 0)]] [format("rgba16f")] RWTexture2D<float4> gAlbedo;     // rgb ACEScg diffuse albedo
 [[vk::binding(3, 0)]] [format("r32f")]    RWTexture2D<float>  gDepth;      // HW reversed-Z depth
 [[vk::binding(4, 0)]] [format("rg16f")]   RWTexture2D<float2> gMotion;     // screen-space motion (render px)
-[[vk::binding(5, 0)]] [format("rgba16f")] RWTexture2D<float4> gSpecAlbedo; // BT.2020 exact-mirror reflected diffuse x reflectance
+[[vk::binding(5, 0)]] [format("rgba16f")] RWTexture2D<float4> gSpecAlbedo; // ACEScg exact-mirror reflected diffuse x reflectance
 [[vk::binding(6, 0)]] [format("rg16f")]   RWTexture2D<float2> gSpecMotion; // reflection MVs for RR
-[[vk::binding(7, 0)]] [format("rgba16f")] RWTexture2D<float4> sceneImage;  // display-res post-RR scene-linear BT.2020
+[[vk::binding(7, 0)]] [format("rgba16f")] RWTexture2D<float4> sceneImage;  // display-res post-RR scene-linear ACEScg
 [[vk::binding(8, 0)]] [format("r32f")]    RWTexture2D<float>  exposureImage; // same-frame display exposure
 struct ExposureState {
     float previous;
@@ -46,16 +46,31 @@ struct Push {
 };
 [[vk::push_constant]] Push pc;
 
-static const float3 BT2020_LUMA = float3(0.2627, 0.6780, 0.0593);
+static const float3 ACESCG_LUMA = float3(0.27222872, 0.67408177, 0.05368952);
 
-// Duplicated from world_common.slang rather than imported: this file lives outside the shaders/world
-// module graph, and it's one 3x3 matrix -- not worth a cross-directory import for.
-static const float3 BT709_TO_BT2020_R = float3(0.6274039, 0.3292830, 0.0433131);
-static const float3 BT709_TO_BT2020_G = float3(0.0690973, 0.9195406, 0.0113612);
-static const float3 BT709_TO_BT2020_B = float3(0.0163916, 0.0880132, 0.8955953);
+// OCIO cg-config-v4.0.0 ACES 2.0: ACEScg/AP1/D60 to Linear Rec.709/D65. Debug guide colors cross
+// back to the rgba8 target here; semantic debug colors (normal, depth, motion, weight) are already
+// authored as literal sRGB code values and bypass this conversion.
+static const float3 ACESCG_TO_BT709_R = float3( 1.70505095, -0.62179214, -0.08325887);
+static const float3 ACESCG_TO_BT709_G = float3(-0.13025641,  1.14080477, -0.01054832);
+static const float3 ACESCG_TO_BT709_B = float3(-0.02400336, -0.12896897,  1.15297234);
 
-float3 bt709ToBt2020(float3 color) {
-    return float3(dot(color, BT709_TO_BT2020_R), dot(color, BT709_TO_BT2020_G), dot(color, BT709_TO_BT2020_B));
+float linearToSrgbChannel(float value) {
+    value = clamp(value, 0.0, 1.0);
+    return value <= 0.0031308
+            ? 12.92 * value
+            : 1.055 * pow(value, 1.0 / 2.4) - 0.055;
+}
+
+float3 acesCgToSrgb(float3 color) {
+    float3 linearBt709 = float3(
+            dot(color, ACESCG_TO_BT709_R),
+            dot(color, ACESCG_TO_BT709_G),
+            dot(color, ACESCG_TO_BT709_B));
+    return float3(
+            linearToSrgbChannel(linearBt709.r),
+            linearToSrgbChannel(linearBt709.g),
+            linearToSrgbChannel(linearBt709.b));
 }
 
 // Display-referred, deliberately discrete one-stop bands. `ev == 0` means the value entering ACES
@@ -109,7 +124,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     float4 normalRough = gNormal[guidePix];
     float3 dbg;
     if (pc.debugView == 8u) {
-        float luminance = dot(max(sceneImage[pix].rgb, float3(0.0)), BT2020_LUMA);
+        float luminance = dot(max(sceneImage[pix].rgb, float3(0.0)), ACESCG_LUMA);
         float exposedLuminance = luminance * max(exposureImage[int2(0, 0)], 0.0);
         float evFromMidGrey = log2(max(exposedLuminance, 1.0e-6) / 0.18);
         dbg = exposureFalseColor(evFromMidGrey);
@@ -117,20 +132,20 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         float weight = meteringWeight(uv, gDepth[guidePix], gAlbedo[guidePix].a > 0.5);
         dbg = float3(weight, weight, weight);
     } else if (pc.debugView == 1u) {
-        dbg = bt709ToBt2020(normalRough.xyz * 0.5 + 0.5);
+        dbg = normalRough.xyz * 0.5 + 0.5;
     } else if (pc.debugView == 2u) {
-        dbg = gAlbedo[guidePix].rgb;
+        dbg = acesCgToSrgb(gAlbedo[guidePix].rgb);
     } else if (pc.debugView == 3u) {
         float depth = gDepth[guidePix];
         dbg = float3(depth, depth, depth);
     } else if (pc.debugView == 4u) {
         dbg = float3(normalRough.w, normalRough.w, normalRough.w);
     } else if (pc.debugView == 6u) {
-        dbg = gSpecAlbedo[guidePix].rgb;
+        dbg = acesCgToSrgb(gSpecAlbedo[guidePix].rgb);
     } else if (pc.debugView == 7u) {
-        dbg = bt709ToBt2020(float3(clamp(0.5 + gSpecMotion[guidePix] * motionToDisplay * 0.05, 0.0, 1.0), 0.5));
+        dbg = float3(clamp(0.5 + gSpecMotion[guidePix] * motionToDisplay * 0.05, 0.0, 1.0), 0.5);
     } else {
-        dbg = bt709ToBt2020(float3(clamp(0.5 + gMotion[guidePix] * motionToDisplay * 0.05, 0.0, 1.0), 0.5));
+        dbg = float3(clamp(0.5 + gMotion[guidePix] * motionToDisplay * 0.05, 0.0, 1.0), 0.5);
     }
     outputImage[pix] = float4(clamp(dbg, 0.0, 1.0), 1.0);
 }

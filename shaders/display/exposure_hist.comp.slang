@@ -18,7 +18,7 @@ struct Push {
 static const float LOG_MIN = -12.0;
 static const float LOG_MAX = 12.0;
 static const float INV_LOG_RANGE = 1.0 / (LOG_MAX - LOG_MIN);
-static const float3 BT2020_LUMA = float3(0.2627, 0.6780, 0.0593);
+static const float3 ACESCG_LUMA = float3(0.27222872, 0.67408177, 0.05368952);
 
 // One 16x16 workgroup == 256 threads == one thread per luminance bin. Each thread initializes and
 // flushes all three population bins. Per-pixel atomics stay in shared memory; only non-empty bins
@@ -42,8 +42,8 @@ void main(uint3 dispatchId : SV_DispatchThreadID, uint groupIndex : SV_GroupInde
         // derives its population from the bins instead of assuming image area.
         if (all(isfinite(rgb))) {
             rgb = max(rgb, float3(0.0));
-            // The reconstructed scene image is linear BT.2020; meter it in the transport basis.
-            float lum = dot(rgb, BT2020_LUMA);
+            // The reconstructed scene image is linear ACEScg; meter it in the transport basis.
+            float lum = dot(rgb, ACESCG_LUMA);
             float logLum = clamp(log2(max(lum, 1.0e-5)), LOG_MIN, LOG_MAX);
             uint bin = min(uint(floor((logLum - LOG_MIN) * INV_LOG_RANGE * 256.0)), 255u);
 

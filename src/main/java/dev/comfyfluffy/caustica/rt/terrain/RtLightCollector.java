@@ -205,7 +205,7 @@ final class RtLightCollector {
             // baked in RtMaterialRegistry) — the single knob shared with world.rchit's direct-hit shading.
             // Texture-grid averages are already linear BT.709; captured vertex/biome tint is still
             // sRGB-encoded. Combine in the authored basis, use its invariant Y for the membership gate,
-            // then store the emitter in the scene's linear BT.2020 transport basis.
+            // then store the emitter in the scene's linear ACEScg transport basis.
             float tintR = srgbToLinear(p[pb + 4]);
             float tintG = srgbToLinear(p[pb + 5]);
             float tintB = srgbToLinear(p[pb + 6]);
@@ -217,9 +217,10 @@ final class RtLightCollector {
             if (lum < LE_LUM_EPS || fill < minFillRatio) {
                 continue; // excluded: always-gathered on path hits, no energy lost
             }
-            float leR = 0.6274039f * le709R + 0.3292830f * le709G + 0.0433131f * le709B;
-            float leG = 0.0690973f * le709R + 0.9195406f * le709G + 0.0113612f * le709B;
-            float leB = 0.0163916f * le709R + 0.0880132f * le709G + 0.8955953f * le709B;
+            // Same OCIO-derived Linear Rec.709/D65 -> ACEScg/AP1/D60 matrix as world_common.slang.
+            float leR = 0.61309743f * le709R + 0.33952314f * le709G + 0.04737945f * le709B;
+            float leG = 0.07019372f * le709R + 0.91635388f * le709G + 0.01345240f * le709B;
+            float leB = 0.02061559f * le709R + 0.10956977f * le709G + 0.86981463f * le709B;
 
             float aC = 0.5f * (aLo + aHi);
             float bC = 0.5f * (bLo + bHi);

@@ -4,7 +4,7 @@
 import world_common;
 import world_core;
 
-public float luminance(float3 c) { return dot(c, BT2020_LUMA); }
+public float luminance(float3 c) { return dot(c, ACESCG_LUMA); }
 
 // GGX normal distribution.
 // NOTE: the 1e-7 denominator guard is not merely a divide-by-zero epsilon, and it is load-bearing. At

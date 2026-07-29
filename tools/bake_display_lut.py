@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Bakes the RT renderer's display-transform 3D LUTs from OCIO's built-in ACES 2.0 config.
 
-See docs/DISPLAY_TRANSFORM_PLAN.md. The renderer feeds these LUTs scene-linear BT.2020 (Rec.2020)
+See docs/DISPLAY_TRANSFORM_PLAN.md. The renderer feeds these LUTs scene-linear ACEScg (AP1/D60)
 radiance, already multiplied by the auto-exposure scalar (RtExposure); each LUT bakes in the whole
 remaining pipeline: ACES 2.0 view transform, gamut mapping, tone scale, and the output display's
 transfer function. The shader only has to do the log2 shaper encode (must match SHAPER_LO/HI below
@@ -31,7 +31,7 @@ import PyOpenColorIO as OCIO
 # OCIO 2.2+ ships this config compiled into the library -- no external config file/network fetch
 # needed. Matches the config used for the Blender A/B evaluation that motivated this plan.
 OCIO_BUILTIN_CONFIG = "cg-config-v4.0.0_aces-v2.0_ocio-v2.5"
-SOURCE_SPACE = "Linear Rec.2020"  # matches the renderer's scene-linear BT.2020 working space
+SOURCE_SPACE = "ACEScg"  # matches the renderer's scene-linear ACEScg/AP1/D60 working space
 
 # Log2 shaper range, in stops relative to linear 1.0. Matches LOG_MIN/LOG_MAX in
 # shaders/display/exposure_hist.comp and exposure_resolve.comp -- same renderer quantity metered
@@ -68,7 +68,7 @@ LUTS = [
         # VK_COLOR_SPACE_HDR10_ST2084_EXT's container exactly, so no separate gamut step or
         # pqEncode() needed at sample time.
         builtin_chain=[
-            ("colorspace", ("Linear Rec.2020", "ACES2065-1")),
+            ("colorspace", ("ACEScg", "ACES2065-1")),
             ("builtin", f"ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - HDR-{nits}nit-REC2020_2.0"),
             ("builtin", "DISPLAY - CIE-XYZ-D65_to_REC.2100-PQ"),
         ],

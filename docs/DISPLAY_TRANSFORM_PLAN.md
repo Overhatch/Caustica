@@ -1,8 +1,12 @@
 # Display Transform Plan — one output transform, ACES 2.0, baked LUT
 
-Status: **plan only**, nothing implemented. Written 2026-07-27 against `bt2020-only`
+Status: **implemented; appearance tuning in progress.** Written 2026-07-27 against `bt2020-only`
 (working tree, on top of `5d6bf62`). Companion to [EXPOSURE_PLAN.md](EXPOSURE_PLAN.md) — exposure
 decides *how bright*; this decides *how the resulting scene-linear image becomes display pixels*.
+Furthest upstream is [SCENE_UNITS_PLAN.md](SCENE_UNITS_PLAN.md) (what a scene value physically
+means). This plan is unaffected by it: the LUT shaper sees `storedValue × residualExposure`, which
+is algebraically the same `L × exposure` product as today, so the ±12 EV shaper domain and the
+baked LUTs stay valid across that change.
 The two are sequential (exposure feeds this stage) and mostly independent — this plan does not
 change §S0–S5 of the exposure plan, only shrinks its old §S6.
 
@@ -69,7 +73,7 @@ its inputs — the textbook case for a LUT.
 (the same config the Blender evaluation used, so what ships matches what was judged), one LUT per
 target peak-nits value.
 
-- **Shaper**: log2, scene-linear BT.2020 → [0,1] over the working range (align with the exposure
+- **Shaper**: log2, scene-linear ACEScg → [0,1] over the working range (align with the exposure
   histogram's ±12 EV, [exposure_hist.comp](../shaders/display/exposure_hist.comp), so the same
   scalar means the same thing in both places).
 - **LUT size**: 65³ (film-standard, normally visually lossless) as the starting point. The risk
@@ -119,6 +123,18 @@ clear, and `Hdr.headroom()` goes away since the LUT bake already encodes the pea
   bounds change.
 - **Validation scene**: a fixed camera path through glowstone/lava/portal — the specific case
   flagged as highest-risk for LUT resolution (§2) and for hue behavior at extreme saturation+intensity.
+
+### 4a. Working-space migration (implemented 2026-07-29)
+
+The path tracer, radiance buffers, RR inputs/outputs, guide albedos, light records and exposure meter
+now use scene-linear **ACEScg (AP1/D60)**. Minecraft's sRGB/BT.709-authored inputs cross through the
+OCIO-derived `Linear Rec.709 (sRGB) → ACEScg` matrix exactly once at the transport boundary. The LUT
+baker likewise declares `ACEScg` as its source, so it bakes the ACEScg→ACES2065-1 input transform
+before the ACES 2.0 output transform.
+
+This does **not** change the output containers: SDR remains sRGB/BT.709 and HDR remains
+BT.2020/ST.2084 as required by `VK_COLOR_SPACE_HDR10_ST2084_EXT`. Output-side BT.2020 conversion,
+HDR UI composition and BT.2020 display-luminance gamma therefore remain intentionally unchanged.
 
 ## 5. Interaction with the exposure plan
 

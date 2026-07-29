@@ -2,6 +2,13 @@
 
 Status: **implementation in progress** — S0–S3 are implemented.
 Written 2026-07-27 against `bt2020-only`
+
+> **Upstream dependency added 2026-07-29:** [SCENE_UNITS_PLAN.md](SCENE_UNITS_PLAN.md) moves the
+> renderer to physical photometric units (cd/m²) with pre-exposure, and metering to EV100. That
+> changes the *units of this plan's x-axis*: `evScene` becomes EV100 rather than log2 of an
+> arbitrary scale, and §S3's curve control points and the `min-ev`/`max-ev` clamps are re-derived
+> there (§4). Once S3's curve is non-flat the absolute scene scale stops being a free parameter —
+> that coupling is why the units plan exists.
 (working tree, on top of `5d6bf62`). Scope: the auto-exposure loop that produces the 1x1
 `display exposure` image and everything that consumes it. The display transform that consumes
 that scalar (AgX / PQ curve shape, and its planned ACES 2.0 replacement) is a separate, downstream
@@ -19,7 +26,7 @@ plan's original §S6.
 | Consumer | [display.comp:131](../shaders/display/display.comp) | one scalar multiply feeding both the SDR AgX path and the PQ HDR path |
 | Frame placement | [RtComposite.java:990-1003](../src/main/java/dev/comfyfluffy/caustica/rt/RtComposite.java) | after DLSS-RR, before display mapping |
 
-The current model, stated as math. With `L` = BT.2020 luma of the post-RR image and
+The current model, stated as math. With `L` = ACEScg/AP1 luminance of the post-RR image and
 `Lw` = trimmed mean of `log2 L` over the 50th–95th percentile window:
 
 ```
@@ -59,7 +66,7 @@ of the current system.
 
 **D3 — exposure is coupled to surface colour.** Metering luminance means a white-concrete room
 meters ~4x brighter than a black-wool room at identical illumination, and the controller
-"corrects" a difference that is not a lighting difference. `gAlbedo` (BT.2020 diffuse albedo,
+"corrects" a difference that is not a lighting difference. `gAlbedo` (ACEScg diffuse albedo,
 render res) is already produced for RR — demodulating by it meters *illuminance* instead, which
 is the quantity a light meter actually measures.
 
@@ -192,7 +199,7 @@ follow-up work.
 
 Modes 8 and 9 are now exposed in the video options:
 
-- **Exposure false colour (8):** BT.2020 luminance from post-RR `rrOutput`, multiplied by the
+- **Exposure false colour (8):** ACEScg/AP1 luminance from post-RR `rrOutput`, multiplied by the
   same-frame display exposure, shown in discrete one-stop bands relative to 18% grey. Cool colors
   are below mid-grey, neutral grey is the zero-stop band, and warm colors are above it.
 - **Metering weight (9):** greyscale display of the exact S2 Gaussian centre weight and the

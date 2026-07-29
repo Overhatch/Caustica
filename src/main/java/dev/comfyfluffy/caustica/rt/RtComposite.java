@@ -778,7 +778,7 @@ public final class RtComposite {
         renderSizeRrEnabled = rrEnabled;
         renderSizeRrQuality = rrQuality;
 
-        // RT traces and DLSS-RR reconstructs scene-linear BT.2020 in an HDR R16G16B16A16_SFLOAT target,
+        // RT traces and DLSS-RR reconstruct scene-linear ACEScg in an HDR R16G16B16A16_SFLOAT target,
         // so radiance > 1 and wide-gamut colour survive to the display seam. displayImage stays
         // R8G8B8A8 to match the main target it is copied into
         // (vkCmdCopyImage requires texel-size-compatible formats).
@@ -915,7 +915,7 @@ public final class RtComposite {
                     ? previousWaterWaveTime : waterWaveTime;
             previousWaterWaveTime = waterWaveTime;
             waterWaveTimeValid = true;
-            Float4 waterParams = linearBt2020FromSrgb(wtr, wtg, wtb, waterWaveTime);
+            Float4 waterParams = linearAcesCgFromSrgb(wtr, wtg, wtb, waterWaveTime);
             // W1 wave-domain anchor: the terrain rebase origin reduced mod 4096 (kept small for shader
             // float precision). hitPos.xz (rebased) + anchor reconstructs a world-pinned coordinate, so the
             // ripple pattern stays fixed in the world as the player moves and the rebase origin shifts.
@@ -1194,7 +1194,7 @@ public final class RtComposite {
         return new SkyPush(
                 new Float4(sunX, sunY, sunZ, dayFactor),
                 new Float4(lx, ly, lz, lightRadius),
-                linearBt2020FromBt709(rr, rg, rb, starBrightness),
+                linearAcesCgFromBt709(rr, rg, rb, starBrightness),
                 new Float4(moonX, moonY, moonZ, moonPhase),
                 new Float4(0f, celestialAxisY(), celestialAxisZ(), starAngle),
                 uv.sun(),
@@ -1252,16 +1252,17 @@ public final class RtComposite {
         return t * t * (3f - 2f * t);
     }
 
-    private static Float4 linearBt2020FromSrgb(double r, double g, double b, float w) {
-        return linearBt2020FromBt709(
+    private static Float4 linearAcesCgFromSrgb(double r, double g, double b, float w) {
+        return linearAcesCgFromBt709(
                 srgbToLinear(r), srgbToLinear(g), srgbToLinear(b), w);
     }
 
-    private static Float4 linearBt2020FromBt709(double r, double g, double b, float w) {
+    /** OCIO cg-config-v4.0.0 ACES 2.0: Linear Rec.709 (sRGB)/D65 to ACEScg/AP1/D60. */
+    private static Float4 linearAcesCgFromBt709(double r, double g, double b, float w) {
         return new Float4(
-                (float) (0.6274039 * r + 0.3292830 * g + 0.0433131 * b),
-                (float) (0.0690973 * r + 0.9195406 * g + 0.0113612 * b),
-                (float) (0.0163916 * r + 0.0880132 * g + 0.8955953 * b),
+                (float) (0.61309743 * r + 0.33952314 * g + 0.04737945 * b),
+                (float) (0.07019372 * r + 0.91635388 * g + 0.01345240 * b),
+                (float) (0.02061559 * r + 0.10956977 * g + 0.86981463 * b),
                 w);
     }
 

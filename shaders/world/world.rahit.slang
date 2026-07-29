@@ -90,12 +90,12 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
         if (instanceKind == ENTITY_BIT && shadowRay && materialHeader.model == MATERIAL_DIELECTRIC) {
             float3 tint709 = lerp(float3(1.0),
                     srgbToLinear(texel.rgb) * srgbToLinear(epr.tint.rgb), texel.a);
-            float3 tint = bt709ToBt2020(tint709);
+            float3 tint = bt709ToAcesCg(tint709);
             payload.albedo *= half3(tint * clamp(materialHeader.params.w, 0.0, 1.0));
             IgnoreHit();
         }
         if (instanceKind == ENTITY_BIT && shadowRay && materialHeader.model == MATERIAL_WATER) {
-            float3 tint = bt709ToBt2020(
+            float3 tint = bt709ToAcesCg(
                     srgbToLinear(texel.rgb) * srgbToLinear(epr.tint.rgb));
             payload.albedo *= half3(lerp(float3(1.0, 1.0, 1.0), tint, WATER_SHADOW_TINT)
                     * clamp(materialHeader.params.w, 0.0, 1.0));
@@ -113,7 +113,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     // the biome water color, then keep walking so submerged terrain is lit by colored transmission.
     if (bucket == BUCKET_WATER) {
         TerrainPrim pr = ConstPtr<TerrainPrim>(sec.primAddr)[tri];
-        float3 tint = bt709ToBt2020(srgbToLinear(pr.tint.rgb));
+        float3 tint = bt709ToAcesCg(srgbToLinear(pr.tint.rgb));
         payload.albedo *= half3(lerp(float3(1.0), tint, WATER_SHADOW_TINT));
         // Record the NEAREST water crossing (any-hit order is arbitrary) in the shadow payload's hitT
         // lane. For an underwater shading point this is the exit point of its sun shadow ray, where
@@ -134,7 +134,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     if (bucket == BUCKET_TRANSLUCENT) {
         TerrainPrim pr = ConstPtr<TerrainPrim>(sec.primAddr)[tri];
         MaterialHeader materialHeader = ConstPtr<MaterialHeader>(pc.materialTableAddr)[pr.materialId];
-        float3 avgColor = max(bt709ToBt2020(
+        float3 avgColor = max(bt709ToAcesCg(
                 materialHeader.average.rgb * srgbToLinear(pr.tint.rgb)), float3(1.0e-3));
         float3 colorExtinction = max(-log(avgColor), float3(0.0, 0.0, 0.0));
         // The neutral floor is a flat per-hit dimming, NOT scaled by alpha: vanilla clear glass has a low

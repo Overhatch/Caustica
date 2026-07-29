@@ -50,12 +50,12 @@ public struct WorldPush {
     public uint     maxBounces;
     public float4   sunDir;           // xyz true sun direction, w dayFactor 0..1
     public float4   lightDir;         // xyz active NEE light dir, w square half-angle (rad)
-    public float4   lightRadiance;    // xyz scene-linear BT.2020 HDR radiance, w star brightness
+    public float4   lightRadiance;    // xyz scene-linear ACEScg HDR radiance, w star brightness
     public float4   moonDir;          // xyz moon direction, w moonPhase (0 full .. 4 new)
     public float4   celestial;        // xyz celestial rotation axis, w star angle (rad)
     public float4   sunUv;            // vanilla sun sprite atlas rect (u0,v0,u1,v1)
     public float4   moonUv;           // vanilla current-moon-phase sprite atlas rect
-    public float4   waterParams;      // xyz linear BT.2020 camera-biome water tint, w wave time (s)
+    public float4   waterParams;      // xyz linear ACEScg camera-biome water tint, w wave time (s)
     public float4   waterAnchor;      // xy world-stable wave-domain anchor, z previous wave time
     public float4x4 curViewProj;      // forward camera-relative view-projection
     public uint     breakCount;
@@ -67,7 +67,7 @@ public struct WorldPush {
     public uint     risCandidates;    // RIS candidate count M per diffuse vertex (0 = emitter NEE off)
 };
 
-// 32-byte hot area-light record. Linear BT.2020 radiance uses packed R11G11B10; the
+// 32-byte hot area-light record. Linear ACEScg radiance uses packed R11G11B10; the
 // grid-relative owner section uses three unsigned 10-bit coordinates; the geometric normal is
 // reconstructed from the half axes.
 //
@@ -254,19 +254,20 @@ public float2 unpackHalf2(uint p) {
     return float2(f16tof32(p & 0xFFFFu), f16tof32(p >> 16));
 }
 
-// The ray tracer's transport contract is scene-linear BT.2020. Minecraft assets and captured vertex
-// colours are authored as sRGB/BT.709, so colour inputs cross this seam exactly once before they enter
-// any BRDF, throughput, medium, light, guide, or radiance calculation.
-public static const float3 BT2020_LUMA = float3(0.2627, 0.6780, 0.0593);
-public static const float3 BT709_TO_BT2020_R = float3(0.6274039, 0.3292830, 0.0433131);
-public static const float3 BT709_TO_BT2020_G = float3(0.0690973, 0.9195406, 0.0113612);
-public static const float3 BT709_TO_BT2020_B = float3(0.0163916, 0.0880132, 0.8955953);
+// The ray tracer's transport contract is scene-linear ACEScg (AP1/D60). Minecraft assets and
+// captured vertex colours are authored as sRGB/BT.709 (D65), so colour inputs cross this OCIO-derived
+// chromatic-adaptation + primary-conversion seam exactly once before they enter any BRDF, throughput,
+// medium, light, guide, or radiance calculation.
+public static const float3 ACESCG_LUMA = float3(0.27222872, 0.67408177, 0.05368952);
+public static const float3 BT709_TO_ACESCG_R = float3(0.61309743, 0.33952314, 0.04737945);
+public static const float3 BT709_TO_ACESCG_G = float3(0.07019372, 0.91635388, 0.01345240);
+public static const float3 BT709_TO_ACESCG_B = float3(0.02061559, 0.10956977, 0.86981463);
 
-public float3 bt709ToBt2020(float3 color) {
+public float3 bt709ToAcesCg(float3 color) {
     return float3(
-            dot(color, BT709_TO_BT2020_R),
-            dot(color, BT709_TO_BT2020_G),
-            dot(color, BT709_TO_BT2020_B));
+            dot(color, BT709_TO_ACESCG_R),
+            dot(color, BT709_TO_ACESCG_G),
+            dot(color, BT709_TO_ACESCG_B));
 }
 
 public float3 srgbToLinear(float3 color) {

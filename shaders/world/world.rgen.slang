@@ -15,7 +15,7 @@
 //
 // Each frame emits a single SPP-averaged (still noisy) estimate; temporal convergence is the denoiser's
 // job. With RR disabled the output is the raw noisy path trace — a reference view, not a converged
-// image. Output is scene-linear BT.2020 HDR (R16G16B16A16_SFLOAT); display mapping happens afterward.
+// image. Output is scene-linear ACEScg HDR (R16G16B16A16_SFLOAT); display mapping happens afterward.
 //
 // The build emits an ordinary TraceRay fallback and an optional EXT SER variant from this source.
 import world_common;

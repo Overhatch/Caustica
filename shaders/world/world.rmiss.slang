@@ -249,7 +249,7 @@ void main(inout Payload payload) {
     }
     float3 col = atmosphere(mdir, sd);
     // This atmosphere model is parameterized in its original linear BT.709 basis. Apply its
-    // luminance-preserving look there, then cross into the BT.2020 transport basis once at output.
+    // luminance-preserving look there, then cross into the ACEScg transport basis once at output.
     float lum = dot(col, float3(0.2126, 0.7152, 0.0722));
     col = max(lerp(float3(lum, lum, lum), col, SKY_SATURATION), float3(0.0, 0.0, 0.0));
     float up = clamp(dir.y, 0.0, 1.0);
@@ -291,8 +291,8 @@ void main(inout Payload payload) {
     // albedo is a half3 lane, so the sky's HDR radiance is clamped to half's finite range rather than
     // allowed to round up to +inf and propagate as NaN through the path throughput. This is a guard, not
     // a correction: the brightest term here is SUN_DISC_RADIANCE at 24.0, far under the 65504 ceiling.
-    float3 col2020 = bt709ToBt2020(max(col, float3(0.0)));
-    payload.albedo = half3(clamp(col2020, float3(0.0), float3(HALF_MAX)));
+    float3 colAcesCg = bt709ToAcesCg(max(col, float3(0.0)));
+    payload.albedo = half3(clamp(colAcesCg, float3(0.0), float3(HALF_MAX)));
     payload.hitT = -1.0;
     payload.normal = half3(0.0h, 0.0h, 0.0h);
     payload.motionPrev = half3(0.0h, 0.0h, 0.0h);
