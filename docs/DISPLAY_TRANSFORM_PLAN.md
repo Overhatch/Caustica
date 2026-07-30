@@ -49,10 +49,10 @@ out-of-BT.709 chroma toward equal-luminance neutral *before* AgX's inset does a 
 independent desaturation. Not necessarily wrong, but two compressors stacked without either being
 aware of the other is very unlikely to be the intended amount of compression.
 
-**D4 — the commented-out `applyLook`** ([display.comp:56-66](../shaders/display/display.comp),
-called nowhere) is dead code guarding a real question: base AgX (what's shipped) is intentionally
-flat/low-contrast, and the "washed out" impression anyone gets from it is partly that — not a bug,
-a missing look layer. Moot if §2 below is adopted, since ACES 2.0 brings its own contrast.
+**D4 — the old commented-out `applyLook`** was dead display-space code guarding a real question:
+base AgX was intentionally flat/low-contrast, and the "washed out" impression was partly that —
+not a bug. It was removed with the ACES 2.0 migration. A real scene-referred ACES Look Transform
+layer has since replaced it; see [ACES_LOOKS.md](ACES_LOOKS.md).
 
 ## 2. Target: ACES 2.0 output transform, baked to a LUT
 
@@ -95,7 +95,9 @@ From [display.comp](../shaders/display/display.comp): the AgX inset/sigmoid/outs
 constants, `gamutMapBt2020ToBt709` (ACES 2.0 gamut-compresses toward the *target* display gamut
 internally — the hand-rolled BT.2020→BT.709 prepass becomes redundant at best, double-compressing
 at worst per D3), `pqEncode`, the HDR per-channel rolloff and `headroom`-based `tonemapHdr`, and
-the dead `applyLook`. The pass becomes: apply exposure → shaper → 3D texture fetch → store. Given
+the old dead display-space `applyLook`. With no creative look selected, the pass becomes: apply
+exposure → shaper → 3D texture fetch → store. A selected ACES look adds one shared scene-referred
+lookup before the SDR/HDR output-transform fetches. Given
 the polynomial + two 3×3 matrix multiplies it replaces, likely cheaper than today, not just
 simpler — worth confirming against [GPU_PERF_PLAN.md](GPU_PERF_PLAN.md)'s latency-bound framing
 once implemented, same as the exposure plan's own cost note.
@@ -202,7 +204,10 @@ likely reason it wasn't obviously visible before this LUT swap: AgX's failure mo
 "washes to white," ACES's is "stays hued but the hue can be slightly wrong" — the latter is a
 side effect of ACES rendering highlights *more* faithfully, not less.
 
-No clean fix available from OCIO's built-in config without authoring a custom LMT (out of scope).
+The runtime-selectable ACES Look Transform system in [ACES_LOOKS.md](ACES_LOOKS.md) now
+provides the correct place for a hue-specific correction if one is needed. The default
+`caustica-soft` look modestly reduces saturation, but does not claim to fully correct this
+ACES 2.0 hue characteristic.
 Mitigation: retuning exposure (§S3 in [EXPOSURE_PLAN.md](EXPOSURE_PLAN.md)) so lava's brightest
 pixels don't sit pinned at the top of the tone-scale directly reduces how often this is visible —
 check lava/glowstone specifically once that tuning pass happens, before deciding whether this needs
@@ -290,10 +295,11 @@ absolute luminance when that content must be embedded into an active PQ swapchai
    "working correctly" overall; cleared the way for step 4.
 3. **Done (2026-07-27).** HDR LUTs baked and wired: `tonemapMode` now switches SDR and HDR together,
    old per-channel rolloff + `pqEncode` still present but only reachable in legacy mode.
-   Both LUT fetches consume the same exposed scene value so SDR/HDR stay appearance-matched at one
-   exposure. §6.2 (peak-nits variants) resolved same day, see below.
+   Both output LUT fetches consume the same exposed, looked scene value so SDR/HDR stay
+   appearance-matched at one exposure. §6.2 (peak-nits variants) resolved same day, see below.
 4. **Done (2026-07-27).** Deleted the legacy operator entirely (AgX inset/sigmoid/outset,
-   `gamutMapBt2020ToBt709`, the per-channel HDR rolloff, `pqEncode`, the dead `applyLook`) —
+   `gamutMapBt2020ToBt709`, the per-channel HDR rolloff, `pqEncode`, the old dead display-space
+   `applyLook`) —
    ACES 2.0 is now the only SDR/HDR display transform, no mode switch. `CausticaConfig.Rt.Tonemap`
    lost `MODE`/`acesLut()`. `RtDisplayPipeline.dispatch`'s push constants no longer carry
    `paperWhiteNits`/`headroom`, which were only ever consumed by the deleted rolloff.

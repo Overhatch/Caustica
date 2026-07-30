@@ -13,6 +13,7 @@
 	"caustica.options.rt.look.tooltip": "Scene-referred creative Look Transform applied before the ACES 2.0 output transform. Caustica Soft lifts deep toe detail and gently reduces saturation.",
 	"caustica.options.rt.look.none": "None",
 	"caustica.options.rt.look.caustica-soft": "Caustica Soft",
+	"caustica.options.rt.look.resolve-curve": "Resolve Curve",
 	"caustica.options.rt.look.agx-tone": "AgX Tone",
 	"caustica.options.rt.look.arri-reveal-tone": "ARRI REVEAL Tone",
 	"caustica.options.rt.look.red-tone": "RED IPP2 Tone",

@@ -733,7 +733,7 @@ public final class CausticaConfig {
             // curve can separate them -- what does is the asymmetric temporal adaptation above, which
             // holds a low exposure when you step from noon sun into shade. That is a real limit of this
             // controller, not a tuning miss.
-            public static final String DEFAULT_CURVE = "0:-3.0, 2:-2.4, 8:0.0, 15:1.0";
+            public static final String DEFAULT_CURVE = "-1:-3.0, 2:-2.0, 8:0.0, 15:1.2";
             public static final StringSetting MODE =
                     string("caustica.rt.exposure.mode", "exposure.mode", "auto", Exposure::sanitizeMode);
             public static final StringSetting CURVE =
@@ -757,7 +757,7 @@ public final class CausticaConfig {
             public static final FloatSetting MIN_EV =
                     finiteFloat("caustica.rt.exposure.minEv", "exposure.min-ev", -15.0f);
             public static final FloatSetting MAX_EV =
-                    finiteFloat("caustica.rt.exposure.maxEv", "exposure.max-ev", 0.0f);
+                    finiteFloat("caustica.rt.exposure.maxEv", "exposure.max-ev", -1.0f);
             /**
              * Adaptation time constants in seconds, applied in EV space by the resolve. Named for what
              * the SCENE did: walking into a dark cave is "darken" (exposure has to rise), stepping back
@@ -852,7 +852,8 @@ public final class CausticaConfig {
          */
         public static final class Tonemap {
             public static final List<String> LOOKS =
-                    List.of("none", "caustica-soft", "agx-tone", "arri-reveal-tone", "red-tone");
+                    List.of("none", "caustica-soft", "resolve-curve",
+                            "agx-tone", "arri-reveal-tone", "red-tone");
             public static final StringSetting LOOK =
                     string("caustica.rt.tonemap.look", "tonemap.look", "caustica-soft", Tonemap::sanitizeLook);
             public static final FloatSetting GAMMA =

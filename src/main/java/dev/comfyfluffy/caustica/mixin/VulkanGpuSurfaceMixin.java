@@ -102,6 +102,12 @@ public abstract class VulkanGpuSurfaceMixin {
 	@Unique
 	private int caustica$colorSpace = 0;
 
+	@Unique
+	private long caustica$metadataSwapchain;
+
+	@Unique
+	private int caustica$metadataPeakNits = -1;
+
 	@Inject(method = "<init>(Lcom/mojang/blaze3d/vulkan/VulkanDevice;J)V", at = @At("TAIL"))
 	private void caustica$logHdrCapabilities(VulkanDevice device, long windowHandle, CallbackInfo ci) {
 		try {
@@ -248,7 +254,8 @@ public abstract class VulkanGpuSurfaceMixin {
 	 * it unconditionally here is cheap. No-op when Reflex isn't enabled + device-supported.
 	 */
 	@Inject(method = "configure", at = @At("TAIL"))
-	private void caustica$applyReflexSleepMode(GpuSurface.Configuration config, CallbackInfo ci) {
+	private void caustica$applySwapchainExtensionState(GpuSurface.Configuration config, CallbackInfo ci) {
+		caustica$applyHdrMetadataIfNeeded();
 		if (RtDeviceBringup.reflexEnabled()) {
 			RtReflex.INSTANCE.applySleepMode(this.device.vkDevice(), this.swapchain);
 		}
@@ -316,6 +323,9 @@ public abstract class VulkanGpuSurfaceMixin {
 	 */
 	@Inject(method = "blitFromTexture", at = @At("HEAD"), cancellable = true)
 	private void caustica$presentHdr(CommandEncoderBackend commandEncoder, GpuTextureView textureView, CallbackInfo ci) {
+		// The mastering peak is a live option and selects a different baked ACES output LUT without forcing
+		// swapchain recreation. Refresh the metadata once when that selected LUT changes.
+		caustica$applyHdrMetadataIfNeeded();
 		if (this.currentImageIndex < 0) {
 			return;
 		}
@@ -339,6 +349,24 @@ public abstract class VulkanGpuSurfaceMixin {
 					this.swapchainWidth, this.swapchainHeight, sdrView, acquireSem, presentSem)) {
 				ci.cancel();
 			}
+		}
+	}
+
+	@Unique
+	private void caustica$applyHdrMetadataIfNeeded() {
+		if (this.caustica$colorSpace != VK_COLOR_SPACE_HDR10_ST2084_EXT
+				|| !RtHdr.metadataExtensionEnabled() || this.swapchain == 0L) {
+			return;
+		}
+		int peakNits = CausticaConfig.Rt.Hdr.nearestPeakNitsStep(
+				CausticaConfig.Rt.Hdr.PEAK_NITS.value());
+		if (this.caustica$metadataSwapchain == this.swapchain
+				&& this.caustica$metadataPeakNits == peakNits) {
+			return;
+		}
+		if (RtHdr.applyMasteringMetadata(this.device.vkDevice(), this.swapchain, peakNits)) {
+			this.caustica$metadataSwapchain = this.swapchain;
+			this.caustica$metadataPeakNits = peakNits;
 		}
 	}
 
