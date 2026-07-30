@@ -1208,12 +1208,11 @@ public final class RtComposite {
         } else {
             // Moon: dim cool light, ramping up from zero at the sun→moon handoff (sunY = -0.05, where
             // the sun fade also reaches zero) so the switch is invisible. Scaled by the lit fraction so
-            // a new moon gives near-zero moonlight, and tinted by the same transmittance so a low moon
+            // a new moon gives no directional moonlight, and tinted by the same transmittance so a low moon
             // is warm amber, silver once high (or zero while it is below the horizon).
             atmosphereTransmittance(moonX, moonY, moonZ, trans);
             float moonStrength = smoothstep(0.04f, 0.22f, -sunY);
-            float litFraction = 1.0f - Math.abs(moonPhase - 4.0f) / 4.0f; // 0 new .. 1 full
-            float moonPeak = MOON_ILLUMINANCE_FULL * (0.15f + 0.85f * litFraction);
+            float moonPeak = MOON_ILLUMINANCE_FULL * moonLitFraction(moonPhase);
             lx = moonX; ly = moonY; lz = moonZ;
             rr = MOON_TINT_R * moonPeak * moonStrength * trans[0];
             rg = MOON_TINT_G * moonPeak * moonStrength * trans[1];
@@ -1229,6 +1228,11 @@ public final class RtComposite {
                 new Float4(0f, celestialAxisY(), celestialAxisZ(), starAngle),
                 uv.sun(),
                 uv.moon());
+    }
+
+    /** Minecraft moon phases are 0 = full, 4 = new, then mirror back toward full through phase 7. */
+    static float moonLitFraction(float moonPhaseIndex) {
+        return Math.abs(moonPhaseIndex - 4.0f) / 4.0f;
     }
 
     /**

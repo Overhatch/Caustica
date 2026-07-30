@@ -68,7 +68,7 @@ public final class RtMaterialRegistry {
     // because it is what the emitter contributes to the room, and it happens to land a torch's small
     // emissive footprint near 40 lm — a candle to a small torch — so the single knob is defensible until
     // the per-material audit (SCENE_UNITS_PLAN §6 Q4) actually happens. That audit is still not done.
-    public static final float EMISSIVE_STRENGTH = 2000.0f;
+    public static final float EMISSIVE_STRENGTH = 1000.0f;
     private static final int EMISSION_STRENGTH_SHIFT = 8;
     private static final int EMISSION_STRENGTH_MASK = 65535;
     // Ceiling of the 16-bit fixed-point strength field, raised with the baseline above. HALF_MAX is the

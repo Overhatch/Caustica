@@ -732,7 +732,7 @@ public final class CausticaConfig {
             // curve can separate them -- what does is the asymmetric temporal adaptation above, which
             // holds a low exposure when you step from noon sun into shade. That is a real limit of this
             // controller, not a tuning miss.
-            public static final String DEFAULT_CURVE = "0:-4.0, 2:-2.4, 8:0.0, 15:1.0";
+            public static final String DEFAULT_CURVE = "0:-3.0, 2:-2.4, 8:0.0, 15:1.0";
             public static final StringSetting MODE =
                     string("caustica.rt.exposure.mode", "exposure.mode", "auto", Exposure::sanitizeMode);
             public static final StringSetting CURVE =

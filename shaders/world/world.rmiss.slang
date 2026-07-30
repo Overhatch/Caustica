@@ -33,7 +33,7 @@ float pow2(float x) { return x * x; }
 // "clear noon ≈ 100,000 lux" reference, 0.23 EV high, reddening and dimming into the horizon on exactly
 // the curve the visible sky follows.
 static const float SUN_ILLUMINANCE  = 128000.0; // lux, normal incidence, top of atmosphere
-static const float MOON_ILLUMINANCE = 1.0;     // lux, full moon at the ground
+static const float MOON_ILLUMINANCE = 10.0;     // lux, full moon at the ground
 // Vibrance applied to the atmosphere in-scatter only (not discs/stars/night ambient): luminance-
 // preserving, so GI energy is unchanged.
 static const float SKY_SATURATION = 1.2;
@@ -70,7 +70,7 @@ static const float3 MOON_DISC_RADIANCE = MOON_DISC_TINT * (MOON_ILLUMINANCE / MO
 // blue cast survives the level change. Whether a moonless night wants an explicit gameplay floor on top
 // of this is a design decision the plan defers (§6 Q3) — this constant is now the physical value, not
 // the fudge that used to stand in for one.
-static const float  NIGHT_LUMINANCE = 0.005;
+static const float  NIGHT_LUMINANCE = 0.1;
 static const float3 NIGHT_ZENITH  = float3(0.490173, 0.980344, 2.695945) * NIGHT_LUMINANCE;
 static const float3 NIGHT_HORIZON = float3(0.676517, 0.992225, 2.029550) * NIGHT_LUMINANCE;
 
@@ -260,7 +260,7 @@ float3 stars(float3 dir, float starBrightness, float VdotS, float4 celestial) {
     // Per-star colour temperature: hash picks a spot on a warm-orange ↔ blue-white ramp (real star
     // populations). Average luminance close to the old uniform constant so night exposure doesn't shift.
     float3 starCol = lerp(float3(0.78, 0.60, 0.42), float3(0.50, 0.62, 0.95), hash13(id + 137.0));
-    return 0.2 * star * starCol * starBrightness;
+    return star * starCol * starBrightness;
 }
 
 [shader("miss")]
