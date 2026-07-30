@@ -1,28 +1,33 @@
 #!/usr/bin/env python3
-"""Bakes the RT renderer's display-transform 3D LUTs from OCIO's built-in ACES 2.0 config.
+"""Bakes the RT renderer's ACES look and display-transform 3D LUTs.
 
 See docs/DISPLAY_TRANSFORM_PLAN.md. The renderer feeds these LUTs scene-linear ACEScg (AP1/D60)
-radiance, already multiplied by the auto-exposure scalar (RtExposure); each LUT bakes in the whole
-remaining pipeline: ACES 2.0 view transform, gamut mapping, tone scale, and the output display's
-transfer function. The shader only has to do the log2 shaper encode (must match SHAPER_LO/HI below
-bit-for-bit -- see shaperEncode() in shaders/display/display.comp) and a trilinear fetch.
+radiance, already multiplied by the auto-exposure scalar (RtExposure). A selected scene-referred
+ACES-to-ACES Look Transform (historically called an LMT) runs first, followed by the existing ACES
+2.0 output transform, gamut mapping, tone scale, and display transfer function.
 
 One SDR LUT (BT.709, sRGB OETF) plus one HDR LUT per REC2020 mastering-nits target ACES 2.0 ships
 (500/1000/2000/4000 -- see HDR_REC2020_NITS; ACES 2.0 does not parameterize peak luminance
 continuously, this fixed set IS the resolution). RtComposite picks the nearest at LUT-load time to
-match the renderer's continuous Hdr.PEAK_NITS config value.
+match the renderer's continuous Hdr.PEAK_NITS config value. Look LUTs are separate log-to-log
+scene-referred tables, so adding a look does not duplicate all five output LUTs.
 
 Requires: pip install opencolorio numpy  (tested with opencolorio 2.5.2 / numpy 2.5.1, Python 3.14)
 
 Usage:
     python tools/bake_display_lut.py
+    python tools/bake_display_lut.py --public-source-dir path/to/aces-looks/ACES2Looks/CLF
 
 Regenerate whenever SHAPER_LO/HI, LUT_SIZE, or the OCIO config/view below changes. The baked
 .bin files are committed binary resources (src/main/resources/caustica/rt/luts/) -- this script
-is the source of truth for reproducing them, not the .bin files themselves.
+is the source of truth for reproducing them, not the .bin files themselves. Public CLFs are fetched
+from a pinned ACESLooks commit and verified by SHA-256 unless --public-source-dir is provided.
 """
+import argparse
+import hashlib
 import struct
 import sys
+import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -41,8 +46,47 @@ SHAPER_LO_STOPS = -12.0
 SHAPER_HI_STOPS = 12.0
 
 LUT_SIZE = 65  # samples per axis; N^3 total. See docs/DISPLAY_TRANSFORM_PLAN.md S2 sizing note.
+LOOK_LUT_SIZE = 33  # log-domain scene-to-scene looks; smooth transforms, one extra sample at runtime
 
 OUT_DIR = Path(__file__).resolve().parent.parent / "src/main/resources/caustica/rt/luts"
+PUBLIC_CACHE_DIR = Path(__file__).resolve().parent.parent / "build/aces-lmts"
+
+# Public ACES 2.0 CLFs from ACESLooks, BSD-3-Clause. Pin the immutable commit and every payload hash:
+# a changed upstream main branch must never change committed renderer output without review.
+ACES_LOOKS_COMMIT = "f1b85e40efb64bf5efeecc34e251bf7c617f6306"
+ACES_LOOKS_RAW = (
+    "https://raw.githubusercontent.com/priikone/aces-looks/"
+    f"{ACES_LOOKS_COMMIT}/ACES2Looks/CLF"
+)
+PUBLIC_LMTS = [
+    dict(
+        name="agx-tone",
+        file="T-AgX_Tone.clf",
+        sha256="540e56fdfb2e0eecd84afc9b97c4171130a48af26c97c5a43622ceae79459ee9",
+        note="ACESLooks ACES 2.0 AgX tone-curve look",
+    ),
+    dict(
+        name="arri-reveal-tone",
+        file="T-ARRI_REVEAL_Tone.clf",
+        sha256="b5ab3d001a859bbb639775f3afb191703cf91cc529ed729af0014ef8f61ed47b",
+        note="ACESLooks ACES 2.0 ARRI REVEAL tone-curve look",
+    ),
+    dict(
+        name="red-tone",
+        file="T-RED_Tone.clf",
+        sha256="165d4e6c78e756ca9b1d3fb35abccf44116dab18fe8351fe71c1a76831db0c47",
+        note="ACESLooks ACES 2.0 RED IPP2 tone-curve look",
+    ),
+]
+
+# Project-authored ACES look. It is deliberately restrained: raise only the deep scene-referred toe
+# (black remains exactly black and the adjustment decays smoothly into the mids), then reduce AP1
+# saturation without moving luminance. Applying this before the Output Transform lets ACES 2.0 retain
+# control of the final display rendering and gamut mapping.
+SOFT_TOE_GAIN = 0.50
+SOFT_TOE_PIVOT = 0.03
+SOFT_TOE_SATURATION = 0.92
+ACESCG_LUMA = np.array([0.2722287168, 0.6740817658, 0.0536895174], dtype=np.float64)
 
 # HDR REC2020 nits: ACES 2.0 does not parameterize peak luminance continuously -- OCIO's builtin
 # registry ships a fixed table of mastering targets (real HDR mastering always worked this way).
@@ -84,6 +128,15 @@ def shaper_axis(size: int) -> np.ndarray:
     return np.exp2(stops)
 
 
+def shaper_encode(linear: np.ndarray) -> np.ndarray:
+    stops = np.log2(np.maximum(linear, np.exp2(SHAPER_LO_STOPS)))
+    return np.clip(
+        (stops - SHAPER_LO_STOPS) / (SHAPER_HI_STOPS - SHAPER_LO_STOPS),
+        0.0,
+        1.0,
+    )
+
+
 def make_processor(cfg: "OCIO.Config", spec: dict):
     if "display_view" in spec:
         display, view = spec["display_view"]
@@ -98,6 +151,47 @@ def make_processor(cfg: "OCIO.Config", spec: dict):
         else:
             raise ValueError(f"unknown chain step kind: {kind}")
     return cfg.getProcessor(grp).getDefaultCPUProcessor()
+
+
+def make_lmt_processor(cfg: "OCIO.Config", clf_path: Path):
+    # CLF LMTs are standardized as ACES2065-1 (AP0) -> ACES2065-1. The renderer is ACEScg (AP1),
+    # so wrap the public file in the appropriate conversions. OCIO optimizes the composed processor.
+    grp = OCIO.GroupTransform()
+    grp.appendTransform(OCIO.ColorSpaceTransform(src=SOURCE_SPACE, dst="ACES2065-1"))
+    grp.appendTransform(OCIO.FileTransform(
+        src=str(clf_path.resolve()),
+        interpolation=OCIO.INTERP_TETRAHEDRAL,
+    ))
+    grp.appendTransform(OCIO.ColorSpaceTransform(src="ACES2065-1", dst=SOURCE_SPACE))
+    return cfg.getProcessor(grp).getDefaultCPUProcessor()
+
+
+def apply_soft_toe_lmt(rgb: np.ndarray) -> None:
+    # Conceptually AP0 -> AP1, this operation, AP1 -> AP0. Since the renderer and baker surround the
+    # look with ACEScg, those two matrices cancel. Uniform RGB scaling recovers toe detail without
+    # changing chromaticity; the following luma-axis mix makes the modest saturation reduction.
+    y = np.maximum(rgb.astype(np.float64) @ ACESCG_LUMA, 0.0)
+    toe_scale = 1.0 + SOFT_TOE_GAIN * np.exp(-y / SOFT_TOE_PIVOT)
+    lifted = rgb.astype(np.float64) * toe_scale[:, None]
+    lifted_y = lifted @ ACESCG_LUMA
+    rgb[:] = (
+        lifted_y[:, None]
+        + SOFT_TOE_SATURATION * (lifted - lifted_y[:, None])
+    ).astype(np.float32)
+
+
+def checked_public_lmt(spec: dict, source_dir: Path | None) -> Path:
+    path = (source_dir / spec["file"]) if source_dir is not None else (PUBLIC_CACHE_DIR / spec["file"])
+    if not path.exists() and source_dir is None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        print(f"downloading {spec['file']} from pinned ACESLooks commit {ACES_LOOKS_COMMIT}")
+        urllib.request.urlretrieve(f"{ACES_LOOKS_RAW}/{spec['file']}", path)
+    if not path.is_file():
+        raise FileNotFoundError(f"missing public LMT: {path}")
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != spec["sha256"]:
+        raise ValueError(f"{path}: SHA-256 mismatch: expected {spec['sha256']}, got {actual}")
+    return path
 
 
 def bake_one(cfg: "OCIO.Config", spec: dict, size: int) -> np.ndarray:
@@ -117,6 +211,19 @@ def bake_one(cfg: "OCIO.Config", spec: dict, size: int) -> np.ndarray:
     return flat.reshape(size, size, size, 3)
 
 
+def bake_look(processor, size: int, custom=None) -> np.ndarray:
+    axis = shaper_axis(size)
+    b, g, r = np.meshgrid(axis, axis, axis, indexing="ij")
+    flat = np.stack([r, g, b], axis=-1).astype(np.float32).reshape(-1, 3)
+    if custom is not None:
+        custom(flat)
+    else:
+        processor.applyRGB(flat)
+    # Store scene-referred output in the same log2 shaper domain. The shader decodes this sample back
+    # to linear ACEScg before feeding the ordinary SDR/HDR ACES 2.0 output-transform LUT.
+    return shaper_encode(flat).reshape(size, size, size, 3)
+
+
 def write_lut(path: Path, size: int, rgb: np.ndarray) -> None:
     # RGBA16F texel data (alpha unused, kept 1.0 for a well-defined value + simpler Vulkan format
     # matching: R16G16B16_SFLOAT support is patchy, RGBA16F is universal). Header is self-describing
@@ -133,11 +240,32 @@ def write_lut(path: Path, size: int, rgb: np.ndarray) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--public-source-dir",
+        type=Path,
+        help="use already-downloaded ACES2Looks/CLF sources instead of fetching the pinned files",
+    )
+    args = parser.parse_args()
+
     cfg = OCIO.Config.CreateFromBuiltinConfig(OCIO_BUILTIN_CONFIG)
     for spec in LUTS:
         print(f"baking {spec['name']}: {spec['note']}")
         rgb = bake_one(cfg, spec, LUT_SIZE)
         write_lut(OUT_DIR / f"{spec['name']}.bin", LUT_SIZE, rgb)
+
+    print(
+        "baking look_caustica-soft: project-authored soft toe "
+        f"(gain={SOFT_TOE_GAIN}, pivot={SOFT_TOE_PIVOT}, saturation={SOFT_TOE_SATURATION})"
+    )
+    rgb = bake_look(None, LOOK_LUT_SIZE, custom=apply_soft_toe_lmt)
+    write_lut(OUT_DIR / "look_caustica-soft.bin", LOOK_LUT_SIZE, rgb)
+
+    for spec in PUBLIC_LMTS:
+        clf_path = checked_public_lmt(spec, args.public_source_dir)
+        print(f"baking look_{spec['name']}: {spec['note']} ({clf_path})")
+        rgb = bake_look(make_lmt_processor(cfg, clf_path), LOOK_LUT_SIZE)
+        write_lut(OUT_DIR / f"look_{spec['name']}.bin", LOOK_LUT_SIZE, rgb)
 
 
 if __name__ == "__main__":

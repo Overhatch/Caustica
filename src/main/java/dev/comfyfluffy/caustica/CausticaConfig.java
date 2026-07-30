@@ -58,7 +58,7 @@ public final class CausticaConfig {
         Object[] touch = {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
-            Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
+            Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.LOOK, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
             Rt.Hdr.ENABLED, Ngx.PATH,
         };
     }
@@ -106,7 +106,8 @@ public final class CausticaConfig {
                         + " only reasonably compact glows become lights. stats/dump/dump-radius are debug logging.");
         FILE.setComment("tonemap",
                 " SDR + HDR display-transform: a baked ACES 2.0 output-transform LUT (see\n"
-                        + " docs/DISPLAY_TRANSFORM_PLAN.md). gamma is a luminance-preserving artistic\n"
+                        + " docs/DISPLAY_TRANSFORM_PLAN.md). look selects a scene-referred ACES Look\n"
+                        + " Transform before the output transform; gamma is a luminance-preserving artistic\n"
                         + " correction applied after both LUTs (1 is neutral; below 1 brightens midtones).");
         FILE.setComment("exposure",
                 " Auto-exposure metering and shaping (see docs/EXPOSURE_PLAN.md). Scene values are\n"
@@ -844,16 +845,34 @@ public final class CausticaConfig {
         }
 
         /**
-         * SDR + HDR display-transform operator: a baked ACES 2.0 output-transform LUT (see
-         * {@code RtToneLut}, {@code tools/bake_display_lut.py}, {@code docs/DISPLAY_TRANSFORM_PLAN.md}).
+         * Scene-referred ACES Look Transform plus the SDR + HDR display-transform operator: baked LUTs
+         * (see {@code RtToneLut}, {@code tools/bake_display_lut.py}, {@code docs/ACES_LOOKS.md}).
          * Replaced the original in-shader AgX + per-channel HDR rolloff after an in-game A/B; that code
          * is gone, not just disabled — see {@code docs/DISPLAY_TRANSFORM_PLAN.md} plan step 4.
          */
         public static final class Tonemap {
+            public static final List<String> LOOKS =
+                    List.of("none", "caustica-soft", "agx-tone", "arri-reveal-tone", "red-tone");
+            public static final StringSetting LOOK =
+                    string("caustica.rt.tonemap.look", "tonemap.look", "caustica-soft", Tonemap::sanitizeLook);
             public static final FloatSetting GAMMA =
                     clampedFloat("caustica.rt.tonemap.gamma", "tonemap.gamma", 1.0f, 0.1f, 5.0f);
 
             private Tonemap() {
+            }
+
+            public static String lookResource(String look) {
+                return "none".equals(look) ? null : "look_" + look + ".bin";
+            }
+
+            private static String sanitizeLook(String value) {
+                if (value != null) {
+                    String normalized = value.trim().toLowerCase(java.util.Locale.ROOT);
+                    if (LOOKS.contains(normalized)) {
+                        return normalized;
+                    }
+                }
+                return "caustica-soft";
             }
         }
 

@@ -7,6 +7,10 @@ run/
 out/
 *.log
 *.class
+__pycache__/
+*.pyc
+.venv/
+.uv-cache/
 third_party/
 bin/
 /logs

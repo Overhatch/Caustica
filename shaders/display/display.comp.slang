@@ -1,8 +1,8 @@
 // Maps the display-res scene-linear ACEScg RT image to sRGB SDR and, when enabled, PQ/BT.2020 HDR,
 // via baked ACES 2.0 display-transform LUTs (see tools/bake_display_lut.py,
 // docs/DISPLAY_TRANSFORM_PLAN.md). Tonemap seam: the path tracer and DLSS-RR use scene-linear
-// ACEScg; exposure is applied from the compositor-owned 1x1 image right here, then both outputs are
-// a single log2-shaped LUT fetch.
+// ACEScg; exposure is applied from the compositor-owned 1x1 image right here, followed by the selected
+// scene-referred ACES look (LMT), then the shared ACES 2.0 output transform for each display.
 
 import display_common;
 
@@ -17,6 +17,9 @@ import display_common;
 // encoded BT.2020 (one of a fixed set of mastering-nits targets, selected host-side to match
 // Hdr.PEAK_NITS -- see RtComposite), matching hdrImage exactly, so no separate encode is needed either.
 [[vk::binding(5, 0)]] Sampler3D hdrToneLut;
+// Optional scene-referred ACEScg -> ACEScg Look Transform. Both its input and stored output use the
+// same log2 shaper; applyLook() decodes the sample back to linear before either output transform.
+[[vk::binding(6, 0)]] Sampler3D lookLut;
 
 [[vk::push_constant]] DisplayPush pc;
 
@@ -34,14 +37,26 @@ float3 shaperEncode(float3 linearColor) {
 // Edge-aligned LUT: texel 0's centre is uvw=0.0 and texel (lutSize-1)'s centre is uvw=1.0, but a
 // sampler's normalized [0,1] domain spans texel *centres* at 0.5/N .. 1-0.5/N by default. Remap into
 // that convention; RtToneLut's CLAMP_TO_EDGE then holds the boundary texel for any exposed value
-// outside the shaper's +/-12 EV range instead of wrapping. Shared by both LUTs -- they're baked at
-// the same lutSize (RtComposite asserts this when loading the HDR LUT).
-float3 lutTexCoord(float3 uvw) {
-    return uvw * ((pc.lutSize - 1.0) / pc.lutSize) + float3(0.5 / pc.lutSize);
+// outside the shaper's +/-12 EV range instead of wrapping. toneLut/hdrToneLut share pc.lutSize;
+// the independently sized lookLut passes pc.lookLutSize.
+float3 lutTexCoord(float3 uvw, float size) {
+    return uvw * ((size - 1.0) / size) + float3(0.5 / size);
 }
 
-float3 exposed(float3 sceneAcesCg, float exposure) {
-    return max(sceneAcesCg * exposure, float3(0.0));
+float3 shaperDecode(float3 shaped) {
+    return exp2(lerp(
+            float3(LUT_SHAPER_LO_STOPS),
+            float3(LUT_SHAPER_HI_STOPS),
+            clamp(shaped, 0.0, 1.0)));
+}
+
+float3 applyLook(float3 exposedAcesCg) {
+    if (pc.lookEnabled == 0) {
+        return exposedAcesCg;
+    }
+    float3 uvw = shaperEncode(exposedAcesCg);
+    float3 shaped = lookLut.SampleLevel(lutTexCoord(uvw, pc.lookLutSize), 0.0).rgb;
+    return shaperDecode(shaped);
 }
 
 // Artistic gamma after the view/display transform. Apply the curve to display luminance and scale
@@ -124,16 +139,16 @@ float3 displayGammaHdr(float3 pqColor) {
 // Exposure -> log2 shaper -> trilinear LUT fetch. The LUT already bakes in ACES 2.0's gamut mapping to
 // BT.709 and the sRGB OETF, so its output goes straight to outputImage. Single mip (RtToneLut), so an
 // explicit level-0 SampleLevel is exact, not an approximation.
-float3 tonemap(float3 sceneAcesCg, float exposure) {
-    float3 uvw = shaperEncode(exposed(sceneAcesCg, exposure));
-    return displayGammaSdr(toneLut.SampleLevel(lutTexCoord(uvw), 0.0).rgb);
+float3 tonemap(float3 lookedAcesCg) {
+    float3 uvw = shaperEncode(lookedAcesCg);
+    return displayGammaSdr(toneLut.SampleLevel(lutTexCoord(uvw, pc.lutSize), 0.0).rgb);
 }
 
 // Same shaper as tonemap() but sampling the HDR LUT, whose range is already PQ-encoded BT.2020 -- no
 // separate encode or paperWhite/headroom mapping needed.
-float3 tonemapHdr(float3 sceneAcesCg, float exposure) {
-    float3 uvw = shaperEncode(exposed(sceneAcesCg, exposure));
-    return displayGammaHdr(hdrToneLut.SampleLevel(lutTexCoord(uvw), 0.0).rgb);
+float3 tonemapHdr(float3 lookedAcesCg) {
+    float3 uvw = shaperEncode(lookedAcesCg);
+    return displayGammaHdr(hdrToneLut.SampleLevel(lutTexCoord(uvw, pc.lutSize), 0.0).rgb);
 }
 
 [shader("compute")]
@@ -148,9 +163,10 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
     float4 rt = rtImage[pix];
     float exposure = max(exposureImage[int2(0, 0)], 0.0);
-    outputImage[pix] = float4(tonemap(rt.rgb, exposure), 1.0);
+    float3 lookedAcesCg = applyLook(max(rt.rgb * exposure, float3(0.0)));
+    outputImage[pix] = float4(tonemap(lookedAcesCg), 1.0);
 
     if (pc.hdrEnabled != 0) {
-        hdrImage[pix] = float4(tonemapHdr(rt.rgb, exposure), 1.0);
+        hdrImage[pix] = float4(tonemapHdr(lookedAcesCg), 1.0);
     }
 }

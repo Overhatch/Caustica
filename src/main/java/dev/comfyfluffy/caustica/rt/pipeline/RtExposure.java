@@ -62,6 +62,44 @@ public final class RtExposure {
         return state;
     }
 
+    /** Immutable exposure values attached to a residual-exposed EXR capture. */
+    public record CaptureMetadata(
+            float preExposure,
+            float residualExposure,
+            float absoluteExposure,
+            String mode,
+            float evScene,
+            float evTarget,
+            float evApplied
+    ) {
+    }
+
+    /**
+     * Snapshot the controller after the capture copy has completed.
+     *
+     * <p>{@code residualExposure} is read from the same 1x1 GPU image that the display shader samples.
+     * The absolute multiplier can therefore be reconstructed exactly as
+     * {@code preExposure * residualExposure}, even when auto exposure corrected a stale prediction.
+     */
+    public CaptureMetadata captureMetadata(float residualExposure) {
+        if (!Float.isFinite(residualExposure) || residualExposure <= 0.0f) {
+            throw new IllegalArgumentException("Invalid residual exposure " + residualExposure);
+        }
+        Mode currentMode = mode();
+        float pre = preExposure();
+        float absolute = pre * residualExposure;
+        if (currentMode != Mode.AUTO || state == null || state.mapped == 0L) {
+            float ev = manualEv();
+            return new CaptureMetadata(pre, residualExposure, absolute, currentMode.configName,
+                    Float.NaN, ev, ev);
+        }
+        state.invalidate();
+        return new CaptureMetadata(pre, residualExposure, absolute, currentMode.configName,
+                MemoryUtil.memGetFloat(state.mapped + OFF_EV_SCENE),
+                MemoryUtil.memGetFloat(state.mapped + OFF_EV_TARGET),
+                MemoryUtil.memGetFloat(state.mapped + OFF_EV_APPLIED));
+    }
+
     public void ensureResources(RtContext ctx) {
         if (image == null) {
             image = ctx.createStorageImage(1, 1, VK10.VK_FORMAT_R32_SFLOAT, "display exposure");
@@ -270,8 +308,9 @@ public final class RtExposure {
                 + ", curve=" + CausticaConfig.Rt.Exposure.CURVE.get() + ")"
                 : Float.toString(manualExposureScale());
         CausticaMod.LOGGER.info("RT display exposure: mode={}, exposure={}, "
-                        + "tonemap=aces2.0(gamma={}), DLSS-RR exposure=NGX auto",
-                mode.configName, exposureText, CausticaConfig.Rt.Tonemap.GAMMA.value());
+                        + "tonemap=aces2.0(look={},gamma={}), DLSS-RR exposure=NGX auto",
+                mode.configName, exposureText, CausticaConfig.Rt.Tonemap.LOOK.get(),
+                CausticaConfig.Rt.Tonemap.GAMMA.value());
     }
 
     private static Mode mode() {

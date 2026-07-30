@@ -23,8 +23,8 @@ import java.nio.ByteOrder;
 import java.nio.LongBuffer;
 
 /**
- * A baked display-transform 3D LUT (see {@code tools/bake_display_lut.py} and
- * {@code docs/DISPLAY_TRANSFORM_PLAN.md}). RGBA16F, one mip, loaded whole from a classpath
+ * A baked ACES color-pipeline 3D LUT (scene-referred look or display transform; see
+ * {@code tools/bake_display_lut.py} and {@code docs/ACES_LOOKS.md}). RGBA16F, one mip, loaded whole from a classpath
  * resource and uploaded once via a staging buffer — same shape as {@code RtMaterialPageTexture}
  * but 3D and self-describing (the resource carries its own size + shaper range in a small header,
  * see {@link #load}).
@@ -65,7 +65,7 @@ public final class RtToneLut {
         return sampler;
     }
 
-    /** Loads {@code /caustica/rt/luts/<resourceName>} (e.g. {@code "sdr_aces2_rec709.bin"}). */
+    /** Loads {@code /caustica/rt/luts/<resourceName>} (e.g. {@code "look_caustica-soft.bin"}). */
     public static RtToneLut load(RtContext ctx, String resourceName) {
         String path = "/caustica/rt/luts/" + resourceName;
         ByteBuffer data = readResource(path);

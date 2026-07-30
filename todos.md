@@ -1,0 +1,38 @@
+- [x] settings: actual toml, ev min max, remove fixed
+- [x] spec albedo for water refract
+- [x] sign banner
+- [x] make colored shadow less saturated (blend with original light color by a factor?)
+- [x] rename, readme, license
+- [x] particles lighting
+- [x] texture lod
+- [x] texture color space (srgb to linear before tracing)
+- [x] entity anyhit split
+- [x] freeze on tp/rd
+- [x] device lost diagnosis
+- [x] back face culling
+- [x] blas compact
+- [x] emit shader sources for spv
+- [x] debug flag to push constant
+- [ ] find and remove all defensive throws C:\Users\i\Developer\mc\dlss-mod\src\main\java\dev\comfyfluffy\caustica\rt\material\RtParallelAtlas.java C:\Users\i\Developer\mc\dlss-mod\src\main\java\dev\comfyfluffy\caustica\rt\entity\RtEntityTextures.java C:\Users\i\Developer\mc\dlss-mod\src\main\java\dev\comfyfluffy\caustica\rt\entity\RtEntityCollector.java
+- [ ] entity: capture submitCustomGeometry (modded renderers currently invisible in RT — see docs/ENTITY_PLAN.md gotchas; VertexConsumer adapter like RtTextVertexConsumer)
+- [ ] Cancel GameRenderer.extract WeatherEffectRenderer.extractRenderState extractVisibleEntities LevelRenderer.extract
+- [ ] whats renderframe > blitfromtexture
+- [ ] perf option: colored shadow
+- [ ] hdr screenshot
+- [ ] compileShader not working on file exist??
+- [ ] water elevated
+0.2
+- [ ] entities position fix, enhanced, entity fire
+- [ ] depth/mv guide broken for glass in refracted view
+- [x] Add a one-bit radiance SER hint for “last bounce / path likely to terminate.” NVIDIA specifically recommends loop-termination hints for path tracers.
+- [ ] first person
+- [x] Tonemapping
+- [ ] config screen
+- [ ] sharc
+- [ ] streamline
+- [ ] nether/end sky
+- [ ] weather, fog
+- [ ] water wave, atomsphere
+- [ ] neoforge
+- [ ] parallax?
+- [ ] ReSTIR

@@ -37,11 +37,14 @@ import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.KHRSynchronization2;
 import org.lwjgl.vulkan.VK10;
+import org.lwjgl.vulkan.VkBufferImageCopy;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkDependencyInfo;
 import org.lwjgl.vulkan.VkImageBlit;
 import org.lwjgl.vulkan.VkImageCopy;
+import org.lwjgl.vulkan.VkImageMemoryBarrier;
 import org.lwjgl.vulkan.VkImageMemoryBarrier2;
+import org.lwjgl.vulkan.VkMemoryBarrier;
 import org.lwjgl.vulkan.VkMemoryBarrier2;
 import org.lwjgl.vulkan.VkSamplerCreateInfo;
 
@@ -68,6 +71,7 @@ import dev.comfyfluffy.caustica.rt.terrain.RtTerrain;
 
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
+import java.nio.file.Path;
 
 /**
  * On-screen composite. Each frame, ray-trace into a render-res storage image (+ guide buffers), use
@@ -204,7 +208,9 @@ public final class RtComposite {
     private RtDebugPresentPipeline debugPresentPipeline;
     private RtToneLut sdrToneLut;
     private RtToneLut hdrToneLut;
+    private RtToneLut lookLut;
     private int loadedHdrLutNits = -1;
+    private String loadedLook;
     private RtImage output;
     // Packed primary -> indirect continuations. Pass A is fixed at one sample and owns two records per
     // render pixel (base + optional transmission); Pass B resamples them at the configured SPP.
@@ -354,6 +360,120 @@ public final class RtComposite {
     /** Read-only access to the auto-exposure controller, for diagnostics (F3 entry, frame stats log). */
     public RtExposure exposure() {
         return exposure;
+    }
+
+    /**
+     * Export the latest RT scene image at the exact input seam of the Look/LMT stage.
+     *
+     * <p>The GPU image stores {@code sceneLinear * preExposure} in fp16. This readback multiplies RGB by
+     * the display shader's current 1x1 {@code residualExposure}, in float32, then quantizes the resulting
+     * exposure-adjusted scene-linear image to fp16 EXR. Metadata keeps both factors so the original scene-linear
+     * values can be reconstructed with {@code RGB / (preExposure * residualExposure)}.
+     *
+     * @return {@code true} when a current RT frame was available and written
+     */
+    public boolean exportLatestResidualExposureExr(Path outputPath) throws java.io.IOException {
+        RenderSystem.assertOnRenderThread();
+        RtContext ctx = RtContext.currentOrNull();
+        if (!enabled() || failed || ctx == null || rrOutput == null || exposure.image() == null
+                || displayW <= 0 || displayH <= 0 || pendingGraphicsUse != null) {
+            return false;
+        }
+
+        long pixelCount = Math.multiplyExact((long) displayW, (long) displayH);
+        long rgbaBytes = Math.multiplyExact(pixelCount, 4L * Short.BYTES);
+        long totalBytes = Math.addExact(rgbaBytes, Float.BYTES);
+        if (pixelCount > Integer.MAX_VALUE / 4L) {
+            throw new IllegalArgumentException("EXR capture is too large for a Java array: "
+                    + displayW + "x" + displayH);
+        }
+
+        // All ordinary frame commands have been submitted before the F2 key is handled. Drain them before
+        // a private one-shot copy so rrOutput and the exposure image describe the same completed frame.
+        ctx.waitIdle();
+        RtBuffer readback = ctx.createReadbackBuffer(totalBytes, "residual-exposure EXR readback");
+        try {
+            ctx.submitSync(cmd -> recordExrReadback(ctx, cmd, readback, rgbaBytes));
+            readback.invalidate();
+
+            float residualExposure = MemoryUtil.memGetFloat(readback.mapped + rgbaBytes);
+            RtExposure.CaptureMetadata exposureMetadata = exposure.captureMetadata(residualExposure);
+            short[] exposedRgba = new short[Math.toIntExact(pixelCount * 4L)];
+            for (int sample = 0; sample < exposedRgba.length; sample++) {
+                short storedHalf = MemoryUtil.memGetShort(readback.mapped + (long) sample * Short.BYTES);
+                float value = Float.float16ToFloat(storedHalf);
+                if ((sample & 3) != 3) {
+                    value *= residualExposure;
+                }
+                // Residual exposure is expected to keep this seam comfortably centred in fp16. Clamp only
+                // true outliers/infinities so a pathological light cannot poison a grading application.
+                value = Math.clamp(value, -65504.0f, 65504.0f);
+                exposedRgba[sample] = Float.floatToFloat16(value);
+            }
+
+            RtOpenExrWriter.write(outputPath, displayW, displayH, exposedRgba,
+                    new RtOpenExrWriter.Metadata(
+                            exposureMetadata.preExposure(),
+                            exposureMetadata.residualExposure(),
+                            exposureMetadata.absoluteExposure(),
+                            exposureMetadata.mode(),
+                            exposureMetadata.evScene(),
+                            exposureMetadata.evTarget(),
+                            exposureMetadata.evApplied(),
+                            CausticaConfig.Rt.Tonemap.LOOK.get(),
+                            frameCounter));
+            return true;
+        } finally {
+            readback.destroy();
+        }
+    }
+
+    private void recordExrReadback(RtContext ctx, VkCommandBuffer cmd, RtBuffer readback, long exposureOffset) {
+        try (MemoryStack stack = MemoryStack.stackPush();
+             RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd,
+                     "residual-exposure EXR readback")) {
+            VkImageMemoryBarrier.Buffer imageBarriers = VkImageMemoryBarrier.calloc(2, stack);
+            imageBarriers.get(0).sType$Default()
+                    .oldLayout(VK10.VK_IMAGE_LAYOUT_GENERAL).newLayout(VK10.VK_IMAGE_LAYOUT_GENERAL)
+                    .srcAccessMask(VK10.VK_ACCESS_SHADER_WRITE_BIT | VK10.VK_ACCESS_TRANSFER_WRITE_BIT)
+                    .dstAccessMask(VK10.VK_ACCESS_TRANSFER_READ_BIT)
+                    .srcQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
+                    .dstQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
+                    .image(rrOutput.image);
+            imageBarriers.get(0).subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                    .levelCount(1).layerCount(1);
+            imageBarriers.get(1).sType$Default()
+                    .oldLayout(VK10.VK_IMAGE_LAYOUT_GENERAL).newLayout(VK10.VK_IMAGE_LAYOUT_GENERAL)
+                    .srcAccessMask(VK10.VK_ACCESS_SHADER_WRITE_BIT | VK10.VK_ACCESS_TRANSFER_WRITE_BIT)
+                    .dstAccessMask(VK10.VK_ACCESS_TRANSFER_READ_BIT)
+                    .srcQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
+                    .dstQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
+                    .image(exposure.image().image);
+            imageBarriers.get(1).subresourceRange().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT)
+                    .levelCount(1).layerCount(1);
+            VK10.vkCmdPipelineBarrier(cmd, VK10.VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                    VK10.VK_PIPELINE_STAGE_TRANSFER_BIT, 0, null, null, imageBarriers);
+
+            VkBufferImageCopy.Buffer sceneCopy = VkBufferImageCopy.calloc(1, stack);
+            sceneCopy.get(0).bufferOffset(0L);
+            sceneCopy.get(0).imageSubresource().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).layerCount(1);
+            sceneCopy.get(0).imageExtent().set(displayW, displayH, 1);
+            VK10.vkCmdCopyImageToBuffer(cmd, rrOutput.image, VK10.VK_IMAGE_LAYOUT_GENERAL,
+                    readback.handle, sceneCopy);
+
+            VkBufferImageCopy.Buffer exposureCopy = VkBufferImageCopy.calloc(1, stack);
+            exposureCopy.get(0).bufferOffset(exposureOffset);
+            exposureCopy.get(0).imageSubresource().aspectMask(VK10.VK_IMAGE_ASPECT_COLOR_BIT).layerCount(1);
+            exposureCopy.get(0).imageExtent().set(1, 1, 1);
+            VK10.vkCmdCopyImageToBuffer(cmd, exposure.image().image, VK10.VK_IMAGE_LAYOUT_GENERAL,
+                    readback.handle, exposureCopy);
+
+            VkMemoryBarrier.Buffer hostBarrier = VkMemoryBarrier.calloc(1, stack);
+            hostBarrier.get(0).sType$Default().srcAccessMask(VK10.VK_ACCESS_TRANSFER_WRITE_BIT)
+                    .dstAccessMask(VK10.VK_ACCESS_HOST_READ_BIT);
+            VK10.vkCmdPipelineBarrier(cmd, VK10.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK10.VK_PIPELINE_STAGE_HOST_BIT, 0, hostBarrier, null, null);
+        }
     }
 
     /**
@@ -520,6 +640,30 @@ public final class RtComposite {
                 hdrToneLut = newHdrLut;
                 loadedHdrLutNits = wantedHdrNits;
             }
+            // ACES Look Transforms are scene-referred and shared by SDR/HDR. Keep one independently
+            // switchable look LUT ahead of both output-transform LUTs; "none" binds the SDR LUT as a
+            // harmless descriptor placeholder and disables the sample through the push constant.
+            String wantedLook = CausticaConfig.Rt.Tonemap.LOOK.get();
+            if (!wantedLook.equals(loadedLook)) {
+                String resource = CausticaConfig.Rt.Tonemap.lookResource(wantedLook);
+                RtToneLut newLookLut = resource != null ? RtToneLut.load(ctx, resource) : null;
+                if (newLookLut != null
+                        && (newLookLut.shaperLoStops != sdrToneLut.shaperLoStops
+                        || newLookLut.shaperHiStops != sdrToneLut.shaperHiStops)) {
+                    newLookLut.destroy();
+                    throw new IllegalStateException("look/output LUT shaper mismatch for " + resource);
+                }
+                if (loadedLook != null) {
+                    // The descriptor set itself may still be in use even when the previous mode was
+                    // "none" (binding 6 then held the SDR placeholder), so every live change must drain.
+                    ctx.waitIdle();
+                }
+                if (lookLut != null) {
+                    lookLut.destroy();
+                }
+                lookLut = newLookLut;
+                loadedLook = wantedLook;
+            }
             // A resource reload re-stitches the block atlas. We've already torn down the world pipeline
             // (onResourceReloadStart) so nothing references the old atlas, but MC's deferred free keeps the
             // old view handle live for a few frames, then swaps in the new atlas (whose GPU upload may lag,
@@ -534,10 +678,12 @@ public final class RtComposite {
             ensureOutput(ctx, width, height);
             // ensureOutput's rebuild path (only taken on resize/RR-setting change) already rebinds
             // displayPipeline's descriptor set; this covers the case ensureOutput early-returned but
-            // hdrToneLut was hot-swapped just above (a live Hdr.PEAK_NITS change) -- setImages is a no-op
-            // if the bound views already match, so this is cheap on every other frame.
+            // hdrToneLut/lookLut may have been hot-swapped just above; setImages is a no-op if the bound
+            // views already match, so this is cheap on every other frame.
+            RtToneLut boundLookLut = lookLut != null ? lookLut : sdrToneLut;
             displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
-                    sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler());
+                    sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
+                    boundLookLut.view(), boundLookLut.sampler());
             debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
                     gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
                     exposure.stateBuffer());
@@ -837,8 +983,10 @@ public final class RtComposite {
             worldPipeline.setStorageImage(output.view);
             bindGuideImages();
         }
+        RtToneLut boundLookLut = lookLut != null ? lookLut : sdrToneLut;
         displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
-                sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler());
+                sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
+                boundLookLut.view(), boundLookLut.sampler());
         debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
                 gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
                 exposure.stateBuffer());
@@ -1088,7 +1236,8 @@ public final class RtComposite {
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "map RT to display");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.displayMap")) {
                 displayPipeline.dispatch(cmd, displayW, displayH, CausticaConfig.Rt.Hdr.enabled(),
-                        sdrToneLut.size, CausticaConfig.Rt.Tonemap.GAMMA.value(), loadedHdrLutNits);
+                        sdrToneLut.size, CausticaConfig.Rt.Tonemap.GAMMA.value(), loadedHdrLutNits,
+                        lookLut != null, lookLut != null ? lookLut.size : 1);
             }
             hdrWrittenThisFrame = CausticaConfig.Rt.Hdr.enabled();
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // display output visible to debug composite
@@ -1388,7 +1537,12 @@ public final class RtComposite {
             hdrToneLut.destroy();
             hdrToneLut = null;
         }
+        if (lookLut != null) {
+            lookLut.destroy();
+            lookLut = null;
+        }
         loadedHdrLutNits = -1;
+        loadedLook = null;
         if (hdrCompositePipeline != null) {
             hdrCompositePipeline.destroy();
             hdrCompositePipeline = null;

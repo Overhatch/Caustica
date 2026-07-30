@@ -54,6 +54,8 @@ public struct DisplayPush {
     public float lutSize;       // toneLut/hdrToneLut texels per axis; both LUTs share one size (asserted at load)
     public float gamma;         // post-display artistic gamma; below 1 brightens midtones
     public float hdrPeakNits;   // mastering peak baked into the currently bound HDR ACES LUT
+    public int lookEnabled;     // 0 = identity, 1 = apply the scene-referred ACES look LUT
+    public float lookLutSize;   // lookLut texels per axis (independent of the output-transform LUT size)
 };
 
 public struct DebugPresentPush {
