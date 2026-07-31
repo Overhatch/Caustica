@@ -77,7 +77,7 @@ public final class RtDisplayPipeline {
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             binds.get(DISPLAY_HDR_OUTPUT).binding(DISPLAY_HDR_OUTPUT).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
-            // Baked ACES 2.0 display-transform LUTs (see RtToneLut / docs/DISPLAY_TRANSFORM_PLAN.md).
+            // Baked ACES 2.0 display-transform LUTs; see RtToneLut.
             binds.get(DISPLAY_SDR_TONE_LUT).binding(DISPLAY_SDR_TONE_LUT).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             binds.get(DISPLAY_HDR_TONE_LUT).binding(DISPLAY_HDR_TONE_LUT).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
@@ -197,7 +197,7 @@ public final class RtDisplayPipeline {
     }
 
     /**
-     * Run the display mapping via the baked ACES 2.0 LUTs (see docs/DISPLAY_TRANSFORM_PLAN.md): SDR
+     * Run the display mapping through the baked ACES 2.0 LUTs: SDR
      * (binding 0) always writes; the PQ-encoded HDR image (binding 3) also writes when
      * {@code hdrEnabled}. The HDR LUT is baked for a fixed mastering-nits peak (see
      * {@code CausticaConfig.Rt.Hdr.PEAK_NITS_STEPS}), selected host-side by which LUT resource is bound.

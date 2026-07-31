@@ -15,9 +15,9 @@ import net.minecraft.client.renderer.texture.TextureAtlasSprite;
  * <p><b>One rectangle light per emissive quad.</b> {@code emit()}/{@code emitQuad()} always write a quad
  * as two lockstep triangles (0,1,2)(0,2,3) over 4 consecutive verts with prim/cornerUv records in step,
  * so quad {@code k} is triangles {@code 2k, 2k+1} and its corners are verts {@code 4k..4k+3}. Unlike the
- * old branch's disc, the light is the emissive footprint's <b>bounding rectangle</b> (half-axes in the
+ * The light is the emissive footprint's <b>bounding rectangle</b> (half-axes in the
  * record): it doesn't overshoot the emitter shape, and its (s,t) parameterization <i>is</i> the affine
- * sprite-local UV map that the S3 exact-Le fetch needs.
+ * sprite-local UV map used for exact radiance lookup.
  *
  * <p><b>Radiance matches the closest-hit.</b> Per-texel shaded emission is {@code albedo * mask *
  * emissionStrength}, where the mask source (LabPBR {@code _s} blue channel / heuristic mask x block
@@ -30,7 +30,7 @@ import net.minecraft.client.renderer.texture.TextureAtlasSprite;
  * emissive sample, hence {@code Le_rect * rectArea == quadArea * mean(albedo*mask)}.
  *
  * <p><b>Membership.</b> An in-buffer quad gets {@code TerrainPrim.flags} bit 0 set on both triangles, so
- * the raygen can gate its direct-hit emission term (S1). Emitters too weak or too sparse (fill-ratio
+ * the raygen can gate its direct-hit emission term. Emitters too weak or too sparse (fill-ratio
  * gate) stay excluded and are always-gathered on path hits — bit-identical to the no-NEE path.
  */
 final class RtLightCollector {
@@ -58,9 +58,8 @@ final class RtLightCollector {
      *
      * <p>Expressed as a fraction of the emissive baseline rather than as an absolute radiance, because
      * "too weak to sample" is a statement about this emitter relative to a full-strength one, not about
-     * cd/m². Written absolute (0.005 against a baseline of 5) it silently changed meaning by 3.5 decades
-     * when U2/U3 moved the baseline to physical units — exactly the mutual-tuning coupling
-     * {@code docs/SCENE_UNITS_PLAN.md} exists to remove.
+     * cd/m². Expressing it relative to the configured baseline keeps material brightness and sampling
+     * eligibility independent.
      */
     private static final float LE_LUM_EPS =
             0.001f * RtMaterialRegistry.defaultEmissionLuminanceCdM2();
@@ -231,7 +230,7 @@ final class RtLightCollector {
 
             float aC = 0.5f * (aLo + aHi);
             float bC = 0.5f * (bLo + bHi);
-            // Sprite-local UV frame of the rectangle (S3 exact-Le fetch): affine map from the light's
+            // Sprite-local UV frame of the rectangle: affine map from the light's
             // (s,t) in [-1,1]^2 to sprite-local UV, evaluated from the same bilinear corner map.
             float uvCu;
             float uvCv;
@@ -289,7 +288,7 @@ final class RtLightCollector {
     }
 
     /**
-     * Packed light record, 5 vec4s / 80 B (matches the S1 shader struct):
+     * Packed light record, 5 vec4s / 80 B (matches the shader struct):
      * {@code {pos.xyz, rectArea} {normal.xyz, materialId} {halfU.xyz, packHalf2(uvHu)}
      * {halfV.xyz, packHalf2(uvHv)} {Le2020.rgb, packHalf2(uvCenter)}}. Positions/axes section-local
      * here; publish adds the section-origin-minus-rebase offset to pos only.

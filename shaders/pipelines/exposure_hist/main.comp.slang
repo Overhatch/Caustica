@@ -1,5 +1,5 @@
-// Strided log2-luminance histogram over the post-RR trace color (see RtExposure -- metered here,
-// not pre-RR, so the average isn't Jensen-biased by Monte-Carlo noise). See docs/EXPOSURE_PLAN.md.
+// Strided log2-luminance histogram over the post-RR trace color. Metering after RR avoids the
+// Jensen bias that Monte-Carlo noise introduces into the logarithmic average.
 
 import display_common;
 import bindings;

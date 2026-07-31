@@ -3,10 +3,8 @@
 // sky.slang, shared verbatim with the LUT bakes, so the sky a ray sees and the sky the LUT holds cannot
 // diverge.
 //
-// What is NOT here any more: the per-ray Nishita march (now amortised into the per-frame LUT), the
-// twilight fill term, the night gradient constants, the saturation boost, the below-horizon ray-flatten
-// hack, and the `sunUp`/`moonUp` disc gates. Each was a blend seam; real multiple scattering and a
-// horizon-dense LUT parameterisation replace all of them (see sky.slang's header).
+// Atmospheric scattering is amortized into the per-frame LUT. Analytic stars, airglow, and textured
+// celestial discs are combined with that physical result here.
 //
 // Celestial discs are gated by a packed payload flag, which raygen sets per-ray from the path state: true
 // on the primary ray and after every specular/dielectric bounce (so the sun/moon appear in water, glass
@@ -87,8 +85,7 @@ float3 stars(float3 dir, SkyState state, float3 extinction) {
     }
     float bright = 0.55 + 0.45 * hash13(id + 71.0);       // mild per-star brightness variation
     // Per-star colour temperature: a hash picks a spot on a warm-orange to blue-white ramp, matching real
-    // star populations. Extinction reddens and dims them toward the horizon on the atmosphere's own curve,
-    // which replaces the old hand-written `min(dir.y * 3, 1)` horizon fade.
+    // star populations. Extinction reddens and dims them toward the horizon on the atmosphere's curve.
     float3 starColor = lerp(float3(0.78, 0.60, 0.42), float3(0.50, 0.62, 0.95), hash13(id + 137.0));
     return star * bright * starColor * state.starLuminance * extinction;
 }
@@ -112,8 +109,7 @@ void main(inout Payload payload) {
     float3 color = skyDome(dir, state);
     // Airglow plus integrated unresolved starlight: the real floor of a moonless night sky (~1e-3 cd/m²),
     // isotropic because it is emitted by the upper atmosphere itself rather than scattered from a body.
-    // Unlike the gradient it replaces, it is not a stand-in for missing multiple scattering — that is now
-    // in the LUT — so it stays a flat, physically small constant.
+    // Multiple scattering is in the LUT, so this remains a flat, physically small constant.
     color += state.airglowLuminance;
 
     // Extinction along the view ray: stars redden and dim into the horizon on exactly the curve the sky
@@ -152,14 +148,13 @@ void main(inout Payload payload) {
                    * moonExtinction * texel * shape;
         }
         // No separate horizon gate on either body. A set sun or moon goes dark because its extinction is
-        // zero below the horizon, which is the same reason its NEE light is zero — one mechanism, instead
-        // of the pair of hand-placed smoothsteps that previously had to agree with each other.
+        // zero below the horizon, matching the NEE visibility test.
     }
 
     // The sky goes out in absolute scene units at full fp32 — packSky writes the payload's three surface
     // words as raw floats rather than halves, which is why the sun disc's ~1e5 cd/m² needs neither a
     // pre-exposure scale nor a clamp to stay representable. The fp16 ceiling reappears only at world.rgen's
-    // outImage store, where docs/SCENE_UNITS_PLAN.md §2 puts the sun-disc clamp anyway. packSky also
+    // outImage store, where the finite-half clamp is applied. packSky also
     // overwrites the normal view, so there is no separate normal clear below.
     packSky(payload, bt709ToAcesCg(max(color, float3(0.0))));
     payload.hitT = -1.0;

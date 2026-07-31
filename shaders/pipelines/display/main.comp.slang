@@ -1,6 +1,5 @@
 // Maps the display-res scene-linear ACEScg RT image to sRGB SDR and, when enabled, PQ/BT.2020 HDR,
-// via baked ACES 2.0 display-transform LUTs (see tools/bake_display_lut.py,
-// docs/DISPLAY_TRANSFORM_PLAN.md). Tonemap seam: the path tracer and DLSS-RR use scene-linear
+// via baked ACES 2.0 display-transform LUTs (see tools/bake_display_lut.py). Tonemap seam: the path tracer and DLSS-RR use scene-linear
 // ACEScg; exposure is applied from the compositor-owned 1x1 image right here, followed by the selected
 // scene-referred ACES look (LMT), then the shared ACES 2.0 output transform for each display.
 

@@ -1,11 +1,6 @@
 // Computes and presents debugView content as a final inspection pass after ordinary path-traced
-// radiance, RR/fallback upscale, exposure metering, and the ACES display transform. Previously this
-// coloring lived in
-// writeDebugView (shaders/pipelines/world/guides.slang), called from the primary raygen -- the hottest,
-// most register-starved shader in the renderer (~126 live registers already, occupancy-bound per
-// docs/GPU_PERF_PLAN.md: "in this kernel, optimizations must REDUCE live state, never add it").
-// A debug-only feature has no business costing register pressure there, so it moved here: a small,
-// non-performance-critical compute pass that only ever runs while a debug view is active.
+// radiance, RR/fallback upscale, exposure metering, and the ACES display transform. Keeping debug
+// coloring out of the occupancy-bound primary raygen avoids register pressure on the normal render path.
 //
 // Reads the guide buffers directly at their real render resolution and nearest-samples them into the
 // display-resolution output. Debug mode deliberately leaves DLSS-RR and its jitter enabled, so this

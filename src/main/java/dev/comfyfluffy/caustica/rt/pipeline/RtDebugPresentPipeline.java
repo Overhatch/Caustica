@@ -34,12 +34,9 @@ import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.*;
 
 /**
  * Computes and presents {@code debugView} content as a downstream inspection pass after
- * {@link RtDisplayPipeline}, separate from the primary raygen — see docs/EXPOSURE_PLAN.md S0. Reads
- * and nearest-samples the real render-resolution guide buffers while RR remains enabled; the coloring
- * used to happen in
- * {@code writeDebugView} inside the primary raygen (the hottest, most register-starved shader in the
- * renderer per docs/GPU_PERF_PLAN.md), which had no business paying register/code cost for a debug-only
- * feature. Diagnostic output is written after exposure and ACES, so literal colors remain literal
+ * {@link RtDisplayPipeline}, separate from the primary raygen. It nearest-samples the real
+ * render-resolution guide buffers while RR remains enabled, keeping debug-only register pressure out
+ * of the primary raygen. Diagnostic output is written after exposure and ACES, so literal colors remain literal
  * without perturbing the exposure controller's history.
  */
 public final class RtDebugPresentPipeline {
@@ -77,7 +74,7 @@ public final class RtDebugPresentPipeline {
         VkDevice vk = ctx.vk();
         try (MemoryStack stack = MemoryStack.stackPush()) {
             // 0: output (SDR display target). 1..6: guide buffers. 7: post-RR scene image.
-            // 8: same-frame display exposure. 9: exposure state (including S2's sky scale).
+            // 8: same-frame display exposure. 9: exposure state, including the sky metering scale.
             VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(DEBUG_PRESENT_BINDING_COUNT, stack);
             for (int i = DEBUG_PRESENT_OUTPUT; i < DEBUG_PRESENT_EXPOSURE_STATE; i++) {
                 binds.get(i).binding(i).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)

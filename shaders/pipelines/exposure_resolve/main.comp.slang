@@ -1,10 +1,7 @@
 // Single-invocation exposure controller: percentile-trimmed mean of log2 luminance -> key -> clamp ->
-// exponential smoothing in EV space (docs/EXPOSURE_PLAN.md S4). ExposureState is widened past the
-// original (previous, initialized)
-// pair with S0's read-only diagnostics (evScene/evTarget/evApplied/clipLowFrac/clipHighFrac), read
-// back one frame late on the CPU for the debug log line in RtExposure -- see docs/EXPOSURE_PLAN.md S0.
-// S4 keeps temporal state GPU-side. The CPU advances resetSeq when scene continuity breaks; a
-// mismatch snaps to this frame's target in one dispatch, without a host write or fence.
+// exponential smoothing in EV space. ExposureState keeps temporal state and read-only diagnostics
+// (evScene/evTarget/evApplied/clipLowFrac/clipHighFrac) on the GPU. The CPU advances resetSeq when
+// scene continuity breaks; a mismatch snaps to this frame's target without a host write or fence.
 
 import display_common;
 import bindings;
@@ -126,8 +123,7 @@ void main() {
 
     float avgLogLum = weightedCount > 0.0 ? weightedLogLum / weightedCount : 0.0;
     // avgLogLum is log2 of the PRE-EXPOSED stored luminance. evScene is the absolute scene value on
-    // the EV100 scale -- that is what the compensation curve's control points are authored against
-    // (docs/SCENE_UNITS_PLAN.md §1), and what the diagnostics report.
+    // the EV100 scale used by the compensation curve's control points and diagnostics.
     float evScene = avgLogLum + pc.evOffset;
     float compensation = curveCompensation(evScene);
     float effectiveSlope = curveEffectiveSlope(evScene);
@@ -140,7 +136,7 @@ void main() {
     // quantity and would fight preExposure drifting between frames.
     // Fail safe, not to white: a non-positive/non-finite value here can only mean the push layout
     // desynced, and clamping it to a tiny epsilon would divide the residual up to infinity and blow
-    // the whole frame out. 1.0 degrades to the pre-U1 pipeline instead, which is merely mis-exposed.
+    // the whole frame out. 1.0 safely disables pre-exposure for this frame.
     float preExposure = (isfinite(pc.preExposure) && pc.preExposure > 0.0) ? pc.preExposure : 1.0;
     float target = clamp(residualTarget * preExposure, exp2(pc.minEv), exp2(pc.maxEv));
 
@@ -152,7 +148,7 @@ void main() {
     }
     float prevEv = reset ? targetEv : log2(max(stateBuf[0].previous, 1.0e-12));
 
-    // Smooth in EV space, not in linear exposure space (docs/EXPOSURE_PLAN.md S4). Linear smoothing is
+    // Smooth in EV space, not in linear exposure space. Linear smoothing is
     // wildly asymmetric for reasons that have nothing to do with the time constants: lerping toward a
     // much LARGER target crosses most of the ratio in the first frame, while lerping toward a much
     // SMALLER one decays through it geometrically. Measured in game, that made day->night snap in a

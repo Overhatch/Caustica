@@ -268,7 +268,7 @@ public final class RtExposure {
     }
 
     /**
-     * S0 observability (docs/EXPOSURE_PLAN.md): throttled log of the controller's internal EVs, gated
+     * Throttled log of the controller's internal EVs, gated
      * behind the frame-stats toggle since that's the existing "I want renderer internals" switch.
      * Uses the latest completed timeline-guarded readback. It can be a few frames stale without racing
      * the GPU, which is sufficient for diagnostics.
@@ -297,7 +297,7 @@ public final class RtExposure {
         AutoConfig cfg = autoConfig();
         boolean pinnedLow = evTarget <= cfg.minEv() + 0.01f;
         boolean pinnedHigh = evTarget >= cfg.maxEv() - 0.01f;
-        // evScene is EV100 (docs/SCENE_UNITS_PLAN.md §1); evTarget/evApplied are log2 of the ABSOLUTE
+        // evScene is EV100; evTarget/evApplied are log2 of the absolute
         // exposure multiplier, i.e. pre-exposure already divided back out, so they stay comparable
         // across frames regardless of what preExposure happened to be.
         CausticaMod.LOGGER.info(
@@ -354,7 +354,7 @@ public final class RtExposure {
         if (state == null || state.mapped == 0L) {
             return;
         }
-        // Under physical units (U2) this seed can be ~15 EV off for an auto-mode daylight scene, since
+        // Under physical units this seed can be ~15 EV off for an auto-mode daylight scene, since
         // manual-ev defaults to 0. That is a two-frame transient, not a bug: initialized == 0 makes the
         // resolve snap to its computed target rather than smooth toward it, and the frame after that
         // meters against a preExposure derived from it. Deliberately not special-cased -- a seed that
@@ -468,14 +468,14 @@ public final class RtExposure {
     }
 
     /**
-     * The scalar raygen multiplies into scene radiance before the fp16 write (U1,
-     * {@code docs/SCENE_UNITS_PLAN.md} §2), so stored values sit near {@code key} at any absolute
+     * The scalar raygen multiplies into scene radiance before the fp16 write, so stored values sit near
+     * {@code key} at any absolute
      * scene brightness instead of spanning the ~26 EV that physical units require.
      *
      * <p>Correctness does not depend on this being <em>current</em> — the display pass divides by
      * exactly the same latched value, so any pre-exposure cancels algebraically. Staleness only
      * affects how well-centred the stored values are, which is why last frame's readback is fine and
-     * no fence is needed. 1.0 disables the mechanism and is exactly the pre-U1 pipeline.
+     * no fence is needed. 1.0 disables the mechanism.
      */
     public float preExposure() {
         return framePreExposure;
@@ -494,7 +494,7 @@ public final class RtExposure {
             return 1.0f;
         }
         // Deliberately NOT Exposure.clampScale: its 1e-4 floor is a bound on the artistic exposure
-        // multiplier, and physical units (U2) put noon at ~3e-5 absolute, which that floor would
+        // multiplier, and physical units put noon at ~3e-5 absolute, which that floor would
         // truncate -- silently de-centring exactly the case pre-exposure exists to handle. The
         // controller's own minEv/maxEv already bound this value; here we only reject garbage.
         float previous = completedState.previous();
@@ -518,7 +518,7 @@ public final class RtExposure {
         /**
          * Offset taking the resolve's {@code log2(metered stored luminance)} to EV100. The metered
          * buffer holds {@code L * preExposure}, so the pre-exposure has to come back out before the
-         * unit convention's offset applies. See {@code docs/SCENE_UNITS_PLAN.md} §1/§2.
+         * unit convention's offset applies.
          */
         float evOffset() {
             return RtSceneUnits.EV100_OFFSET - (float) (Math.log(Math.max(preExposure, 1.0e-12f)) / Math.log(2.0));

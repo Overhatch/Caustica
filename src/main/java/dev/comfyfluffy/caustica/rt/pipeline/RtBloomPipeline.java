@@ -33,10 +33,8 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
 import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.*;
 
 /**
- * Scene-referred bloom as a downsample/upsample mip pyramid (Jimenez, SIGGRAPH 2014); see
- * {@code shaders/pipelines/bloom/main.comp.slang} for why the pyramid replaced the previous single wide
- * Gaussian (comb-spaced taps drew a lattice of replicas, and one fixed width clipped bright sources into
- * a flat slab).
+ * Scene-referred bloom as a downsample/upsample mip pyramid (Jimenez, SIGGRAPH 2014). The pyramid
+ * provides broad support without comb-spaced taps or a fixed-width highlight slab.
  *
  * <p>Each pyramid step is its own dispatch with its own descriptor set holding that step's destination
  * storage image and source sampled image. Binding the pair per step, rather than indexing a descriptor

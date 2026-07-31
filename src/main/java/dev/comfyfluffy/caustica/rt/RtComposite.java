@@ -123,14 +123,14 @@ public final class RtComposite {
 
     private static final int WATER_ANCHOR_MASK = 4095;
     private static final double EXPOSURE_TELEPORT_RESET_DISTANCE = 16.0;
-    // The versioned look package owns every photometric anchor and, since the sky rewrite, the sky's
-    // geometry too (docs/SCENE_UNITS_PLAN.md §3, docs/LOOK_PACKAGES.md). Its sun illuminance is the
+    // The versioned look package owns every photometric anchor and the sky geometry
+    // (docs/LOOK_PACKAGES.md). Its sun illuminance is the
     // photometric solar constant at the top of the atmosphere; the shader's transmittance LUT brings that
     // to ~117,000 lux under a zenith sun and reddens/dims it through sunset, and because world.rmiss tints
     // the visible disc from the same LUT, the light on terrain and the sky's sunset are one number.
     //
     // world.rgen consumes it as ILLUMINANCE at normal incidence (lux) — the NEE term is brdf·E·ndl with no
-    // solid-angle factor, and the diffuse BRDF's 1/π is what turns 100,000 lux into the plan's
+    // solid-angle factor, and the diffuse BRDF's 1/π turns 100,000 lux into
     // 31,800 cd/m² white / 5,730 cd/m² 18%-grey noon surface. It is therefore independent of the sky
     // package's angular radii, which only jitter the shadow ray and so only set penumbra softness.
     private static final RtLookPackage LOOK = RtLookPackage.current();
@@ -745,9 +745,8 @@ public final class RtComposite {
     private RtPipeline ensureWorld(RtContext ctx) {
         if (worldPipeline == null) {
             // Must exist before bindWorldTextures below writes the sky-LUT descriptors. This is the
-            // EARLIEST possible bind: ensureResourcesReady drives this from the client tick, ahead of the
-            // render()/composite path where skyLut used to be lazily created — so that later creation was
-            // always too late for a pipeline built here. bindWorldTextures only ever runs again on a
+            // earliest possible bind: ensureResourcesReady drives this from the client tick, ahead of the
+            // render()/composite path. bindWorldTextures only ever runs again on a
             // resource reload, so a skyLut that is still null on this first call stays permanently unbound
             // and every miss/raygen sky sample reads the pre-vkUpdateDescriptorSets undefined descriptor
             // (VUID-vkCmdTraceRaysKHR-None-08114).
@@ -1100,9 +1099,8 @@ public final class RtComposite {
             ByteBuffer push = MemoryUtil.memByteBuffer(pushBuf.mapped, WORLD_PUSH_SIZE);
             frameInvViewProj.set(frameProjection).mul(frameViewRotation).invert();
             // flags: camera-in-water (so the path tracer starts in the water medium when the eye is
-            // submerged, fixing the air→water first-segment orientation) + W1 wave normals. Bit 1 used to
-            // gate a Lambertian fallback BRDF that nothing ever turned off; the GGX path is unconditional
-            // now, so that bit is unused rather than reassigned, to avoid a stale reader elsewhere.
+            // submerged, fixing the air→water first-segment orientation) and animated water normals.
+            // Bit 1 remains unused to avoid conflicting with stale external readers.
             int flags = 0;
             var level = Minecraft.getInstance().level;
             if (level != null) {
@@ -1117,10 +1115,10 @@ public final class RtComposite {
                 }
             }
             if (waterWaves()) {
-                flags |= 0b10000; // W1: animated water wave normals
+                flags |= 0b10000; // animated water wave normals
             }
 
-            // W1/W2 water parameters: camera-biome tint plus wrapped animation time. Per-water-body tint
+            // Water parameters: camera-biome tint plus wrapped animation time. Per-water-body tint
             // comes from the primitive; this is the fallback for a camera already inside the medium.
             float wtr = 0.25f, wtg = 0.46f, wtb = 0.9f; // neutral ocean-ish default if no level/biome
             if (level != null) {
@@ -1139,7 +1137,7 @@ public final class RtComposite {
             previousWaterWaveTime = waterWaveTime;
             waterWaveTimeValid = true;
             Float4 waterParams = linearAcesCgFromSrgb(wtr, wtg, wtb, waterWaveTime);
-            // W1 wave-domain anchor: the terrain rebase origin reduced mod 4096 (kept small for shader
+            // Wave-domain anchor: the terrain rebase origin reduced mod 4096 (kept small for shader
             // float precision). hitPos.xz (rebased) + anchor reconstructs a world-pinned coordinate, so the
             // ripple pattern stays fixed in the world as the player moves and the rebase origin shifts.
             Float4 waterAnchor = new Float4(terrain.blockX & WATER_ANCHOR_MASK,
@@ -1185,7 +1183,7 @@ public final class RtComposite {
                     breaking.length,
                     breaking,
                     // RIS emitter NEE: candidate count (0 = emitter NEE off; the shader also requires
-                    // lightCount > 0, so an empty buffer degrades to legacy gather). The light buffer
+                    // lightCount > 0, so an empty buffer leaves only direct-hit emission). The light buffer
                     // device addresses themselves are pc.light*Addr — every 64-bit address lives in the
                     // push-constant block now, not here.
                     new Float4(terrain.lightRebaseOffsetX(), terrain.lightRebaseOffsetY(),
@@ -1294,8 +1292,6 @@ public final class RtComposite {
                 RtLookPackage.Bloom bloom = LOOK.bloom();
                 // The tent radius is in source texels, so it needs no resolution scaling: the pyramid's
                 // reach is set by its level count, and each level's texel already scales with the frame.
-                // (The old single Gaussian had to scale its pixel spacing, which is exactly what made its
-                // taps land further apart than a texel and draw the replica lattice.)
                 bloomPipeline.dispatch(cmd, bloomLevels,
                         bloom.thresholdSceneLinear(), bloom.softKneeFraction(), bloom.radius());
             }
@@ -1343,8 +1339,8 @@ public final class RtComposite {
 
     /**
      * Block-breaking overlay: mirrors vanilla's {@code ClientLevel.destructionProgress()} (populated
-     * by network packets, independent of the cancelled {@code LevelRenderer.render()} — see
-     * [[rt-native-overlay-tier1]]) into the push's {@code breaking[]} list, so {@code world.rchit} can blend
+     * by network packets, independent of the cancelled {@code LevelRenderer.render()}) into the push's
+     * {@code breaking[]} list, so {@code world.rchit} can blend
      * the matching destroy-stage crack texture into a hit terrain block's albedo. Each block's own
      * destroy-stage texture ({@code minecraft:textures/block/destroy_stage_N.png}, resolved via
      * {@link ModelBakery#DESTROY_TYPES}) is a standalone {@code Sampler0} texture, not a block-atlas sprite,
@@ -1386,10 +1382,7 @@ public final class RtComposite {
      * phase, and the look package's sky constants. Nothing else.
      *
      * <p>Every direction, colour, level and atmospheric transmittance is derived in {@code sky.slang}
-     * from these values. That is a deliberate inversion of what used to happen here: this method used to
-     * build the sun and moon world vectors, pick which body was the light, run a Java port of the shader's
-     * Rayleigh/Mie/ozone march to colour it, and blend a day factor — a second implementation of the
-     * atmosphere whose constants had to be kept identical to the shader's by hand.
+     * from these values, keeping atmospheric evaluation in one implementation.
      *
      * <p>The angles come from the camera's {@link EnvironmentAttributeProbe} rather than from the tick:
      * in 26.2 they are timeline tracks driven through a cubic-bezier ease, and a datapack can replace the

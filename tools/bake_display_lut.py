@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Bakes the RT renderer's ACES display-transform LUTs and imports its packaged LMT.
 
-See docs/DISPLAY_TRANSFORM_PLAN.md. The renderer feeds these LUTs scene-linear ACEScg (AP1/D60)
-radiance, already multiplied by the auto-exposure scalar (RtExposure). The default look package's
-scene-referred LMT runs first, followed by the existing ACES
+The renderer feeds these LUTs scene-linear ACEScg (AP1/D60) radiance, already multiplied by the
+auto-exposure scalar (RtExposure). The default look package's scene-referred LMT runs first, followed by ACES
 2.0 output transform, gamut mapping, tone scale, and display transfer function.
 
 One SDR LUT (BT.709, sRGB OETF) plus one HDR LUT per REC2020 mastering-nits target ACES 2.0 ships
@@ -32,7 +31,7 @@ import numpy as np
 import PyOpenColorIO as OCIO
 
 # OCIO 2.2+ ships this config compiled into the library -- no external config file/network fetch
-# needed. Matches the config used for the Blender A/B evaluation that motivated this plan.
+# needed. This is the renderer's pinned ACES 2.0 color configuration.
 OCIO_BUILTIN_CONFIG = "cg-config-v4.0.0_aces-v2.0_ocio-v2.5"
 SOURCE_SPACE = "ACEScg"  # matches the renderer's scene-linear ACEScg/AP1/D60 working space
 
@@ -43,7 +42,7 @@ SOURCE_SPACE = "ACEScg"  # matches the renderer's scene-linear ACEScg/AP1/D60 wo
 SHAPER_LO_STOPS = -12.0
 SHAPER_HI_STOPS = 12.0
 
-LUT_SIZE = 65  # samples per axis; N^3 total. See docs/DISPLAY_TRANSFORM_PLAN.md S2 sizing note.
+LUT_SIZE = 65  # samples per axis; N^3 total
 OUT_DIR = Path(__file__).resolve().parent.parent / "src/main/resources/caustica/color/luts"
 LOOK_PACKAGE_DIR = (
     Path(__file__).resolve().parent.parent / "src/main/resources/caustica/color/looks/default"
@@ -52,8 +51,7 @@ LOOK_PACKAGE_DIR = (
 # HDR REC2020 nits: ACES 2.0 does not parameterize peak luminance continuously -- OCIO's builtin
 # registry ships a fixed table of mastering targets (real HDR mastering always worked this way).
 # For BT.2020 that table is exactly {500, 1000, 2000, 4000}. This maps onto the renderer's
-# continuous Hdr.PEAK_NITS (clamped 80-5000) by picking the nearest at LUT-load time (see
-# RtComposite.nearestHdrNits) -- see docs/DISPLAY_TRANSFORM_PLAN.md S6 open question #2 (resolved).
+# continuous Hdr.PEAK_NITS (clamped 80-5000) by picking the nearest at LUT-load time.
 HDR_REC2020_NITS = [500, 1000, 2000, 4000]
 
 LUTS = [

@@ -1,13 +1,9 @@
 // Push-constant structs shared between the display-chain compute passes and
 // layout/layout_probe.slang's build-time reflection probe (see GenerateShaderRecords.groovy).
 // Each struct is imported into exactly one production shader AND probed here so its Java writer is
-// generated from the compiler's own reflected offsets -- never hand-written, and so never able to
-// silently desync the way a manual ByteBuffer.putFloat(offset, ...) can (see the U1 pre-exposure
-// bug: preExposure was written at Java-side byte 80 but read from shader-side byte 44, because a
-// field was inserted mid-struct on only one side).
+// generated from the compiler's reflected offsets, preventing Java/shader ABI drift when fields move.
 //
-// Each struct here also needs a distinct name (not the generic "Push" every one of these files used
-// before this existed) -- reflection JSON parameters are named by struct type across the whole
+// Each struct here needs a distinct name because reflection JSON parameters are named by struct type across the whole
 // probe module, and per-entry-point SPIR-V allows only one push-constant block reachable from any
 // single entry point, so the probe needs one small dedicated entry point per struct.
 
@@ -40,14 +36,14 @@ public struct ExposureResolvePush {
     public float curveScene3;
     public float curveCompensation3;
     public float emissiveWeightCap;
-    // U0/U1, docs/SCENE_UNITS_PLAN.md. evOffset takes log2(metered stored luminance) to EV100:
+    // evOffset takes log2(metered stored luminance) to EV100:
     // RtSceneUnits.EV100_OFFSET - log2(preExposure). preExposure is the scalar raygen already
     // multiplied into the stored radiance (1.0 when pre-exposure is disabled), so the metered
     // buffer holds L*preExposure and the resolve divides it back out to recover absolute scene EV --
     // and to keep minEv/maxEv bounding ABSOLUTE exposure rather than the residual.
     public float evOffset;
     public float preExposure;
-    // S4 temporal controller. resetSeq invalidates GPU exposure history without a host write or fence.
+    // resetSeq invalidates GPU exposure history without a host write or fence.
     public uint resetSeq;
 };
 

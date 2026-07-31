@@ -21,12 +21,9 @@ import dev.comfyfluffy.caustica.CausticaMod;
  * window system, compositor, and monitor; {@code VK_EXT_hdr_metadata}, when supported, describes the
  * Rec.2020/D65 ACES virtual mastering display to that presentation stack.
  *
- * <p>Important: extended color spaces (scRGB linear, HDR10 PQ, …) are only reported by
- * {@code vkGetPhysicalDeviceSurfaceFormatsKHR} when the instance was created with
- * {@code VK_EXT_swapchain_colorspace} enabled. Minecraft's instance does not enable it, so on a stock
- * instance this enumeration is expected to show only {@code SRGB_NONLINEAR} (color space 0). Seeing only
- * color space 0 here is the concrete signal that the later phase must add an instance-extension hook before
- * any HDR swapchain is possible — that is exactly the gap this Phase 0 logging is meant to surface.
+ * <p>Extended color spaces are reported only when the instance enables
+ * {@code VK_EXT_swapchain_colorspace}. {@code VulkanInstanceMixin} enables it when available; this class
+ * then reports the surface formats and selects HDR10/PQ capability from the advertised pairs.
  */
 public final class RtHdr {
     // VK_EXT_swapchain_colorspace color-space enum values (not all are in the LWJGL VK10 constants).

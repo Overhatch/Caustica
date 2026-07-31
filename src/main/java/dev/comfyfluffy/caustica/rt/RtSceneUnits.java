@@ -1,7 +1,7 @@
 package dev.comfyfluffy.caustica.rt;
 
 /**
- * The renderer's scene-value unit convention. See {@code docs/SCENE_UNITS_PLAN.md}.
+ * The renderer's scene-value unit convention.
  *
  * <p><b>A scene value is luminance in cd/m² (nits): {@code 1.0} = 1 cd/m².</b> This is a definition,
  * not a tuning knob — nothing here should ever be exposed as config. Light constants are authored
@@ -13,12 +13,8 @@ package dev.comfyfluffy.caustica.rt;
  * modelled: "luminance" means the AP1/D60 Y of the stored ACEScg triple, consistent with
  * {@code ACESCG_LUMA} in the metering shaders.
  *
- * <p><b>Status:</b> live through stage U4 — the unit definition, the EV100 metering scale, the light
- * constants ({@code RtLookPackage}'s sun/moon illuminance, block/star/night-sky luminance,
- * and exposure curve) and {@code world.rmiss.slang}'s derived disc/atmosphere levels are all on
- * this scale, so
- * the reported EV100 is meant to be the true photometric value and IS comparable against the plan's
- * reference table. Confirming that in game within ~1 EV is stage U5 and has not been done.
+ * <p>The EV100 metering scale, {@code RtLookPackage}'s sun/moon illuminance, block/star/night-sky
+ * luminance, exposure curve, and shader-derived disc and atmosphere levels all use this convention.
  */
 public final class RtSceneUnits {
     /** cd/m² that a scene value of {@code 1.0} represents. The unit definition; see class docs. */

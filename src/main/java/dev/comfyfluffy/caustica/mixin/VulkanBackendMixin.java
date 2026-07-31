@@ -146,7 +146,7 @@ public abstract class VulkanBackendMixin {
 	}
 
 	/**
-	 * P0 verification — once the RT-augmented device is created, confirm the RT entry
+	 * Once the RT-augmented device is created, confirm the RT entry
 	 * points loaded and log the RT/AS limits. {@code device} is the local assigned just
 	 * before {@code createVma} runs.
 	 */

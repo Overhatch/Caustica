@@ -47,7 +47,7 @@ public final class CausticaClient implements ClientModInitializer {
 				}
 			}
 
-			// P2: once RT is up, keep section residency synced to vanilla's loaded chunks around
+			// Once RT is up, keep section residency synced to vanilla's loaded chunks around
 			// the player — builds newly-in-range sections, frees out-of-range ones, per tick.
 			if (rtInitDone) {
 				RtContext ctx = RtContext.currentOrNull();

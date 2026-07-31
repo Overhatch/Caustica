@@ -53,7 +53,7 @@ public struct WorldPush {
     public float3   camDelta;
     public uint     spp;
     public float2   jitter;
-    public uint     flags;            // bit0 submerged, bit4 waves (bit1 was PBR-toggle, now unconditional)
+    public uint     flags;            // bit0 submerged, bit4 waves
     public uint     maxBounces;
     // ---- Sky state. Only what the CPU alone can know: Minecraft's four eased celestial angles (the
     // 26.2 timeline drives them through a cubic-bezier ease and a datapack may replace the track, so
@@ -83,7 +83,7 @@ public struct WorldPush {
     public int4     lightGridDims;       // xyz dense grid dimensions, w reserved
     public uint     lightCount;       // packed Light records in pc.lightBufAddr
     public uint     risCandidates;    // RIS candidate count M per diffuse vertex (0 = emitter NEE off)
-    // Pre-exposure (docs/SCENE_UNITS_PLAN.md §2): scalar applied to radiance at the outImage write
+    // Pre-exposure scalar applied to radiance at the outImage write
     // ONLY, so all light transport above stays in absolute scene units. Keeps stored fp16 values
     // near mid-grey at any scene brightness; the display pass divides it back out, so the two cancel
     // exactly and this cannot change the image. 1.0 disables it.
@@ -94,15 +94,12 @@ public struct WorldPush {
 // grid-relative owner section uses three unsigned 10-bit coordinates; the geometric normal is
 // reconstructed from the half axes.
 //
-// 32 divides the 64-byte cache line, so a record never straddles one. At the previous 48 bytes about
-// half of them did, costing two transactions apiece — and RIS fetches these at random indices, M per
-// shading vertex, so that is the layout's whole purpose. float3 forces 16-byte struct alignment and 32
-// is a multiple of it, so this lands with no tail padding.
+// 32 divides the 64-byte cache line, so a record never straddles one. RIS fetches random records M times
+// per shading vertex, making this alignment important. float3 forces 16-byte struct alignment and 32 is
+// a multiple of it, so this lands with no tail padding.
 //
-// The rectangle area is derived rather than stored: the rect spans 2U x 2V, so area = 4*|U x V|, which
-// is exactly what the collector used to write (halfU = 0.5*(aHi-aLo)*e01 and rectArea =
-// |e01 x e03|*(aHi-aLo)*(bHi-bLo)). lightGeometricNormal already needs that cross product, so the
-// freed lane costs one length() the compiler shares with the normalize.
+// The rectangle spans 2U x 2V, so its area is derived as 4*|U x V|. lightGeometricNormal already
+// needs that cross product, allowing the compiler to share the length with normalization.
 public struct Light {
     public float3 pos;      // rebased world centre, f32 (the RIS target divides by distance to it)
     public uint   le;       // bitcast R11G11B10 radiance
@@ -154,12 +151,11 @@ public struct Payload {
     // only through unpackAlbedo/packAlbedo, unpackNormal/packNormal, unpackSky/packSky — the raw words
     // have no meaning without knowing which case you are in.
     //
-    //   hit  — half3 albedo + half3 normal: the same six halves the two half3 lanes used to hold, so hit
-    //          precision is bit-identical to before this was hand-packed
+    //   hit  — half3 albedo + half3 normal
     //   miss — float3 sky radiance, full fp32
     //
     // The miss case is the entire reason these are hand-packed. Sky is in absolute photometric units and
-    // the sun disc alone is ~3.6e5 cd/m² (docs/SCENE_UNITS_PLAN.md §3), well past half's 65504 ceiling — a
+    // the sun disc alone is ~3.6e5 cd/m², well past half's 65504 ceiling — a
     // half3 could not carry it without first normalising by the frame's exposure, which made a storage
     // format's limitation into a dependency on the exposure controller. A hit has no sky and a miss has
     // neither albedo nor normal, so reinterpreting the same twelve bytes buys the range for free and keeps
@@ -250,11 +246,11 @@ public static const uint MATERIAL_FEATURE_STOCHASTIC_ALPHA = 16u;
 // Final HDR emitting-surface luminance (look-package baseline or absolute JSON cd/m² override), baked in Java
 // at material-compile time (RtMaterialRegistry) and packed here as a 16-bit fraction of the max — every
 // emissive material carries a value (0 for non-emissive), not just resource-pack-overridden ones, so the
-// full features word's spare 16 bits (8..23) go to it instead of the 8 bits the old override-only field used.
+// full features word's spare 16 bits (8..23) hold the encoded value.
 public static const uint MATERIAL_EMISSION_STRENGTH_SHIFT = 8u;
 public static const uint MATERIAL_EMISSION_STRENGTH_MASK = 65535u;
 // Mirrors RtMaterialRegistry.MAX_EMISSION_STRENGTH — HALF_MAX, the ceiling emission can survive through
-// Payload.emissionSss (half2) and Light.le (R11G11B10). Emission is in cd/m² since SCENE_UNITS_PLAN U3.
+// Payload.emissionSss (half2) and Light.le (R11G11B10). Emission is measured in cd/m².
 public static const float MATERIAL_MAX_EMISSION_STRENGTH = 65504.0;
 public static const uint MATERIAL_MAX_LOD_SHIFT = 24u;
 public static const uint MATERIAL_MAX_LOD_MASK = 255u;
@@ -324,8 +320,7 @@ public void packNormal(inout Payload p, float3 normal) {
 
 // Miss view: full fp32, so absolute photometric sky needs no pre-exposure round trip through the payload
 // and no clamp to keep it finite. The fp16 ceiling still applies at the outImage store in world.rgen,
-// which is where docs/SCENE_UNITS_PLAN.md §2 puts the sun-disc clamp and where it now guards every
-// radiance source rather than only the sky.
+// where the finite-half clamp guards every radiance source.
 public float3 unpackSky(Payload p) {
     return float3(asfloat(p.surface0), asfloat(p.surface1), asfloat(p.surface2));
 }

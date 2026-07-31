@@ -168,7 +168,7 @@ public float3 lightCrossUV(Light light) {
     return cross(lightHalfU(light), lightHalfV(light));
 }
 
-// The rect spans 2U x 2V, so its area is 4|U x V| — exactly the rectArea the collector used to store.
+// The rect spans 2U x 2V, so its area is 4|U x V|.
 public float lightArea(Light light) {
     return 4.0 * length(lightCrossUV(light));
 }

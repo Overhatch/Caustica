@@ -42,12 +42,10 @@ import dev.comfyfluffy.caustica.rt.accel.RtImage;
  * {@link RtOverlayFeature}; pipelines come from {@link RtOverlayPipelines}.
  *
  * <p>Routing every feature through one shared buffer instead of blending straight onto vanilla's SDR
- * {@code main} is what keeps SDR/HDR presentation unified: {@link #record} now folds that buffer into
+ * {@code main} keeps SDR/HDR presentation unified: {@link #record} folds that buffer into
  * {@link RtUiOverlay}'s transparent overlay before the vanilla GUI renders, so the GUI remains topmost and
- * the final present path only has one UI image to blend. (Block outline's own private MSAA-mask-resolve path
- * predates this buffer and still runs before its result ever reaches {@code overlayImage} — an FXAA pass over
- * the shared buffer was tried and removed as looking worse than expected; MSAA remains the only edge-AA
- * mechanism today.)
+ * the final present path only has one UI image to blend. The block outline applies its private MSAA
+ * mask-resolve before its result reaches {@code overlayImage}; MSAA is the overlay edge-AA mechanism.
  */
 public final class RtWorldOverlay {
     public static final RtWorldOverlay INSTANCE = new RtWorldOverlay();

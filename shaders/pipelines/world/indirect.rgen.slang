@@ -1,4 +1,4 @@
-// Indirect pass (pass B of the wavefront split — see docs/WAVEFRONT_PLAN.md).
+// Indirect pass of the wavefront renderer.
 //
 // Resumes the continuations the primary pass queued and runs the bounce loop: NEE toward the sun, RIS
 // emitter lighting, thin-surface SSS, BSDF continuation and Russian roulette. It captures no guides and
@@ -48,7 +48,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
     int maxBounces = int(worldPush.maxBounces);
     int rrStart = maxBounces <= 3 ? 1 : 2;
     // RIS emitter NEE: direct lighting from block emitters is active when lights are published and the
-    // candidate count is non-zero. Off => emitters are gathered only on path hits (legacy behaviour).
+    // candidate count is non-zero. Otherwise emitters contribute only when a path hits them.
     bool risOn = worldPush.risCandidates > 0u && worldPush.lightCount > 0u && pc.lightBufAddr != 0;
     // Independent light-proposal RNG. Screen-space coherent selection is intentionally deferred until
     // there is a real presampled RIS tile buffer; direct sharing made tile-shaped lighting noise visible.
@@ -400,10 +400,8 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
 [shader("raygeneration")]
 void main() {
     worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
-    // Derive this dispatch's directional light once. Two transmittance-LUT fetches replace the Java port
-    // of the atmosphere march that used to compute this on the CPU, and — because world.rmiss tints the
-    // visible sun/moon with the very same LUT — the light on terrain and the sky's sunset are now the
-    // same number rather than two implementations that have to be kept in agreement by hand.
+    // Derive this dispatch's directional light once. The same transmittance LUT drives terrain lighting
+    // and the visible sun/moon, keeping atmospheric tint consistent across both consumers.
     celestialLight = dominantCelestialLight(skyState(worldPush), transmittanceLut);
     // The path integral is ACEScg end to end; sky.slang works in linear BT.709, so this is the one seam.
     celestialLight.illuminance = bt709ToAcesCg(celestialLight.illuminance);
@@ -427,10 +425,9 @@ void main() {
         recordIndex = packed.nextRecord;
     }
     // Pre-exposure is applied here and nowhere else: the entire path-traced result above is in absolute
-    // scene units, and only the fp16 store is normalized. See docs/SCENE_UNITS_PLAN.md §2.
+    // scene units, and only the fp16 store is normalized.
     //
-    // This clamp is the plan's sun-disc clamp, and it now covers every radiance source rather than only
-    // the sky: outImage is rgba16f, so anything over 65504 would round to +inf and propagate as NaN
+    // outImage is rgba16f, so anything over 65504 would round to +inf and propagate as NaN
     // through the denoiser. Pre-exposed, it only bites when a pixel would render >65504x mid-grey — the
     // sun mid-transition, a firefly off a tiny emitter — and ACES 2.0 renders anything a few EV over
     // white as white, so it costs nothing visible.

@@ -105,13 +105,13 @@ public final class CausticaConfig {
                         + " below that fraction of their bounding rectangle (speckle/sparse crossed planes), so\n"
                         + " only reasonably compact glows become lights. stats/dump/dump-radius are debug logging.");
         FILE.setComment("tonemap",
-                " SDR + HDR display-transform: a baked ACES 2.0 output-transform LUT (see\n"
-                        + " docs/DISPLAY_TRANSFORM_PLAN.md). The versioned look package supplies the\n"
+                " SDR + HDR display-transform: a baked ACES 2.0 output-transform LUT.\n"
+                        + " The versioned look package supplies the\n"
                         + " scene-referred LMT; gamma is a luminance-preserving artistic\n"
                         + " correction applied after both LUTs (1 is neutral; below 1 brightens midtones).");
         FILE.setComment("exposure",
-                " Auto-exposure metering and shaping (see docs/EXPOSURE_PLAN.md). Scene values are\n"
-                        + " photometric since docs/SCENE_UNITS_PLAN.md U2: metered EV is EV100, and measured in\n"
+                " Auto-exposure metering and shaping. Scene values are photometric: metered EV is EV100,\n"
+                        + " and measured in\n"
                         + " game that is about +17.5 on noon sand, +7 in daylight shade, +1.5 on a lit night\n"
                         + " street, -8 on a starlit sky. The versioned look package supplies the four\n"
                         + " measured-EV100:compensation-EV control points and absolute min/max EV guard rails;\n"
@@ -697,9 +697,8 @@ public final class CausticaConfig {
 
         /**
          * NVIDIA Reflex ({@code VK_NV_low_latency2}). Default off; gated additionally by device support.
-         * Phase 0 (extension + capability probe only, see {@code RtDeviceBringup}/{@code RtReflex}) — the
-         * per-frame sleep call + latency markers + the swapchain {@code VkSwapchainLatencyCreateInfoNV} the
-         * spec requires for {@code vkSetLatencySleepModeNV} to take effect land in a later phase.
+         * The renderer configures the swapchain latency mode, paces frames with {@code vkLatencySleepNV},
+         * and emits simulation, render-submit, and present latency markers.
          */
         public static final class Reflex {
             public static final BooleanSetting ENABLED = bool("caustica.rt.reflex", "reflex.enabled", false);
@@ -713,21 +712,19 @@ public final class CausticaConfig {
         }
 
         public static final class Exposure {
-            // Control points are measured-EV100 : compensation-EV (see docs/SCENE_UNITS_PLAN.md §1/§4).
+            // Control points are measured-EV100 : compensation-EV.
             // Rendered median (log) = log2(key) + comp(evScene), so comp IS the rendered offset in EV
             // from the noon reference.
             //
-            // Fitted to MEASURED in-game EV100 (U5, 2026-07-29) rather than to the plan's reference
-            // table, and to the emissive baseline as corrected in the same pass:
+            // Fitted to measured in-game EV100 and the current emissive baseline:
             //   noon sand       +17.45 -> -0.01   renders at key, the reference
             //   noon blue sky   +16.50 -> -0.17
             //   daylight shade   +7.00 -> -1.82
             //   lit night room   +7.00 -> -1.82   (same measured luminance as daylight shade)
             //   night street     +1.50 -> -3.01
             //   starlit sky      -8.00 -> -5.00   (floor)
-            // Effective slope 0.79 / 0.78 / 0.83 across the three segments -- flatter than the previous
-            // 0.86, which is the fix for "it targets mid-grey everywhere": 25 EV of scene range now
-            // compresses to 5.0 EV of rendered difference instead of 3.5.
+            // Effective slope is 0.79 / 0.78 / 0.83 across the three segments, compressing 25 EV of
+            // scene range to 5.0 EV of rendered difference.
             //
             // Daylight shade and a lit interior at night measure the SAME (~EV 7), so no luminance-only
             // curve can separate them -- what does is the asymmetric temporal adaptation above, which
@@ -759,9 +756,7 @@ public final class CausticaConfig {
              * <p>Asymmetric on purpose, and in the direction human vision actually works — light
              * adaptation takes seconds, dark adaptation takes minutes. Every shipping game compresses
              * that, but keeping the sign right is what makes a sunrise read as a sunrise instead of as a
-             * lens. Renamed from {@code adapt-up}/{@code adapt-down}, which described which way the
-             * exposure multiplier moved and therefore read backwards; an old config's keys are ignored
-             * rather than reinterpreted, because their values meant the opposite of these.
+             * lens. The names describe the scene change, not the inverse movement of the exposure multiplier.
              */
             public static final FloatSetting ADAPT_DARKEN =
                     exposureScale("caustica.rt.exposure.adaptDarken", "exposure.adapt-darken", 2.0f);
@@ -788,9 +783,8 @@ public final class CausticaConfig {
             /**
              * Pre-exposure: raygen multiplies scene radiance by the previous frame's exposure before
              * the fp16 write, and the display pass divides it back out, so stored values sit near
-             * {@code key} instead of spanning the ~26 EV physical photometric units require (see
-             * {@code docs/SCENE_UNITS_PLAN.md} §2 — the standard Frostbite / UE / Unity HDRP
-             * technique). The two cancel algebraically, so <b>toggling this must not change the
+             * {@code key} instead of spanning the ~26 EV physical photometric units require. The two
+             * cancel algebraically, so <b>toggling this must not change the
              * image</b>; it exists as an A/B switch for exactly that check, and as an escape hatch
              * if DLSS-RR ever proves sensitive to its history being at the previous frame's scale.
              */
@@ -813,10 +807,8 @@ public final class CausticaConfig {
             }
 
             /**
-             * Sanity bound on an exposure multiplier, not an artistic one. The old {@code 1e-4} floor
-             * sat above the 3.8e-6 that {@code -18
-             * EV} asks for, so it would have truncated a physically ordinary noon exposure. The
-             * controller's own min-ev/max-ev is what actually bounds this; here we only reject garbage.
+             * Sanity bound on an exposure multiplier, not an artistic one. It must remain below the
+             * 3.8e-6 multiplier requested by {@code -18 EV}; min-ev/max-ev provides the artistic bound.
              */
             public static float clampScale(float value) {
                 return Math.clamp(value, 1.0e-8f, 1.0e8f);
@@ -837,8 +829,7 @@ public final class CausticaConfig {
         /**
          * Scene-referred ACES Look Transform plus the SDR + HDR display-transform operator: baked LUTs
          * (see {@code RtToneLut}, {@code tools/bake_display_lut.py}, {@code docs/LOOK_PACKAGES.md}).
-         * Replaced the original in-shader AgX + per-channel HDR rolloff after an in-game A/B; that code
-         * is gone, not just disabled — see {@code docs/DISPLAY_TRANSFORM_PLAN.md} plan step 4.
+         * No alternate in-shader display operator is retained.
          */
         public static final class Tonemap {
             public static final FloatSetting GAMMA =

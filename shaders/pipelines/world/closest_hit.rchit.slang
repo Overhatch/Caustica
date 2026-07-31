@@ -341,14 +341,13 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     // UNFLIPPED geometric normal is a reliable "which side of the dielectric" signal: a ray travelling
     // against it is entering the volume, one travelling with it is exiting. Captured before the
     // toward-viewer flip below and carried in the payload so raygen derives the medium from hit
-    // orientation instead of toggling parity per crossing (a single missing/extra face no longer
-    // desyncs the rest of the path).
+    // orientation instead of toggling parity per crossing, so one malformed face cannot desync the path.
     bool entering = dot(WorldRayDirection(), n) < 0.0;
 
     // Lever B: per-triangle corner UVs in primitive order. uvs[3*pid + k] is a contiguous,
     // directly-addressed load (no index buffer, no scattered vertex-UV gather), so it issues as soon as
     // pid is known and its latency overlaps the prim fetch instead of serialising behind an index load.
-    // The index buffer still exists for the BLAS build; the shading path just no longer reads it.
+    // The index buffer remains BLAS-only; shading reads the expanded UV buffer directly.
     ConstPtr<float2> uvs = ConstPtr<float2>(sec.uvAddr);
     float2 uv0 = uvs[3u * pid + 0u];
     float2 uv1 = uvs[3u * pid + 1u];
@@ -420,7 +419,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     n = surface.normal;
     packAlbedo(payload, unpackAlbedo(payload) * surface.ao);
     // Block-breaking overlay: opaque/cutout terrain (water skips — fluids aren't breakable). Evaluate
-    // it after normal mapping so decal projection uses the same shading orientation as the old path.
+    // it after normal mapping so decal projection uses the final shading orientation.
     if (material != MATERIAL_WATER) {
         packAlbedo(payload, bt709ToAcesCg(applyBreaking(
                 albedo709 * surface.ao, rayCone, WorldRayOrigin(),

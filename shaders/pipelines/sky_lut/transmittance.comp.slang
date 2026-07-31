@@ -4,8 +4,7 @@
 // Static: the medium never changes, so this runs once and every later pass reads it. Deliberately marched
 // WITHOUT a ground test — a direction pointing below the horizon then accumulates the optical depth of a
 // full chord through sea-level air, which comes out as transmittance zero. That is exactly the answer
-// wanted for "the sun has set", and it means no pass downstream needs its own planet-occlusion branch
-// (the old shader had one, and its binary switch is what drew a hard terminator across the sky).
+// wanted for "the sun has set", so downstream passes need no separate planet-occlusion branch.
 import world_common;
 import sky;
 import bindings;

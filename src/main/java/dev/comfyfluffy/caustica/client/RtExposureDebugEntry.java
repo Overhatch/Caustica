@@ -15,8 +15,7 @@ import org.jspecify.annotations.Nullable;
  * (Vanilla's own per-player {@code debug-profile.json}, toggled through the F3 entry list) --
  * registration only makes it available, it does not turn it on.
  *
- * <p>See {@code docs/EXPOSURE_PLAN.md} S0 (observability) and
- * {@code RtExposure.debugSummaryLine()} for what the line means.
+ * <p>{@code RtExposure.debugSummaryLine()} owns the displayed controller values.
  */
 public final class RtExposureDebugEntry implements DebugScreenEntry {
     public static final Identifier ID = DebugScreenEntries.register(

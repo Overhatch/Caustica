@@ -58,8 +58,7 @@ public final class RtMaterialOverrides {
 
         Integer model = null;
         if (root.has("model")) {
-            // Every dielectric is a volume now, so the old thin/volume names described nothing. "water"
-            // is the animated fluid surface (waves, caustics, biome-tint absorption); "dielectric" is
+            // "water" is the animated fluid surface (waves, caustics, biome-tint absorption); "dielectric" is
             // every other transparent material.
             model = switch (root.get("model").getAsString()) {
                 case "opaque" -> RtMaterialRegistry.MODEL_OPAQUE;

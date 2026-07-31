@@ -1,4 +1,4 @@
-// Primary/guide pass (pass A of the wavefront split — see docs/WAVEFRONT_PLAN.md).
+// Primary/guide pass of the wavefront renderer.
 //
 // Traces one camera radiance ray, captures DLSS-RR guides, and writes one or two resumable
 // continuations per pixel. At the first eligible dielectric it queues both post-interface branches and

@@ -8,16 +8,11 @@
 // This module holds everything the three passes and world.rmiss/world.rgen share, so the LUT and the
 // shaded result can never be computed from different physics.
 //
-// Why this replaced the previous sky. The old one marched Nishita single scattering per ray, and single
-// scattering alone leaves the anti-solar sky black at twilight — so it carried a hand-authored fill term
-// (`twilightMultipleScattering`), a hand-authored night gradient, a 1.2x vibrance boost, a flatten-the-ray-
-// onto-the-horizon hack for below-horizon directions, and a `sunUp` gate on the disc. Each of those is a
-// blend with an edge, and those edges are the reported "visible divider" and "unnatural colors". Real
-// multiple scattering (the second LUT) is what actually lights the twilight sky and the night sky, so all
-// of them are gone; nothing here crossfades between two authored looks.
+// The multiple-scattering LUT supplies twilight and anti-solar illumination directly, so the sky needs no
+// authored fill or crossfade between lighting states.
 //
-// Everything is photometric: illuminance in lux goes in, luminance in cd/m² comes out (see
-// docs/SCENE_UNITS_PLAN.md §3). Colour is linear BT.709 inside this module and crosses to ACEScg exactly
+// Everything is photometric: illuminance in lux goes in and luminance in cd/m² comes out. Colour is
+// linear BT.709 inside this module and crosses to ACEScg exactly
 // once, at the consumer's output.
 //
 // Lengths are KILOMETRES and coefficients 1/km throughout. The LUT parameterisations take square roots of
@@ -53,9 +48,8 @@ public static const int MULTISCATTER_LUT_H  = 32;
 public static const int SKY_VIEW_LUT_W      = 192;
 public static const int SKY_VIEW_LUT_H      = 108;
 // The sky-view image stacks one slice per celestial body: rows [0,108) are the sun's contribution and
-// rows [108,216) the moon's. Two independent slices, added at sampling time, is what lets moonlight
-// scatter through the same atmosphere as sunlight without either one being a crossfade of the other —
-// which is how the old sun->moon handoff produced a light pop at the horizon.
+// rows [108,216) the moon's. Two independent slices let moonlight and sunlight scatter through the same
+// atmosphere without crossfading between the lighting solutions.
 public static const int SKY_VIEW_BODY_COUNT = 2;
 public static const int SKY_VIEW_LUT_TOTAL_H = SKY_VIEW_LUT_H * SKY_VIEW_BODY_COUNT;
 public static const int SKY_VIEW_BODY_SUN  = 0;
@@ -252,8 +246,7 @@ public float horizonZenithCos(float viewerRadiusKm) {
 // ---- Sky-view LUT parameterisation (Hillaire). Azimuth is measured FROM the light, which the dome is
 // symmetric about, so two angles describe the whole sphere. The elevation mapping is split at the
 // geometric horizon and squared on each side, putting the most texels exactly where the sky's gradient is
-// steepest. That density is the reason this LUT has no visible horizon seam: the old shader's seam came
-// from switching formulas below y=0, not from a lack of resolution.
+// steepest, keeping the horizon continuous and well resolved.
 public float2 skyViewLutUv(float viewerRadiusKm, float viewZenithCos, float lightViewCos, int body) {
     float horizonSin = sqrt(max(viewerRadiusKm * viewerRadiusKm
             - ATMOS_BOTTOM_KM * ATMOS_BOTTOM_KM, 0.0)) / max(viewerRadiusKm, 1.0e-6);
@@ -335,9 +328,8 @@ public struct ScatteringResult {
  * IntegrateScatteredLuminance.
  *
  * <p>{@code lightAngularRadius} softens the planet's shadow on the atmosphere over the light's finite
- * angular size instead of switching it per sample. A binary test is what used to draw a hard terminator
- * line across the upper sky: only a handful of the primary march's samples change state between adjacent
- * pixels, so the transition lands on the sample lattice rather than on the geometry.
+ * angular size instead of switching it per sample, preventing the transition from landing on the
+ * primary march's sample lattice.
  *
  * <p>{@code clipGround} false marches straight past the planet to the far side of the shell and adds no
  * ground bounce. Evaluated exactly along the ground-tangent direction that is the limit of the
@@ -440,9 +432,8 @@ public float3 celestialAxis(float noonTiltRad) {
 
 /**
  * Tangent frame for a celestial body's square, kept level with the horizon: {@code right} is horizontal
- * and {@code up} lies in the vertical plane through the body. Deliberately NOT the arc-travel frame the
- * previous sky used — that one rolled the sun and moon about their own centres as they crossed the sky,
- * which is not something either body does, and it visibly spun the moon's phase crescent. The same frame
+ * and {@code up} lies in the vertical plane through the body. This keeps the sun and moon from rolling
+ * about their own centres as they cross the sky. The same frame
  * builds the NEE shadow-ray square in math.slang, so the sampled light and the drawn body stay identical.
  */
 public void celestialSquareFrame(float3 bodyDir, out float3 right, out float3 up) {
@@ -475,10 +466,8 @@ public bool celestialSquareLocal(float3 dir, float3 bodyDir, float halfAngle, ou
 // ---- Per-frame sky state ------------------------------------------------------------------------
 //
 // WorldPush carries only what the CPU alone can know: Minecraft's four eased celestial angles, its star
-// brightness, the moon phase, and the immutable look-package constants. Every direction, colour, level
-// and transmittance below is derived HERE, so there is no longer a Java port of the atmosphere march to
-// keep in lock-step with this file (the previous RtComposite.atmosphereTransmittance was exactly that,
-// and every constant in it had to match a constant in the shader by hand).
+// brightness, the moon phase, and the immutable look-package constants. Every direction, colour, level,
+// and transmittance is derived here so atmospheric physics has one implementation.
 
 public struct SkyState {
     public float3 sunDir;
@@ -545,9 +534,7 @@ public struct CelestialLight {
  *
  * <p>There is deliberately no crossfade between them. The extinction along a horizon-grazing path is
  * enormous (roughly 70 air masses), so both bodies are already within a rounding error of zero at the
- * moment the choice flips — the handoff is invisible because the physics makes it invisible, not because
- * a smoothstep hides it. The previous hand-tuned version switched while the sun still had ~16% of its
- * strength, which is what made sunset light pop.
+ * moment the choice flips, making the handoff invisible without an authored smoothstep.
  */
 public CelestialLight dominantCelestialLight(SkyState s, Sampler2D transmittanceLut) {
     float3 sunLux = s.sunIlluminance

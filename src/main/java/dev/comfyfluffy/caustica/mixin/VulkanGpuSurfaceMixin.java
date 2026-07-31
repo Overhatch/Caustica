@@ -42,7 +42,7 @@ import java.nio.IntBuffer;
 import java.nio.LongBuffer;
 
 /**
- * HDR Phase 0 capability logging + PQ swapchain selection.
+ * HDR capability logging and PQ swapchain selection.
  *
  * <p>The {@link VulkanGpuSurface} constructor holds both the live {@code VkSurfaceKHR} and the physical
  * device, so we enumerate the surface's formats/color spaces there (once) for diagnostics.
@@ -220,9 +220,9 @@ public abstract class VulkanGpuSurfaceMixin {
 	}
 
 	/**
-	 * Reflex Phase 1a: chain {@code VkSwapchainLatencyCreateInfoNV{latencyModeEnable=true}} into the
-	 * swapchain's pNext at creation. Per spec {@code vkSetLatencySleepModeNV} (not called yet — lands with
-	 * the sleep loop) only takes effect on a swapchain created with this flag, so it has to be set here,
+	 * Chain {@code VkSwapchainLatencyCreateInfoNV{latencyModeEnable=true}} into the swapchain's pNext at
+	 * creation. {@code vkSetLatencySleepModeNV} only takes effect on a swapchain created with this flag,
+	 * so it has to be set here,
 	 * before there's any other reason to touch swapchain creation. Preserves whatever pNext was already
 	 * there (currently nothing else chains one). The extra struct is stack-allocated and only needs to
 	 * survive this call — Vulkan reads pNext chains synchronously during {@code vkCreateSwapchainKHR}, it
@@ -248,7 +248,7 @@ public abstract class VulkanGpuSurfaceMixin {
 	}
 
 	/**
-	 * Reflex Phase 1b: (re)apply the sleep-mode config for the just-(re)configured swapchain. Per spec this
+	 * Reapply the Reflex sleep-mode config for the configured swapchain. The configuration
 	 * is scoped to a specific swapchain object, so it must be re-called whenever {@code configure()} builds a
 	 * new one (e.g. resize) — {@link RtReflex#applySleepMode} is idempotent (no-op if unchanged), so calling
 	 * it unconditionally here is cheap. No-op when Reflex isn't enabled + device-supported.
@@ -272,7 +272,7 @@ public abstract class VulkanGpuSurfaceMixin {
 	}
 
 	/**
-	 * Reflex Phase 1b: PRESENT_START/END markers around the real frame's present, plus (when
+	 * Emit PRESENT_START/END markers around the real frame's present and, when
 	 * {@code VK_KHR_present_id} is enabled) chaining a {@code VkPresentIdKHR} onto it so the marker's
 	 * {@code presentID} correlates with this exact present call. The FG-generated extra presents
 	 * ({@link RtFramePresenter}) are deliberately NOT marked/present-id'd — Reflex paces/measures the real
@@ -312,9 +312,8 @@ public abstract class VulkanGpuSurfaceMixin {
 	}
 
 	/**
-	 * Step C — world-only HDR present. When the RT renderer has a fresh PQ HDR image and the swapchain is
-	 * PQ, blit that image straight into the swapchain instead of Minecraft's SDR main target. Replaces the
-	 * vanilla blit entirely (the SDR target + its UI are bypassed for now; UI compositing is a later step).
+	 * HDR present path. When the RT renderer has a fresh PQ image and the swapchain is PQ, composite the
+	 * SDR-authored UI and blit the result directly into the swapchain instead of Minecraft's SDR main target.
 	 *
 	 * <p>Because this cancels {@code blitFromTexture} at HEAD, the normal {@code caustica$presentGeneratedFrames}
 	 * TAIL inject below never runs on HDR frames — so DLSS-FG's extra-present step is invoked explicitly here,

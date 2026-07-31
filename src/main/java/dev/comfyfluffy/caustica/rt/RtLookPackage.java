@@ -273,10 +273,9 @@ public record RtLookPackage(
     }
 
     /**
-     * Photometric anchors (docs/SCENE_UNITS_PLAN.md §3). {@code nightAirglowLuminanceCdM2} is airglow plus
-     * unresolved starlight — the real floor of a moonless night, ~1e-3 cd/m². It is not a stand-in for
-     * missing multiple scattering the way the old night gradient was; that term is computed now, so this
-     * one stays physically small.
+     * Photometric anchors. {@code nightAirglowLuminanceCdM2} is airglow plus unresolved starlight—the
+     * physical floor of a moonless night, approximately 1e-3 cd/m². Atmospheric multiple scattering is
+     * evaluated separately.
      */
     public record Lighting(
             float sunIlluminanceLux,

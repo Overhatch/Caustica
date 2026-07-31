@@ -307,7 +307,7 @@ public final class RtDeviceBringup {
      * Reserve one additional physical queue at device-creation time. Minecraft's queue-family map only
      * requests handles for its graphics/compute/transfer queues; fetching a higher queue index without first
      * increasing the matching {@link VkDeviceQueueCreateInfo#queueCount()} would be invalid. Prefer a
-     * compute-only family, but add a previously-unused compute family when that leaves the Minecraft queues
+     * compute-only family, but add a dedicated compute family when that leaves the Minecraft queues
      * untouched and has a free physical slot.
      */
     public static void reserveComputeQueue(VkDeviceCreateInfo deviceCreateInfo,

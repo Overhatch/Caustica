@@ -34,14 +34,12 @@ import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.*;
 
 /**
  * The sky's three LUTs (Hillaire 2020) and the compute passes that bake them. See
- * {@code shaders/pipelines/world/sky.slang} for the physics and for why this replaced the previous per-ray
- * single-scattering march.
+ * {@code shaders/pipelines/world/sky.slang} for the physics.
  *
  * <ul>
  *   <li><b>Transmittance</b> 256x64 — point-to-space extinction by (altitude, cos zenith). Static.</li>
- *   <li><b>Multiple scattering</b> 32x32 — the closed series of second and higher scattering orders.
- *       Static; this is the term that lights twilight and the night sky, and its absence is what forced
- *       the old sky to carry hand-authored fill and night-gradient constants.</li>
+ *   <li><b>Multiple scattering</b> 32x32 — the static closed series of second and higher scattering
+ *       orders that lights twilight and the night sky.</li>
  *   <li><b>Sky view</b> 192x216 — the dome itself, one 192x108 slice per celestial body, rebuilt every
  *       frame from the sun/moon angles in {@code WorldPush}.</li>
  * </ul>

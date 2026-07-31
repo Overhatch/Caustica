@@ -51,11 +51,7 @@ import dev.comfyfluffy.caustica.rt.terrain.RtTerrain;
  * <p>A native {@code LINE_LIST} draw, real width via the device's {@code wideLines} feature +
  * {@code vkCmdSetLineWidth} (see {@link RtDeviceBringup#wideLinesEnabled()}/{@link
  * RtDeviceBringup#maxLineWidth()}) — clamped to whatever the device actually supports (Vulkan mandates
- * exactly 1.0 without the feature, so this degrades gracefully rather than failing). A two-pass screen-space
- * quad + coverage-mask approach was tried first (real geometry, no device-feature dependency, correct
- * mitred joints) but was reverted as unnecessary complexity for what a native wide line already solves;
- * revisit that approach only if wideLines turns out inadequate (unsupported hardware, joint artifacts at
- * large widths, etc.) — see the memory note for what was tried.
+ * exactly 1.0 without the feature, so this degrades gracefully rather than failing).
  *
  * <p>Edge AA follows {@link RtGlowOutlineFeature}'s mask/composite split rather than drawing straight onto
  * {@code main}: the line list rasterizes at {@link RtDeviceBringup#overlayMsaaSamples()} into a transient

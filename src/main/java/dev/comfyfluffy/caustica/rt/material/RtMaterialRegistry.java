@@ -46,29 +46,20 @@ public final class RtMaterialRegistry {
     public static final int FEATURE_NORMAL = 2;
     public static final int FEATURE_HEURISTIC_EMISSION = 4;
     public static final int FEATURE_STOCHASTIC_ALPHA = 16;
-    // HDR radiance of a full (level-15-equivalent) emitter, modulated by albedo — the single knob
-    // (formerly duplicated as a literal in world.rgen.slang and RtLightCollector). Baked into every
+    // HDR radiance of a full (level-15-equivalent) emitter, modulated by albedo. Baked into every
     // emissive RtMaterialDesc.emissionStrength at compile time (compileDesc/compileEntityDesc), times
     // any resource-pack absolute emission.strength_cd_m2 override; see header() and RtMaterialOverrides.
     //
-    // Photometric: cd/m² of the emitting surface, per {@link dev.comfyfluffy.caustica.rt.RtSceneUnits}
-    // (docs/SCENE_UNITS_PLAN.md §3).
+    // Photometric: cd/m² of the emitting surface, per {@link dev.comfyfluffy.caustica.rt.RtSceneUnits}.
     //
     // Anchored on LUMINOUS EXITANCE, not on flame luminance: a full-strength emitter face radiates about
     // 1,000 lm/m², so one 1 m² block face is a ~1,000 lm lamp — a 75 W-equivalent bulb, which is what a
     // glowstone block is meant to be in a room. Lambertian exitance M = π·L, so L = 1000/π = 318 cd/m².
     //
-    // U3 first shipped 15,000 cd/m² (wood-flame luminance) and it was ~5.5 EV hot, because the plan's
-    // sanity check assumed a ~0.1 m torch quad while the emission mask puts that same luminance across a
-    // whole block face: 15,000 cd/m² over 1 m² is 47,000 lm, a stadium floodlight per glowstone. Measured
-    // in game (U5) a well-lit city interior metered EV100 12.5 — brighter than an overcast noon. At 318
-    // the same interior lands at ~7.0, against the plan's "lit indoor" reference of 6.5.
-    //
     // A flame really is far brighter per unit area than a glowstone block, so one baseline cannot be
     // right for both; the mask supplies coverage, not intensity. Exitance is the correct thing to anchor
     // because it is what the emitter contributes to the room, and it happens to land a torch's small
-    // emissive footprint near 40 lm — a candle to a small torch — so the single knob is defensible until
-    // the per-material audit (SCENE_UNITS_PLAN §6 Q4) actually happens. That audit is still not done.
+    // emissive footprint near 40 lm—a candle to a small torch.
     public static float defaultEmissionLuminanceCdM2() {
         return RtLookPackage.current().lighting().blockEmissionLuminanceCdM2();
     }
@@ -169,7 +160,7 @@ public final class RtMaterialRegistry {
                 false, true, RtMaterialDesc.EmissionSummary.NONE), whiteAverage(), fallbackEntry, null);
         int lavaId = headers.size();
         // Lava's fluid mesher assigns this singleton id (no sprite resolve), so its light color comes from
-        // the lava_still albedo grid — a mean-color area light instead of the old branch's white lava.
+        // the lava_still albedo grid, producing a mean-color area light.
         add(headers, descriptions, grids, compileDesc(MODEL_OPAQUE, 0, RtMaterials.Profile.LAVA,
                 true, true, uniformWhiteSummary()), whiteAverage(), fallbackEntry,
                 albedoGridFor(sprites, spriteStats, "block/lava_still"));
