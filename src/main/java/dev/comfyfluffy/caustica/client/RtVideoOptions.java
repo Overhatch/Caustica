@@ -86,8 +86,8 @@ public final class RtVideoOptions {
                 return Options.genericValueLabel(caption,
                         Component.literal(sign + String.format(Locale.ROOT, "%.1f EV", ev)));
             },
-            new OptionInstance.IntRange(-50, 50),
-            Math.clamp(Math.round(setting.value() * 10.0f), -50, 50),
+            new OptionInstance.IntRange(-150, 150),
+            Math.clamp(Math.round(setting.value() * 10.0f), -150, 150),
             tenths -> setting.set(tenths / 10.0f));
     }
 

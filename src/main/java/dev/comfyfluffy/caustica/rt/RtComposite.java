@@ -134,8 +134,10 @@ public final class RtComposite {
     // through sunset on exactly the curve the visible sky follows. world.rmiss anchors the atmosphere
     // in-scatter and the drawn sun disc on the same figure.
     private static final float SUN_ILLUMINANCE_TOA = 128000.0f;
-    /** Full-moon ground illuminance, lux. Scaled below by the lit fraction of the current phase. */
-    private static final float MOON_ILLUMINANCE_FULL = 10.0f;
+    /** Full-moon ground illuminance, lux. Current phase controls 90%; the remaining 10% is fixed. */
+    private static final float MOON_ILLUMINANCE_FULL = 5.0f;
+    private static final float MOON_LIGHT_FIXED_FRACTION = 0.10f;
+    private static final float MOON_LIGHT_PHASE_FRACTION = 0.90f;
     // Cool moonlight tint, the previous (0.30, 0.36, 0.55) ratio renormalised to BT.709 luma 1 so it
     // sets colour only and MOON_ILLUMINANCE_FULL alone sets level.
     private static final float MOON_TINT_R = 0.831112f;
@@ -1356,12 +1358,12 @@ public final class RtComposite {
             lightRadius = CausticaConfig.Rt.Composite.SUN_ANGULAR_RADIUS.value();
         } else {
             // Moon: dim cool light, ramping up from zero at the sun→moon handoff (sunY = -0.05, where
-            // the sun fade also reaches zero) so the switch is invisible. Scaled by the lit fraction so
-            // a new moon gives no directional moonlight, and tinted by the same transmittance so a low moon
-            // is warm amber, silver once high (or zero while it is below the horizon).
+            // the sun fade also reaches zero) so the switch is invisible. The shared transmittance makes
+            // a low moon warm amber and a high moon silver. Phase controls 90% of the full-moon level;
+            // the fixed 10% floor keeps new-moon directional light present.
             atmosphereTransmittance(moonX, moonY, moonZ, trans);
             float moonStrength = smoothstep(0.04f, 0.22f, -sunY);
-            float moonPeak = MOON_ILLUMINANCE_FULL * moonLitFraction(moonPhase);
+            float moonPeak = MOON_ILLUMINANCE_FULL * moonLightScale(moonPhase);
             lx = moonX; ly = moonY; lz = moonZ;
             rr = MOON_TINT_R * moonPeak * moonStrength * trans[0];
             rg = MOON_TINT_G * moonPeak * moonStrength * trans[1];
@@ -1382,6 +1384,11 @@ public final class RtComposite {
     /** Minecraft moon phases are 0 = full, 4 = new, then mirror back toward full through phase 7. */
     static float moonLitFraction(float moonPhaseIndex) {
         return Math.abs(moonPhaseIndex - 4.0f) / 4.0f;
+    }
+
+    /** Directional moon-light scale: 10% fixed floor plus 90% from the visible phase. */
+    static float moonLightScale(float moonPhaseIndex) {
+        return MOON_LIGHT_FIXED_FRACTION + MOON_LIGHT_PHASE_FRACTION * moonLitFraction(moonPhaseIndex);
     }
 
     /**

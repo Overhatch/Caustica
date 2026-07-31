@@ -740,7 +740,8 @@ public final class CausticaConfig {
                     string("caustica.rt.exposure.curve", "exposure.curve", DEFAULT_CURVE,
                             Exposure::sanitizeCurveSpec);
             public static final FloatSetting MANUAL_EV =
-                    finiteFloat("caustica.rt.exposure.manualEv", "exposure.manual-ev", 0.0f);
+                    clampedFloat("caustica.rt.exposure.manualEv", "exposure.manual-ev",
+                            0.0f, -15.0f, 15.0f);
             public static final FloatSetting KEY = exposureScale("caustica.rt.exposure.key", "exposure.key", 0.18f);
             // Bounds on the ABSOLUTE exposure multiplier. Sized from what the curve above actually asks
             // for at the measured scene extremes: -16.9 EV at noon sand, +3.5 EV at the starlit-sky
