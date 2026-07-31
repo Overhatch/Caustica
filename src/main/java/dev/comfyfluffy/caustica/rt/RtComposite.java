@@ -135,7 +135,7 @@ public final class RtComposite {
     // in-scatter and the drawn sun disc on the same figure.
     private static final float SUN_ILLUMINANCE_TOA = 128000.0f;
     /** Full-moon ground illuminance, lux. Scaled below by the lit fraction of the current phase. */
-    private static final float MOON_ILLUMINANCE_FULL = 1.0f;
+    private static final float MOON_ILLUMINANCE_FULL = 10.0f;
     // Cool moonlight tint, the previous (0.30, 0.36, 0.55) ratio renormalised to BT.709 luma 1 so it
     // sets colour only and MOON_ILLUMINANCE_FULL alone sets level.
     private static final float MOON_TINT_R = 0.831112f;
@@ -1336,7 +1336,7 @@ public final class RtComposite {
         // SkyRenderer uses), so the starfield wheels about the celestial pole tied to world time and
         // fades in/out at dusk/dawn exactly like vanilla. STAR_ANGLE is in degrees -> radians.
         starAngle = probe.getValue(EnvironmentAttributes.STAR_ANGLE, partial) * (float) (Math.PI / 180.0);
-        starBrightness = probe.getValue(EnvironmentAttributes.STAR_BRIGHTNESS, partial);
+        starBrightness = probe.getValue(EnvironmentAttributes.STAR_BRIGHTNESS, partial) * 10.0f;
         dayFactor = smoothstep(-0.08f, 0.10f, sunY);
         float[] trans = new float[3];
         if (sunY > -0.05f) {
