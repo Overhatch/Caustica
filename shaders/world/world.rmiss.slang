@@ -101,7 +101,19 @@ float2 raySphere(float3 o, float3 d, float r) {
     return float2(-b - disc, -b + disc);
 }
 
-float3 atmosphere(float3 dir, float3 sunDir, float sunIlluminance) {
+// Fraction of the solar disc visible above the local geometric horizon at an atmosphere sample.
+// The horizon dips with altitude, so upper-atmosphere samples remain lit after ground sunset. A
+// finite transition replaces the old binary ray-vs-planet test, which drew a hard Earth-shadow
+// boundary across the sky when only a few primary-march samples changed state.
+float solarVisibility(float3 p, float3 sunDir, float shadowSoftnessSin) {
+    float radius = length(p);
+    float horizonDipSin = sqrt(max(1.0 - (PLANET_R * PLANET_R) / (radius * radius), 0.0));
+    float clearance = dot(p / radius, sunDir) + horizonDipSin;
+    float softness = max(shadowSoftnessSin, 1.0e-4);
+    return smoothstep(-softness, softness, clearance);
+}
+
+float3 atmosphere(float3 dir, float3 sunDir, float sunIlluminance, float shadowSoftnessSin) {
     float3 orig = float3(0.0, PLANET_R + 2000.0, 0.0);
     float2 t = raySphere(orig, dir, ATMOS_R);
     if (t.x > t.y) return float3(0.0, 0.0, 0.0);      // ray misses the atmosphere entirely
@@ -127,30 +139,62 @@ float3 atmosphere(float3 dir, float3 sunDir, float sunIlluminance) {
         float hm = exp(-h / MIE_SCALE_H) * segLen;
         odR += hr; odM += hm; odO += ozoneDensity(h) * segLen;
 
+        float visibility = solarVisibility(p, sunDir, shadowSoftnessSin);
+        if (visibility <= 0.0) {
+            tCur += segLen;
+            continue;
+        }
+
         // March toward the sun to accumulate the light-ray optical depth (transmittance to space).
         float2 tl = raySphere(p, sunDir, ATMOS_R);
-        float segLenL = tl.y / float(ATMOS_LIGHT_STEPS);
+        float lightEnd = tl.y;
+        // Near the geometric terminator the solar centre ray can hit the planet while a fraction of
+        // the finite disc remains visible. End the optical-depth integration at the surface rather
+        // than restoring the old binary "blocked" result; solarVisibility supplies the continuous
+        // visible fraction for that penumbra.
+        float2 lightGround = raySphere(p, sunDir, PLANET_R);
+        if (lightGround.x > 0.0) {
+            lightEnd = min(lightEnd, lightGround.x);
+        }
+        float segLenL = lightEnd / float(ATMOS_LIGHT_STEPS);
         float tlCur = 0.0, odRL = 0.0, odML = 0.0, odOL = 0.0;
-        bool blocked = false;
         for (int j = 0; j < ATMOS_LIGHT_STEPS; j++) {
             float3 pl = p + sunDir * (tlCur + segLenL * 0.5);
             float hl = length(pl) - PLANET_R;
-            if (hl < 0.0) { blocked = true; break; } // sun is below this point's horizon → in shadow
+            hl = max(hl, 0.0);
             odRL += exp(-hl / RAY_SCALE_H) * segLenL;
             odML += exp(-hl / MIE_SCALE_H) * segLenL;
             odOL += ozoneDensity(hl) * segLenL;
             tlCur += segLenL;
         }
-        if (!blocked) {
-            float3 tau = RAY_BETA * (odR + odRL) + MIE_BETA * 1.1 * (odM + odML)
-                       + OZONE_BETA * (odO + odOL);
-            float3 atten = exp(-tau);
-            sumR += hr * atten;
-            sumM += hm * atten;
-        }
+        float3 tau = RAY_BETA * (odR + odRL) + MIE_BETA * 1.1 * (odM + odML)
+                   + OZONE_BETA * (odO + odOL);
+        float3 atten = exp(-tau);
+        sumR += hr * atten * visibility;
+        sumM += hm * atten * visibility;
         tCur += segLen;
     }
     return sunIlluminance * (sumR * RAY_BETA * phaseR + sumM * MIE_BETA * phaseM);
+}
+
+// Low-frequency approximation of the higher-order scattering omitted by the single-scattering
+// march. Real twilight does not leave the anti-solar hemisphere black: light scattered through the
+// still-sunlit upper atmosphere is scattered again into the Earth's shadow. Keep this broad and
+// low-energy; the resolved sun-facing color still comes from the physical atmosphere above.
+float3 twilightMultipleScattering(float3 dir, float3 sunDir, float fillLuminance) {
+    float sunNearOrAboveHorizon =
+        smoothstep(-0.20, -0.02, sunDir.y) * (1.0 - smoothstep(0.04, 0.35, sunDir.y));
+    float broadHorizon = 0.55 + 0.45 * (1.0 - abs(dir.y));
+    // Use the full [-1,1] angular range, not a sun-facing hemisphere gate. Higher-order scattering
+    // mainly lifts the Earth's shadow; the resolved single-scattering march already supplies the
+    // strong warm color around the sun. Low-saturation unit-luminance tints avoid painting half the
+    // dome yellow while retaining a gentle cool-to-neutral gradient.
+    float sunward = smoothstep(0.0, 1.0, 0.5 + 0.5 * dot(dir, sunDir));
+    float3 shadowTint = float3(0.865, 1.018, 1.222);
+    float3 neutralTint = float3(1.035, 0.998, 0.936);
+    float3 tint = lerp(shadowTint, neutralTint, sunward);
+    float shadowLift = lerp(1.0, 0.65, sunward);
+    return tint * (fillLuminance * sunNearOrAboveHorizon * broadHorizon * shadowLift);
 }
 
 // Extinction from the camera to space along `dir` (Rayleigh + Mie + ozone; the sun-below-horizon case
@@ -266,6 +310,8 @@ void main(inout Payload payload) {
     float moonIlluminance = worldPush.lookLighting.y;
     float nightLuminance = worldPush.lookLighting.z;
     float skySaturation = worldPush.lookLighting.w;
+    float twilightFillLuminance = worldPush.lookTwilight.x;
+    float twilightShadowSoftnessSin = worldPush.lookTwilight.y;
     bool showCelestial = (payload.flags & PAYLOAD_SHOW_CELESTIAL) != 0u;
 
     // Physically-based in-scattering: blue zenith, bright/desaturated horizon, warm Mie halo + red
@@ -284,7 +330,7 @@ void main(inout Payload payload) {
         mdir = fl > 1.0e-4 ? float3(flat2.x / fl, 0.0, flat2.y / fl) : float3(1.0, 0.0, 0.0);
         downFade = exp(dir.y * 3.0);
     }
-    float3 col = atmosphere(mdir, sd, sunIlluminance);
+    float3 col = atmosphere(mdir, sd, sunIlluminance, twilightShadowSoftnessSin);
     // This atmosphere model is parameterized in its original linear BT.709 basis. Apply its
     // luminance-preserving look there, then cross into the ACEScg transport basis once at output.
     float lum = dot(col, float3(0.2126, 0.7152, 0.0722));
@@ -294,6 +340,7 @@ void main(inout Payload payload) {
     float3 nightHorizon = float3(0.676517, 0.992225, 2.029550) * nightLuminance;
     float3 nightAmbient = lerp(nightHorizon, nightZenith, up);
     col += nightAmbient * (1.0 - day);
+    col += twilightMultipleScattering(mdir, sd, twilightFillLuminance);
     col *= downFade;
     col += stars(dir, starBrightness, VdotS, worldPush.celestial);
 

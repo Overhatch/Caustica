@@ -58,6 +58,9 @@ public struct WorldPush {
     // Versioned look-package light anchors. x sun illuminance (lux), y full-moon illuminance
     // (lux), z night-sky luminance (cd/m²), w atmosphere saturation.
     public float4   lookLighting;
+    // Twilight approximation: x broad multiple-scattering fill luminance (cd/m²),
+    // y altitude-aware planet-shadow softness (sin of angular width), zw reserved.
+    public float4   lookTwilight;
     public float4   waterParams;      // xyz linear ACEScg camera-biome water tint, w wave time (s)
     public float4   waterAnchor;      // xy world-stable wave-domain anchor, z previous wave time
     public float4x4 curViewProj;      // forward camera-relative view-projection

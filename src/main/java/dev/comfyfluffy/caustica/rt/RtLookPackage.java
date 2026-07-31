@@ -23,8 +23,9 @@ public record RtLookPackage(
         int packageVersion,
         Exposure exposure,
         String lmtResource,
+        Bloom bloom,
         Lighting lighting) {
-    public static final int SCHEMA_VERSION = 1;
+    public static final int SCHEMA_VERSION = 3;
     public static final String DEFAULT_ID = "default";
     public static final String DEFAULT_JSON = "/caustica/rt/looks/default/look.json";
     private static final RtLookPackage DEFAULT = load(DEFAULT_JSON);
@@ -73,6 +74,19 @@ public record RtLookPackage(
         }
         String lmtResource = jsonResource.substring(0, slash + 1) + lmtFile;
 
+        JsonObject bloomJson = requiredObject(root, "bloom");
+        Bloom bloom = new Bloom(
+                requiredFinite(bloomJson, "strength"),
+                requiredFinite(bloomJson, "thresholdSceneLinear"),
+                requiredFinite(bloomJson, "softKneeFraction"),
+                requiredFinite(bloomJson, "radius"));
+        requireRange(bloom.strength(), 0.0f, 2.0f, jsonResource, "bloom.strength");
+        requireRange(bloom.thresholdSceneLinear(), 0.0f, 65504.0f,
+                jsonResource, "bloom.thresholdSceneLinear");
+        requireRange(bloom.softKneeFraction(), 0.0f, 1.0f,
+                jsonResource, "bloom.softKneeFraction");
+        requireRange(bloom.radius(), 0.25f, 4.0f, jsonResource, "bloom.radius");
+
         JsonObject lightingJson = requiredObject(root, "lighting");
         Lighting lighting = new Lighting(
                 positive(lightingJson, "sunIlluminanceLux", jsonResource),
@@ -80,13 +94,19 @@ public record RtLookPackage(
                 positive(lightingJson, "blockEmissionLuminanceCdM2", jsonResource),
                 nonNegative(lightingJson, "nightSkyLuminanceCdM2", jsonResource),
                 nonNegative(lightingJson, "starLuminanceCdM2", jsonResource),
+                nonNegative(lightingJson, "twilightFillLuminanceCdM2", jsonResource),
+                nonNegative(lightingJson, "twilightShadowSoftnessDegrees", jsonResource),
                 nonNegative(lightingJson, "moonPhaseFixedFraction", jsonResource),
                 nonNegative(lightingJson, "skySaturation", jsonResource));
+        if (lighting.twilightShadowSoftnessDegrees() > 10.0f) {
+            throw new IllegalArgumentException(jsonResource
+                    + ": lighting.twilightShadowSoftnessDegrees must be in [0,10]");
+        }
         if (lighting.moonPhaseFixedFraction() > 1.0f) {
             throw new IllegalArgumentException(jsonResource
                     + ": lighting.moonPhaseFixedFraction must be in [0,1]");
         }
-        return new RtLookPackage(schemaVersion, id, packageVersion, exposure, lmtResource, lighting);
+        return new RtLookPackage(schemaVersion, id, packageVersion, exposure, lmtResource, bloom, lighting);
     }
 
     private static RtLookPackage load(String resource) {
@@ -158,6 +178,13 @@ public record RtLookPackage(
         return value;
     }
 
+    private static void requireRange(float value, float min, float max, String resource, String name) {
+        if (value < min || value > max) {
+            throw new IllegalArgumentException(resource + ": " + name + " must be in ["
+                    + min + "," + max + "]");
+        }
+    }
+
     private static void validateCurve(String spec, String resource) {
         String[] points = spec.split(",");
         if (points.length != 4) {
@@ -195,12 +222,17 @@ public record RtLookPackage(
     public record Exposure(float minEv, float maxEv, String curve) {
     }
 
+    public record Bloom(float strength, float thresholdSceneLinear, float softKneeFraction, float radius) {
+    }
+
     public record Lighting(
             float sunIlluminanceLux,
             float moonIlluminanceLux,
             float blockEmissionLuminanceCdM2,
             float nightSkyLuminanceCdM2,
             float starLuminanceCdM2,
+            float twilightFillLuminanceCdM2,
+            float twilightShadowSoftnessDegrees,
             float moonPhaseFixedFraction,
             float skySaturation) {
         public float moonPhaseFraction() {

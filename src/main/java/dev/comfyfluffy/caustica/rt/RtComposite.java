@@ -58,6 +58,7 @@ import dev.comfyfluffy.caustica.rt.material.RtEmissionSemantics;
 import dev.comfyfluffy.caustica.rt.material.RtMaterialOverrides;
 import dev.comfyfluffy.caustica.rt.material.RtMaterialRegistry;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDebugPresentPipeline;
+import dev.comfyfluffy.caustica.rt.pipeline.RtBloomPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDisplayPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssRr;
@@ -203,6 +204,7 @@ public final class RtComposite {
     private PushSlot[] pushRing;
     private int pushSlot;
     private RtDisplayPipeline displayPipeline;
+    private RtBloomPipeline bloomPipeline;
     private RtDebugPresentPipeline debugPresentPipeline;
     private RtToneLut sdrToneLut;
     private RtToneLut hdrToneLut;
@@ -213,6 +215,8 @@ public final class RtComposite {
     // render pixel (base + optional transmission); Pass B resamples them at the configured SPP.
     private RtBuffer continuationQueue;
     private RtImage displayImage;
+    private RtImage bloomA;
+    private RtImage bloomB;
     // Parallel PQ-encoded ([0,1], ST.2084) HDR display image. Written alongside displayImage when HDR is
     // enabled. When the PQ swapchain is active, the combined UI overlay is composited over this image, then
     // this image is blitted straight to the swapchain.
@@ -609,6 +613,9 @@ public final class RtComposite {
             if (displayPipeline == null) {
                 displayPipeline = RtDisplayPipeline.create(ctx);
             }
+            if (bloomPipeline == null) {
+                bloomPipeline = RtBloomPipeline.create(ctx);
+            }
             if (debugPresentPipeline == null) {
                 debugPresentPipeline = RtDebugPresentPipeline.create(ctx);
             }
@@ -669,7 +676,8 @@ public final class RtComposite {
             RtToneLut boundLookLut = lookLut;
             displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                     sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
-                    boundLookLut.view(), boundLookLut.sampler());
+                    boundLookLut.view(), boundLookLut.sampler(), bloomA.view, bloomPipeline.sampler());
+            bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomA.view, bloomB.view);
             debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
                     gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
                     exposure.stateBuffer());
@@ -904,7 +912,8 @@ public final class RtComposite {
         boolean rrEnabled = RtDlssRr.enabled();
         int rrQuality = rrEnabled ? RtDlssRr.quality() : Integer.MIN_VALUE;
         if (output != null && continuationQueue != null
-                && displayImage != null && hdrDisplayImage != null && rrOutput != null && exposure.ready()
+                && displayImage != null && hdrDisplayImage != null && rrOutput != null
+                && bloomA != null && bloomB != null && exposure.ready()
                 && displayW == width && displayH == height
                 && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality) {
             return;
@@ -915,6 +924,12 @@ public final class RtComposite {
         }
         if (hdrDisplayImage != null) {
             hdrDisplayImage.destroy();
+        }
+        if (bloomA != null) {
+            bloomA.destroy();
+        }
+        if (bloomB != null) {
+            bloomB.destroy();
         }
         if (output != null) {
             output.destroy();
@@ -952,6 +967,14 @@ public final class RtComposite {
         displayImage = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R8G8B8A8_UNORM, "RT display image " + width + "x" + height);
         // PQ-encoded ([0,1], ST.2084) HDR display image, written in parallel by display.comp when HDR mode is active.
         hdrDisplayImage = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "RT HDR display image " + width + "x" + height);
+        int bloomWidth = Math.max(1, (width + 1) / 2);
+        int bloomHeight = Math.max(1, (height + 1) / 2);
+        bloomA = ctx.createStorageImage(bloomWidth, bloomHeight,
+                VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                "RT bloom A " + bloomWidth + "x" + bloomHeight);
+        bloomB = ctx.createStorageImage(bloomWidth, bloomHeight,
+                VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                "RT bloom B " + bloomWidth + "x" + bloomHeight);
         // Guide buffers match the trace (render) resolution; DLSS-RR consumes them at render res.
         gNormal = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide normal roughness " + renderW + "x" + renderH);
         gAlbedo = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide diffuse albedo " + renderW + "x" + renderH);
@@ -972,7 +995,8 @@ public final class RtComposite {
         RtToneLut boundLookLut = lookLut;
         displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                 sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
-                boundLookLut.view(), boundLookLut.sampler());
+                boundLookLut.view(), boundLookLut.sampler(), bloomA.view, bloomPipeline.sampler());
+        bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomA.view, bloomB.view);
         debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
                 gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
                 exposure.stateBuffer());
@@ -1123,6 +1147,12 @@ public final class RtComposite {
                             LOOK.lighting().moonIlluminanceLux(),
                             LOOK.lighting().nightSkyLuminanceCdM2(),
                             LOOK.lighting().skySaturation()),
+                    new Float4(
+                            LOOK.lighting().twilightFillLuminanceCdM2(),
+                            Mth.sin(LOOK.lighting().twilightShadowSoftnessDegrees()
+                                    * (float) (Math.PI / 180.0)),
+                            0.0f,
+                            0.0f),
                     waterParams,
                     waterAnchor,
                     mvCurProjView,
@@ -1224,11 +1254,19 @@ public final class RtComposite {
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // exposure image visible to the display mapper
 
+            try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "bloom");
+                 RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.bloom")) {
+                RtLookPackage.Bloom bloom = LOOK.bloom();
+                float resolutionScaledRadius = bloom.radius() * (displayH / 1080.0f);
+                bloomPipeline.dispatch(cmd, bloomA.width, bloomA.height,
+                        bloom.thresholdSceneLinear(), bloom.softKneeFraction(), resolutionScaledRadius);
+            }
+
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "map RT to display");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.displayMap")) {
                 displayPipeline.dispatch(cmd, displayW, displayH, CausticaConfig.Rt.Hdr.enabled(),
                         sdrToneLut.size, CausticaConfig.Rt.Tonemap.GAMMA.value(), loadedHdrLutNits,
-                        true, lookLut.size);
+                        true, lookLut.size, LOOK.bloom().strength());
             }
             hdrWrittenThisFrame = CausticaConfig.Rt.Hdr.enabled();
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // display output visible to debug composite
@@ -1500,6 +1538,14 @@ public final class RtComposite {
             hdrDisplayImage.destroy();
             hdrDisplayImage = null;
         }
+        if (bloomA != null) {
+            bloomA.destroy();
+            bloomA = null;
+        }
+        if (bloomB != null) {
+            bloomB.destroy();
+            bloomB = null;
+        }
         if (fgHudlessImage != null) {
             fgHudlessImage.destroy();
             fgHudlessImage = null;
@@ -1522,6 +1568,10 @@ public final class RtComposite {
         if (displayPipeline != null) {
             displayPipeline.destroy();
             displayPipeline = null;
+        }
+        if (bloomPipeline != null) {
+            bloomPipeline.destroy();
+            bloomPipeline = null;
         }
         if (debugPresentPipeline != null) {
             debugPresentPipeline.destroy();

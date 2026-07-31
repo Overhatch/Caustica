@@ -69,3 +69,12 @@ void probeDebugPresentPush(uint3 id : SV_DispatchThreadID) {
         float sink = float(debugPresentPushProbe.debugView) + debugPresentPushProbe.centerWeightFloor;
     }
 }
+
+[[vk::push_constant]] BloomPush bloomPushProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probeBloomPush(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = float(bloomPushProbe.mode) + bloomPushProbe.radius;
+    }
+}

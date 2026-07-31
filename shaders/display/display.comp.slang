@@ -20,6 +20,8 @@ import display_common;
 // Optional scene-referred ACEScg -> ACEScg Look Transform. Both its input and stored output use the
 // same log2 shaper; applyLook() decodes the sample back to linear before either output transform.
 [[vk::binding(6, 0)]] Sampler3D lookLut;
+// Half-resolution exposed scene-linear bloom generated immediately before this pass.
+[[vk::binding(7, 0)]] Sampler2D bloomImage;
 
 [[vk::push_constant]] DisplayPush pc;
 
@@ -57,6 +59,11 @@ float3 applyLook(float3 exposedAcesCg) {
     float3 uvw = shaperEncode(exposedAcesCg);
     float3 shaped = lookLut.SampleLevel(lutTexCoord(uvw, pc.lookLutSize), 0.0).rgb;
     return shaperDecode(shaped);
+}
+
+float3 sampleBloom(int2 outputPixel, uint outputWidth, uint outputHeight) {
+    float2 uv = (float2(outputPixel) + 0.5) / float2(outputWidth, outputHeight);
+    return bloomImage.SampleLevel(uv, 0.0).rgb;
 }
 
 // Artistic gamma after the view/display transform. Apply the curve to display luminance and scale
@@ -163,7 +170,9 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
     float4 rt = rtImage[pix];
     float exposure = max(exposureImage[int2(0, 0)], 0.0);
-    float3 lookedAcesCg = applyLook(max(rt.rgb * exposure, float3(0.0)));
+    float3 exposedAcesCg = max(rt.rgb * exposure, float3(0.0));
+    exposedAcesCg += sampleBloom(pix, w, h) * max(pc.bloomStrength, 0.0);
+    float3 lookedAcesCg = applyLook(exposedAcesCg);
     outputImage[pix] = float4(tonemap(lookedAcesCg), 1.0);
 
     if (pc.hdrEnabled != 0) {

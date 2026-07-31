@@ -56,6 +56,14 @@ public struct DisplayPush {
     public float hdrPeakNits;   // mastering peak baked into the currently bound HDR ACES LUT
     public int lookEnabled;     // 0 = identity, 1 = apply the scene-referred ACES look LUT
     public float lookLutSize;   // lookLut texels per axis (independent of the output-transform LUT size)
+    public float bloomStrength; // scene-referred blurred highlight signal added before the LMT
+};
+
+public struct BloomPush {
+    public int mode;            // 0 extract/downsample, 1 horizontal blur, 2 vertical blur
+    public float threshold;     // exposed scene-linear ACEScg luminance
+    public float softKnee;      // absolute exposed scene-linear knee width
+    public float radius;        // half-resolution filtered sample-offset multiplier
 };
 
 public struct DebugPresentPush {

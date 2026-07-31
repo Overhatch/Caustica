@@ -1,7 +1,7 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 3,
   "id": "default",
-  "packageVersion": 1,
+  "packageVersion": 3,
   "exposure": {
     "minEv": -15.0,
     "maxEv": -2.0,
@@ -10,12 +10,20 @@
   "lmt": {
     "resource": "lmt.bin"
   },
+  "bloom": {
+    "strength": 0.02,
+    "thresholdSceneLinear": 2.0,
+    "softKneeFraction": 0.25,
+    "radius": 2.0
+  },
   "lighting": {
     "sunIlluminanceLux": 128000.0,
     "moonIlluminanceLux": 5.0,
     "blockEmissionLuminanceCdM2": 2000.0,
     "nightSkyLuminanceCdM2": 0.2,
     "starLuminanceCdM2": 10.0,
+    "twilightFillLuminanceCdM2": 120.0,
+    "twilightShadowSoftnessDegrees": 2.0,
     "moonPhaseFixedFraction": 0.1,
     "skySaturation": 1.2
   }
