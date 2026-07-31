@@ -115,7 +115,8 @@ public record RtLookPackage(
                 nonNegative(skyJson, "moonAngularRadiusDegrees", jsonResource, "sky"),
                 positive(skyJson, "sunDiscHalfAngleDegrees", jsonResource, "sky"),
                 positive(skyJson, "moonDiscHalfAngleDegrees", jsonResource, "sky"),
-                nonNegative(skyJson, "groundAlbedo", jsonResource, "sky"));
+                nonNegative(skyJson, "groundAlbedo", jsonResource, "sky"),
+                nonNegative(skyJson, "horizonSoftenDegrees", jsonResource, "sky"));
         requireRange(sky.sunNoonSouthTiltDegrees(), -89.0f, 89.0f,
                 jsonResource, "sky.sunNoonSouthTiltDegrees");
         // The NEE radius only jitters the shadow ray, so it sets penumbra softness; the disc half-angle is
@@ -130,6 +131,10 @@ public record RtLookPackage(
         requireRange(sky.moonDiscHalfAngleDegrees(), 0.0f, 45.0f,
                 jsonResource, "sky.moonDiscHalfAngleDegrees");
         requireRange(sky.groundAlbedo(), 0.0f, 1.0f, jsonResource, "sky.groundAlbedo");
+        // Beyond a quarter turn the fade would still be running at the nadir, leaving the lower hemisphere
+        // with no settled colour at all.
+        requireRange(sky.horizonSoftenDegrees(), 0.0f, 90.0f,
+                jsonResource, "sky.horizonSoftenDegrees");
 
         return new RtLookPackage(schemaVersion, id, packageVersion, exposure, lmtResource, bloom,
                 lighting, sky);
@@ -298,6 +303,13 @@ public record RtLookPackage(
             /** Half-angle the body is DRAWN at, matching vanilla's quads: atan(0.30) and atan(0.20). */
             float sunDiscHalfAngleDegrees,
             float moonDiscHalfAngleDegrees,
-            float groundAlbedo) {
+            float groundAlbedo,
+            /**
+             * Dip over which the atmosphere's ground fades in below the horizon. The surface is a real
+             * discontinuity in the model — ~20 EV per degree of elevation at sea level under a high sun,
+             * and up to ~50 at a low one — and Minecraft never shows the terrain that would justify it, so
+             * without this the horizon reads as a hard grey line. Zero restores the hard ground.
+             */
+            float horizonSoftenDegrees) {
     }
 }

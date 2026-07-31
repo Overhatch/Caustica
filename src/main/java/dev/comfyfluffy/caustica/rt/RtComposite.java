@@ -591,6 +591,9 @@ public final class RtComposite {
                 bloomPipeline = RtBloomPipeline.create(ctx);
             }
             if (skyLut == null) {
+                // Normally already created by ensureWorld before the pipeline exists at all; this only
+                // fires if render() somehow runs before the tick-driven ensureResourcesReady has, which
+                // ensureWorld's own binding order otherwise guarantees never happens.
                 skyLut = RtSkyLut.create(ctx);
             }
             if (debugPresentPipeline == null) {
@@ -713,6 +716,16 @@ public final class RtComposite {
 
     private RtPipeline ensureWorld(RtContext ctx) {
         if (worldPipeline == null) {
+            // Must exist before bindWorldTextures below writes the sky-LUT descriptors. This is the
+            // EARLIEST possible bind: ensureResourcesReady drives this from the client tick, ahead of the
+            // render()/composite path where skyLut used to be lazily created — so that later creation was
+            // always too late for a pipeline built here. bindWorldTextures only ever runs again on a
+            // resource reload, so a skyLut that is still null on this first call stays permanently unbound
+            // and every miss/raygen sky sample reads the pre-vkUpdateDescriptorSets undefined descriptor
+            // (VUID-vkCmdTraceRaysKHR-None-08114).
+            if (skyLut == null) {
+                skyLut = RtSkyLut.create(ctx);
+            }
             bindlessTextureCapacity = RtEntityTextures.maxTextures();
             worldPipeline = RtPipeline.create(ctx, new String[]{
                             RtDeviceBringup.worldPrimaryRaygenShader(),
@@ -1349,19 +1362,23 @@ public final class RtComposite {
      * in 26.2 they are timeline tracks driven through a cubic-bezier ease, and a datapack can replace the
      * track outright, so the probe is the only source that stays correct for a custom dimension.
      *
-     * <p>The sky-view LUT's viewer altitude tracks the camera's real world height above sea level (1
-     * block = 1 m), not the look package's fixed reference altitude: a build-limit mod or a rocket/space
-     * mod climbing toward the 100 km shell should see the atmosphere actually thin out. Clamped to the
-     * same [0, 99] km range {@link RtLookPackage} validates the package's own constant against, so an
-     * absurd Y (or one beyond the modelled shell) degrades to the shell edge instead of an LUT sample
-     * outside its baked domain.
+     * <p>The sky-view LUT's viewer altitude tracks the camera's real world height above sea level, not
+     * the look package's fixed reference altitude: a build-limit mod or a rocket/space mod climbing
+     * toward the 100 km shell should see the atmosphere actually thin out. The block-to-km scale is
+     * exaggerated 10x (100 blocks = 1 km, not the literal 1000) — vanilla's build range is under half a
+     * real km, which would put the whole playable height range within a rounding error of one LUT texel
+     * row; at 100:1 the same climb is a few km, enough to see the horizon and zenith actually shift.
+     * Clamped to [0, 99] km so an absurd Y (or one beyond the modelled 100 km shell) degrades to the
+     * shell edge instead of an LUT sample outside its baked domain. The shader applies its own lower
+     * floor — see {@code sky.MIN_VIEWER_ALTITUDE_KM}, which is set by what fp32 can resolve at planet
+     * radius, not by anything visual — so zero here is safe and means "at or below sea level".
      */
     private SkyPush skyPush() {
         Minecraft mc = Minecraft.getInstance();
         float partial = mc.getDeltaTracker().getGameTimeDeltaPartialTick(false);
         var probe = mc.gameRenderer.mainCamera().attributeProbe();
         int seaLevel = mc.level != null ? mc.level.getSeaLevel() : 0;
-        float viewerAltitudeKm = Math.clamp((float) ((camY - seaLevel) / 1000.0), 0.0f, 99.0f);
+        float viewerAltitudeKm = Math.clamp((float) ((camY - seaLevel) / 100.0), 0.0f, 99.0f);
         float toRadians = (float) (Math.PI / 180.0);
         float sunAngle = probe.getValue(EnvironmentAttributes.SUN_ANGLE, partial) * toRadians;
         float moonAngle = probe.getValue(EnvironmentAttributes.MOON_ANGLE, partial) * toRadians;
@@ -1386,7 +1403,7 @@ public final class RtComposite {
                 new Float4(sky.sunDiscHalfAngleDegrees() * toRadians,
                         sky.moonDiscHalfAngleDegrees() * toRadians,
                         viewerAltitudeKm, moonPhase),
-                new Float4(sky.groundAlbedo(), 0f, 0f, 0f),
+                new Float4(sky.groundAlbedo(), sky.horizonSoftenDegrees() * toRadians, 0f, 0f),
                 uv.sun(),
                 uv.moon());
     }

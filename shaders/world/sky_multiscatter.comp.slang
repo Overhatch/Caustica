@@ -61,7 +61,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
         ScatteringResult r = integrateScatteredLuminance(
                 origin, dir, sunDir, float3(1.0), 0.0,
                 MULTISCATTER_STEPS, false, false,
-                transmittanceLut, multiScatterLut, groundAlbedo);
+                transmittanceLut, multiScatterLut, groundAlbedo, true);
         luminanceSum += r.luminance;
         multiScatSum += r.multiScatAs1;
     }

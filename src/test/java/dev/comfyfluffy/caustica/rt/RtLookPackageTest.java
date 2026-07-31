@@ -18,7 +18,7 @@ final class RtLookPackageTest {
              "starLuminanceCdM2":10,"moonPhaseFixedFraction":0.1},
              "sky":{"sunNoonSouthTiltDegrees":30,"sunAngularRadiusDegrees":0.6,
              "moonAngularRadiusDegrees":1.5,"sunDiscHalfAngleDegrees":16.7,
-             "moonDiscHalfAngleDegrees":11.31,"groundAlbedo":0.1}}
+             "moonDiscHalfAngleDegrees":11.31,"groundAlbedo":0.1,"horizonSoftenDegrees":15}}
             """;
 
     @Test
@@ -44,6 +44,9 @@ final class RtLookPackageTest {
                 "\"levels\":9")));
         assertThrows(IllegalArgumentException.class, () -> parse(VALID.replace("\"groundAlbedo\":0.1",
                 "\"groundAlbedo\":1.5")));
+        // A fade still running at the nadir leaves the lower hemisphere with no settled colour.
+        assertThrows(IllegalArgumentException.class, () -> parse(
+                VALID.replace("\"horizonSoftenDegrees\":15", "\"horizonSoftenDegrees\":120")));
     }
 
     @Test

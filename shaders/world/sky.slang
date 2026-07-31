@@ -188,8 +188,7 @@ public float3 sampleTransmittance(Sampler2D lut, float radiusKm, float cosZenith
 public float3 transmittanceToSpace(Sampler2D lut, float viewerRadiusKm, float3 dir, float angularRadius) {
     // cos of the zenith angle of the ground-tangent ray: the viewer's horizon, which dips further below
     // horizontal the higher the viewer is.
-    float horizonCos = -sqrt(max(1.0 - (ATMOS_BOTTOM_KM * ATMOS_BOTTOM_KM)
-            / (viewerRadiusKm * viewerRadiusKm), 0.0));
+    float horizonCos = horizonZenithCos(viewerRadiusKm);
     float softness = max(sin(angularRadius), 1.0e-4);
     float aboveHorizon = smoothstep(horizonCos - softness, horizonCos + softness, dir.y);
     return sampleTransmittance(lut, viewerRadiusKm, dir.y) * aboveHorizon;
@@ -206,15 +205,48 @@ public float2 multiScatterLutUv(float radiusKm, float cosSunZenith) {
 public void multiScatterLutParams(float2 uv, out float radiusKm, out float cosSunZenith) {
     cosSunZenith = clamp(uv.x * 2.0 - 1.0, -1.0, 1.0);
     radiusKm = lerp(ATMOS_BOTTOM_KM, ATMOS_TOP_KM, uv.y);
-    // Nudge off the exact boundaries: a sample sitting precisely on the ground or on the outer shell
-    // makes the ray/sphere tests below degenerate.
-    radiusKm = clamp(radiusKm, ATMOS_BOTTOM_KM + 1.0e-3, ATMOS_TOP_KM - 1.0e-3);
+    // Keep off the exact boundaries: a sample sitting precisely on the ground or on the outer shell makes
+    // the ray/sphere tests degenerate. The bottom uses the same fp32-derived floor as the viewer — a
+    // smaller nudge would be lost to the cancellation in `r*r - bottom*bottom` (see
+    // MIN_VIEWER_ALTITUDE_KM), leaving the LUT's ground row as garbage rather than as ground.
+    radiusKm = clamp(radiusKm, ATMOS_BOTTOM_KM + MIN_VIEWER_ALTITUDE_KM,
+                     ATMOS_TOP_KM - MIN_VIEWER_ALTITUDE_KM);
 }
 
 public float3 sampleMultiScatter(Sampler2D lut, float radiusKm, float cosSunZenith) {
     float2 uv = multiScatterLutUv(radiusKm, cosSunZenith);
     uv = unitToSubUv(uv, float2(float(MULTISCATTER_LUT_W), float(MULTISCATTER_LUT_H)));
     return lut.SampleLevel(uv, 0.0).rgb;
+}
+
+// Smallest viewer altitude the fp32 geometry can actually resolve, and the floor every consumer of a
+// radius here clamps to.
+//
+// At radius == ATMOS_BOTTOM_KM the model degenerates: the horizon collapses onto the horizontal, the
+// ray/ground test returns its tangent root at t == 0 so `tGround > 0` reads false, and the march runs
+// straight through the planet instead of stopping at it.
+//
+// The floor has to be far larger than it looks, for two reasons that both come from working in km at
+// planet scale:
+//
+//   * one fp32 ULP at 6360 km is 0.488 m, so any altitude below half a metre is not representable at all
+//     — `6360.0001f` IS `6360.0f`, and a floor of a tenth of a metre silently does nothing;
+//   * every horizon test computes `r*r - bottom*bottom`, a subtraction of two numbers near 4.0e7 where
+//     the ULP is 4 km². The exact value is `2*bottom*h`, so at 0.5 m altitude that difference carries 26%
+//     error, at 5 m 0.6%, and only past a few tens of metres does it stop mattering.
+//
+// 50 m is ~100 ULP of margin, leaves the horizon dip accurate to 0.001 degrees, and costs nothing: it is
+// 0.05% of the 100 km shell, and with RtComposite's 100-blocks-per-km scale it only raises cameras below
+// about y = 68 — which it moves by a fifth of a degree of horizon dip, well under the width of the
+// drawn sun. The alternative is reformulating every ray/sphere test to take altitude instead of radius
+// (the exact `2*bottom*h + h*h` form); that is worth doing only if the viewer ever needs to sit within
+// metres of the shell, which nothing here does.
+public static const float MIN_VIEWER_ALTITUDE_KM = 0.05;
+
+/** Cosine of the zenith angle of the ground-tangent direction: the viewer's geometric horizon. */
+public float horizonZenithCos(float viewerRadiusKm) {
+    return -sqrt(max(1.0 - (ATMOS_BOTTOM_KM * ATMOS_BOTTOM_KM)
+            / (viewerRadiusKm * viewerRadiusKm), 0.0));
 }
 
 // ---- Sky-view LUT parameterisation (Hillaire). Azimuth is measured FROM the light, which the dome is
@@ -306,12 +338,16 @@ public struct ScatteringResult {
  * angular size instead of switching it per sample. A binary test is what used to draw a hard terminator
  * line across the upper sky: only a handful of the primary march's samples change state between adjacent
  * pixels, so the transition lands on the sample lattice rather than on the geometry.
+ *
+ * <p>{@code clipGround} false marches straight past the planet to the far side of the shell and adds no
+ * ground bounce. Evaluated exactly along the ground-tangent direction that is the limit of the
+ * above-horizon sky, which is what {@code sky_view.comp} blends the below-horizon rows toward.
  */
 public ScatteringResult integrateScatteredLuminance(
         float3 originKm, float3 dir, float3 lightDir, float3 illuminance,
         float lightAngularRadius, int steps, bool applyPhase,
         bool useMultiScatter, Sampler2D transmittanceLut, Sampler2D multiScatterLut,
-        float groundAlbedo) {
+        float groundAlbedo, bool clipGround) {
     ScatteringResult result;
     result.luminance = float3(0.0);
     result.multiScatAs1 = float3(0.0);
@@ -321,7 +357,7 @@ public ScatteringResult integrateScatteredLuminance(
         return result; // outside the atmosphere looking away from it
     }
     float tGround = raySphereNearest(originKm, dir, ATMOS_BOTTOM_KM);
-    bool hitGround = tGround > 0.0;
+    bool hitGround = clipGround && tGround > 0.0;
     float tMax = hitGround ? tGround : tTop;
 
     float cosTheta = dot(dir, lightDir);
@@ -459,6 +495,7 @@ public struct SkyState {
     public float  airglowLuminance;    // cd/m², the real moonless-night floor (airglow + unresolved stars)
     public float  noonTilt;
     public float  groundAlbedo;
+    public float  horizonSoften;       // radians below the horizon over which the ground fades in
     public float  moonPhaseIndex;      // 0 full .. 4 new
     public float4 sunUv;
     public float4 moonUv;
@@ -480,7 +517,7 @@ public SkyState skyState(WorldPush push) {
     float phaseFixed = push.skyLook1.w;
     s.moonIlluminance = push.skyLook0.y
             * (phaseFixed + (1.0 - phaseFixed) * moonLitFraction(push.skyLook2.w));
-    s.viewerRadiusKm = ATMOS_BOTTOM_KM + push.skyLook2.z;
+    s.viewerRadiusKm = ATMOS_BOTTOM_KM + max(push.skyLook2.z, MIN_VIEWER_ALTITUDE_KM);
     s.sunAngularRadius = push.skyLook1.y;
     s.moonAngularRadius = push.skyLook1.z;
     s.sunDiscHalfAngle = push.skyLook2.x;
@@ -489,6 +526,7 @@ public SkyState skyState(WorldPush push) {
     s.starLuminance = push.celestial.w * push.skyLook0.w;
     s.airglowLuminance = push.skyLook0.z;
     s.groundAlbedo = push.skyLook3.x;
+    s.horizonSoften = push.skyLook3.y;
     s.moonPhaseIndex = push.skyLook2.w;
     s.sunUv = push.sunUv;
     s.moonUv = push.moonUv;

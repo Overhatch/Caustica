@@ -50,10 +50,47 @@ void main(uint3 tid : SV_DispatchThreadID) {
     skyViewLocalDirections(worldLightDir.y, viewZenithCos, lightViewCos, viewDir, lightDir);
 
     float3 origin = float3(0.0, sky.viewerRadiusKm, 0.0);
-    ScatteringResult result = integrateScatteredLuminance(
+    float3 luminance = integrateScatteredLuminance(
             origin, viewDir, lightDir, illuminance, angularRadius,
             SKY_VIEW_STEPS, true, true,
-            transmittanceLut, multiScatterLut, sky.groundAlbedo);
+            transmittanceLut, multiScatterLut, sky.groundAlbedo, true).luminance;
 
-    skyViewImage[tid.xy] = float4(max(result.luminance, float3(0.0)), 1.0);
+    // Horizon softening. The planet's surface is a real discontinuity in the model: a ray one arcminute
+    // above the tangent direction escapes the atmosphere, and one arcminute below it terminates on the
+    // ground a few km away. Measured at 370 m altitude under a 45 degree sun, that step is 9,977 to
+    // 3,155 cd/m² — 1.7 EV across a fraction of a degree — and everything below it is a nearly constant
+    // 2,400 cd/m² Lambertian plate. On screen that is a hard grey line across the distant view.
+    //
+    // Minecraft makes the discontinuity worse than it is on Earth. This ground is fictional: it is not the
+    // world's terrain, which is what the player would actually see there. Beyond render distance the rays
+    // simply escape, so the plate is drawn where a real view would show haze. And since the camera's
+    // altitude now tracks world Y, a player at sea level sits within metres of the shell, where the ground
+    // is reached almost immediately below the horizon and the in-scatter that would otherwise soften it
+    // never accumulates.
+    //
+    // So fade the ground in over `horizonSoften` degrees of dip instead of switching to it. The value the
+    // fade starts from is the ground-tangent direction marched with NO ground clip, which is exactly the
+    // limit the rows above the horizon converge to — so the seam is not merely disguised, it is removed:
+    // the two sides now meet at the same number.
+    float horizonCos = horizonZenithCos(sky.viewerRadiusKm);
+    float dip = acos(clamp(viewZenithCos, -1.0, 1.0)) - acos(clamp(horizonCos, -1.0, 1.0));
+    if (dip > 0.0 && sky.horizonSoften > 0.0) {
+        float3 tangentDir;
+        float3 tangentLight;
+        skyViewLocalDirections(worldLightDir.y, horizonCos, lightViewCos, tangentDir, tangentLight);
+        float3 skyward = integrateScatteredLuminance(
+                origin, tangentDir, tangentLight, illuminance, angularRadius,
+                SKY_VIEW_STEPS, true, true,
+                transmittanceLut, multiScatterLut, sky.groundAlbedo, false).luminance;
+        // Interpolate in LOG luminance, not linearly. The two ends can be 5 EV apart at a low sun, and a
+        // linear blend spends most of its angular range near the bright end and then falls off a cliff in
+        // the last few degrees — trading one hard edge for a slightly softer one. In log space the same
+        // smoothstep spreads the drop evenly in stops, which is both what the eye integrates and what
+        // attenuation through haze actually does (extinction is multiplicative, so it is linear in log).
+        float3 low = log2(max(skyward, float3(1.0e-6)));
+        float3 high = log2(max(luminance, float3(1.0e-6)));
+        luminance = exp2(lerp(low, high, smoothstep(0.0, sky.horizonSoften, dip)));
+    }
+
+    skyViewImage[tid.xy] = float4(max(luminance, float3(0.0)), 1.0);
 }
