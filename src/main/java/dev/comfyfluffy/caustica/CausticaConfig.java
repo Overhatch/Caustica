@@ -83,53 +83,29 @@ public final class CausticaConfig {
 
     private static void writeComments() {
         FILE.setComment("enabled",
-                " Caustica RT renderer configuration.\n"
-                        + " A matching -Dcaustica.* system property overrides the value below.");
+                " Caustica ray-tracing settings. A matching -Dcaustica.* system property overrides a value here.");
         FILE.setComment("terrain",
-                " Render-thread terrain work is bounded by dispatch/result counts per streaming pass.\n"
-                        + " Buffer fill and BLAS/OMM preparation run on workers. max-inflight-sections bounds\n"
-                        + " the complete snapshot -> worker -> GPU build -> publication lifecycle.");
+                " Controls terrain loading. Higher limits can load terrain faster but use more CPU and GPU time.");
         FILE.setComment("frame-generation",
-                " DLSS Frame Generation. Default off; gated additionally by hardware/driver availability.\n"
-                        + " multi-frame-count: frames generated per rendered frame (1 = 2x, 2 = 3x, ...), clamped\n"
-                        + " at runtime to the driver's reported DLSSG.MultiFrameCountMax.");
+                " DLSS Frame Generation. Requires supported NVIDIA hardware and drivers.\n"
+                        + " multi-frame-count sets generated frames per rendered frame (1 = 2x, 2 = 3x, ...).");
         FILE.setComment("reflex",
-                " NVIDIA Reflex (VK_NV_low_latency2). Default off; gated additionally by device support.\n"
-                        + " minimum-interval-us: 0 = no framerate cap (Reflex just paces submission).");
+                " NVIDIA Reflex. Requires supported NVIDIA hardware and drivers.\n"
+                        + " minimum-interval-us controls frame limiting; 0 disables the limit.");
         FILE.setComment("lights",
-                " RIS direct lighting from block emitters (torches, glowstone, lava, ...): per diffuse\n"
-                        + " vertex, resample ris-candidates power-weighted proposals and spend one shadow ray on\n"
-                        + " the survivor. ris-candidates = 0 disables it entirely (emitters just gather on direct\n"
-                        + " hit, same as with no NEE). Power-weighted sampling and the local per-section light\n"
-                        + " grid are always active whenever RIS is on. min-fill-ratio drops emissive footprints\n"
-                        + " below that fraction of their bounding rectangle (speckle/sparse crossed planes), so\n"
-                        + " only reasonably compact glows become lights. stats/dump/dump-radius are debug logging.");
+                " Controls direct lighting from glowing blocks such as torches, glowstone, and lava.\n"
+                        + " Set ris-candidates to 0 to disable it. stats, dump, and dump-radius are debugging options.");
         FILE.setComment("tonemap",
-                " SDR + HDR display-transform: a baked ACES 2.0 output-transform LUT.\n"
-                        + " The versioned look package supplies the\n"
-                        + " scene-referred LMT; gamma is a luminance-preserving artistic\n"
-                        + " correction applied after both LUTs (1 is neutral; below 1 brightens midtones).");
+                " Controls the final image. gamma: 1 is neutral; lower values brighten midtones.");
         FILE.setComment("exposure",
-                " Auto-exposure metering and shaping. Scene values are photometric: metered EV is EV100,\n"
-                        + " and measured in\n"
-                        + " game that is about +17.5 on noon sand, +7 in daylight shade, +1.5 on a lit night\n"
-                        + " street, -8 on a starlit sky. The versioned look package supplies the four\n"
-                        + " measured-EV100:compensation-EV control points and absolute min/max EV guard rails;\n"
-                        + " compensation is how far below\n"
-                        + " the noon reference that scene should RENDER, so a more negative floor means darker\n"
-                        + " nights. adapt-darken / adapt-brighten are adaptation time constants in seconds,\n"
-                        + " applied in EV space and named for what the scene did; darkening is slower on\n"
-                        + " purpose, the way eyes work. manual-ev is on the absolute scale in manual mode,\n"
-                        + " so a daylight scene wants about -17 there,\n"
-                        + " while in auto mode it is an EV bias on top of the curve. sky-weight-cap and\n"
-                        + " emissive-weight-cap bound those populations' final metering shares.");
+                " Controls automatic exposure. manual-ev sets exposure in manual mode and adjusts it in auto mode.\n"
+                        + " adapt-darken and adapt-brighten control adjustment speed in seconds.\n"
+                        + " sky-weight-cap and emissive-weight-cap limit how much bright areas affect exposure.");
         FILE.setComment("hdr",
-                " HDR display output (ST.2084/PQ). When enabled the swapchain is created in PQ automatically\n"
-                        + " (falls back to SDR if the surface doesn't advertise it). ui-nits controls the\n"
-                        + " brightness of SDR-authored UI; peak-nits selects the baked ACES mastering target.");
+                " HDR display output. Requires operating system and display support.\n"
+                        + " ui-nits controls UI brightness; peak-nits must be 500, 1000, 2000, or 4000.");
         FILE.setComment("screenshots",
-                " Screenshot extras. exr-enabled adds a scene-linear ACEScg EXR beside vanilla's F2 PNG\n"
-                        + " while the RT renderer has a completed frame available.");
+                " exr-enabled saves an ACEScg EXR beside the normal F2 PNG while ray tracing is active.");
     }
 
     private static Path resolveConfigPath() {
@@ -826,11 +802,7 @@ public final class CausticaConfig {
 
         }
 
-        /**
-         * Scene-referred ACES Look Transform plus the SDR + HDR display-transform operator: baked LUTs
-         * (see {@code RtToneLut}, {@code tools/bake_display_lut.py}, {@code docs/LOOK_PACKAGES.md}).
-         * No alternate in-shader display operator is retained.
-         */
+        /** Scene-referred look transform and baked SDR/HDR ACES display transforms. */
         public static final class Tonemap {
             public static final FloatSetting GAMMA =
                     clampedFloat("caustica.rt.tonemap.gamma", "tonemap.gamma", 1.0f, 0.1f, 5.0f);
@@ -882,18 +854,11 @@ public final class CausticaConfig {
             public static final BooleanSetting ENABLED = bool("caustica.rt.hdr", "hdr.enabled", false);
             public static final FloatSetting UI_NITS =
                     clampedFloat("caustica.rt.hdr.uiNits", "hdr.ui-nits", 200.0f, 80.0f, 500.0f);
-            public static final FloatSetting PEAK_NITS =
-                    clampedFloat("caustica.rt.hdr.peakNits", "hdr.peak-nits", 1000.0f, 80.0f, 5000.0f);
 
-            /**
-             * ACES 2.0's REC2020 HDR output transform is only available at these fixed mastering-target
-             * peaks (see tools/bake_display_lut.py) — it does not parameterize peak luminance
-             * continuously. The options-menu slider steps through exactly this list; {@link #PEAK_NITS}
-             * stays a plain float so a hand-edited config/system-property value still resolves sensibly
-             * via {@link #nearestPeakNitsStep}, but the LUT that actually gets loaded is always one of
-             * these four.
-             */
+            // ACES HDR LUTs are available only for these mastering targets.
             public static final List<Integer> PEAK_NITS_STEPS = List.of(500, 1000, 2000, 4000);
+            public static final IntSetting PEAK_NITS =
+                    intValue("caustica.rt.hdr.peakNits", "hdr.peak-nits", 1000);
 
             // Surface capability and current swapchain state are separate: HDR controls remain available
             // while the swapchain is native SDR, so enabling HDR can recreate it in PQ.
@@ -938,25 +903,6 @@ public final class CausticaConfig {
                 return UI_NITS.value();
             }
 
-            /**
-             * Snaps an arbitrary configured nits value to the nearest baked LUT target, in log-nits space
-             * (perceived brightness differences are roughly logarithmic). The options-menu slider only
-             * ever writes an exact step, so this mainly matters for a hand-edited config/system-property
-             * value.
-             */
-            public static int nearestPeakNitsStep(float nits) {
-                float logTarget = (float) Math.log(Math.max(nits, 1.0f));
-                int best = PEAK_NITS_STEPS.get(0);
-                float bestDist = Float.MAX_VALUE;
-                for (int candidate : PEAK_NITS_STEPS) {
-                    float dist = Math.abs((float) Math.log(candidate) - logTarget);
-                    if (dist < bestDist) {
-                        bestDist = dist;
-                        best = candidate;
-                    }
-                }
-                return best;
-            }
         }
     }
 

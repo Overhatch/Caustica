@@ -123,8 +123,7 @@ public final class RtComposite {
 
     private static final int WATER_ANCHOR_MASK = 4095;
     private static final double EXPOSURE_TELEPORT_RESET_DISTANCE = 16.0;
-    // The versioned look package owns every photometric anchor and the sky geometry
-    // (docs/LOOK_PACKAGES.md). Its sun illuminance is the
+    // The versioned look package owns every photometric anchor and the sky geometry. Its sun illuminance is the
     // photometric solar constant at the top of the atmosphere; the shader's transmittance LUT brings that
     // to ~117,000 lux under a zenith sun and reddens/dims it through sunset, and because world.rmiss tints
     // the visible disc from the same LUT, the light on terrain and the sky's sunset are one number.
@@ -641,11 +640,8 @@ public final class RtComposite {
             if (sdrToneLut == null) {
                 sdrToneLut = RtToneLut.load(ctx, "sdr_aces2_rec709.bin");
             }
-            // Checked every frame, not just once: Hdr.PEAK_NITS is a live setting (options-menu slider,
-            // no restart), so the loaded HDR LUT must track it. Cheap when unchanged (one int compare);
-            // the actual reload (GPU upload of a new 2MB LUT) only runs on the rare frame the nearest
-            // step actually changes.
-            int wantedHdrNits = CausticaConfig.Rt.Hdr.nearestPeakNitsStep(CausticaConfig.Rt.Hdr.PEAK_NITS.value());
+            // The mastering target is live, so track it each frame.
+            int wantedHdrNits = CausticaConfig.Rt.Hdr.PEAK_NITS.value();
             if (hdrToneLut == null || loadedHdrLutNits != wantedHdrNits) {
                 RtToneLut newHdrLut = RtToneLut.load(ctx, "hdr_aces2_rec2020_" + wantedHdrNits + "nit.bin");
                 if (newHdrLut.size != sdrToneLut.size) {

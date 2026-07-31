@@ -6,10 +6,9 @@ auto-exposure scalar (RtExposure). The default look package's scene-referred LMT
 2.0 output transform, gamut mapping, tone scale, and display transfer function.
 
 One SDR LUT (BT.709, sRGB OETF) plus one HDR LUT per REC2020 mastering-nits target ACES 2.0 ships
-(500/1000/2000/4000 -- see HDR_REC2020_NITS; ACES 2.0 does not parameterize peak luminance
-continuously, this fixed set IS the resolution). RtComposite picks the nearest at LUT-load time to
-match the renderer's continuous Hdr.PEAK_NITS config value. The package LMT is a separate log-to-log
-scene-referred table, so it does not duplicate all five output LUTs.
+(500/1000/2000/4000 -- see HDR_REC2020_NITS). Hdr.PEAK_NITS selects one of the baked HDR LUTs.
+The package LMT is a separate log-to-log scene-referred table, so it does not duplicate all five
+output LUTs.
 
 Requires: pip install opencolorio numpy  (tested with opencolorio 2.5.2 / numpy 2.5.1, Python 3.14)
 
@@ -48,10 +47,7 @@ LOOK_PACKAGE_DIR = (
     Path(__file__).resolve().parent.parent / "src/main/resources/caustica/color/looks/default"
 )
 
-# HDR REC2020 nits: ACES 2.0 does not parameterize peak luminance continuously -- OCIO's builtin
-# registry ships a fixed table of mastering targets (real HDR mastering always worked this way).
-# For BT.2020 that table is exactly {500, 1000, 2000, 4000}. This maps onto the renderer's
-# continuous Hdr.PEAK_NITS (clamped 80-5000) by picking the nearest at LUT-load time.
+# ACES 2.0's built-in BT.2020 transforms use these fixed HDR mastering targets.
 HDR_REC2020_NITS = [500, 1000, 2000, 4000]
 
 LUTS = [

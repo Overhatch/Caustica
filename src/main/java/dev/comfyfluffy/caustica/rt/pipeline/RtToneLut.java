@@ -24,7 +24,7 @@ import java.nio.LongBuffer;
 
 /**
  * A baked ACES color-pipeline 3D LUT (scene-referred look or display transform; see
- * {@code tools/bake_display_lut.py} and {@code docs/LOOK_PACKAGES.md}). RGBA16F, one mip, loaded whole from a classpath
+ * {@code tools/bake_display_lut.py}). RGBA16F, one mip, loaded whole from a classpath
  * resource and uploaded once via a staging buffer — same shape as {@code RtMaterialPageTexture}
  * but 3D and self-describing (the resource carries its own size + shaper range in a small header,
  * see {@link #load}).

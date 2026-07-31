@@ -182,22 +182,19 @@ public final class RtVideoOptions {
             nits -> setting.set(nits.floatValue()));
     }
 
-    // Stepped, not a continuous slider: ACES 2.0's HDR output transform only exists at these fixed
-    // mastering-target peaks (see CausticaConfig.Rt.Hdr.PEAK_NITS_STEPS / tools/bake_display_lut.py) --
-    // any other value would just get snapped to one of these anyway, so the slider shows that directly
-    // instead of implying a value in between does something different. Live: RtComposite hot-swaps the
-    // loaded HDR LUT the next frame this changes, no restart.
+    // Each step selects a baked ACES HDR mastering target. Changes take effect on the next frame.
     private static OptionInstance<Integer> hdrPeak() {
-        FloatSetting setting = CausticaConfig.Rt.Hdr.PEAK_NITS;
+        IntSetting setting = CausticaConfig.Rt.Hdr.PEAK_NITS;
         List<Integer> steps = CausticaConfig.Rt.Hdr.PEAK_NITS_STEPS;
-        int initialPosition = steps.indexOf(CausticaConfig.Rt.Hdr.nearestPeakNitsStep(setting.value()));
+        int initialPeak = steps.contains(setting.value()) ? setting.value() : 1000;
+        int initialPosition = steps.indexOf(initialPeak);
         return new OptionInstance<>(
             "caustica.options.rt.hdrPeak",
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.hdrPeak.tooltip")),
             (caption, position) -> Options.genericValueLabel(caption, Component.literal(steps.get(position) + " nits")),
             new OptionInstance.IntRange(0, steps.size() - 1),
             Math.max(initialPosition, 0),
-            position -> setting.set(steps.get(position).floatValue()));
+            position -> setting.set(steps.get(position)));
     }
 
     private static OptionInstance<Integer> debugView() {

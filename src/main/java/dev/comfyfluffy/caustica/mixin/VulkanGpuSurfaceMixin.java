@@ -357,8 +357,7 @@ public abstract class VulkanGpuSurfaceMixin {
 				|| !RtHdr.metadataExtensionEnabled() || this.swapchain == 0L) {
 			return;
 		}
-		int peakNits = CausticaConfig.Rt.Hdr.nearestPeakNitsStep(
-				CausticaConfig.Rt.Hdr.PEAK_NITS.value());
+		int peakNits = CausticaConfig.Rt.Hdr.PEAK_NITS.value();
 		if (this.caustica$metadataSwapchain == this.swapchain
 				&& this.caustica$metadataPeakNits == peakNits) {
 			return;
