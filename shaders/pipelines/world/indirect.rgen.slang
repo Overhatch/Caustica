@@ -90,6 +90,13 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
 #endif
 
         if (payload.hitT < 0.0) {
+            // A ray still in water should leave through a water interface. A miss instead means the
+            // streamed/open volume has no known exit; do not reinterpret that unknown region as air
+            // and reveal sky.
+            if (medium.current.water) {
+                break;
+            }
+
             // world.rmiss writes sky radiance (gradient + sun/moon disc + stars) into the payload's
             // surface words as a full float3, so this is absolute scene units with nothing to undo. The
             // packed show-celestial flag decides whether this path segment may see the bright disc.

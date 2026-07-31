@@ -23,6 +23,8 @@ import bindings;
 
 static const float3 ACESCG_LUMA = float3(0.2722287168, 0.6740817658, 0.0536895174);
 static const float HALF_MAX = 65504.0;
+static const float BLOOM_ROLLOFF_START = 25.0;
+static const float BLOOM_CONTRIBUTION_CEILING = 50.0;
 
 static const int MODE_PREFILTER = 0;
 static const int MODE_DOWNSAMPLE = 1;
@@ -30,6 +32,18 @@ static const int MODE_UPSAMPLE = 2;
 
 float3 tap(float2 uv, float2 offset) {
     return srcImage.SampleLevel(uv + offset, 0.0).rgb;
+}
+
+float rollOffBloomContribution(float contribution) {
+    if (contribution <= BLOOM_ROLLOFF_START) {
+        return contribution;
+    }
+
+    // Match the linear response and slope at the shoulder, then approach the
+    // ceiling asymptotically so exceptionally bright sources cannot dominate.
+    float shoulder = BLOOM_CONTRIBUTION_CEILING - BLOOM_ROLLOFF_START;
+    return BLOOM_ROLLOFF_START
+        + shoulder * (1.0 - exp(-(contribution - BLOOM_ROLLOFF_START) / shoulder));
 }
 
 // Quadratic soft-knee threshold (Jimenez): below `threshold - knee` nothing passes, above
@@ -42,6 +56,7 @@ float3 prefilter(float3 color) {
     float soft = clamp(luminance - pc.threshold + knee, 0.0, 2.0 * knee);
     soft = soft * soft / (4.0 * knee);
     float contribution = max(luminance - pc.threshold, soft);
+    contribution = rollOffBloomContribution(contribution);
     return color * (contribution / max(luminance, 1.0e-6));
 }
 
