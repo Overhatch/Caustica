@@ -14,9 +14,9 @@ package dev.comfyfluffy.caustica.rt;
  * {@code ACESCG_LUMA} in the metering shaders.
  *
  * <p><b>Status:</b> live through stage U4 — the unit definition, the EV100 metering scale, the light
- * constants ({@code RtComposite.SUN_ILLUMINANCE_TOA} / {@code MOON_ILLUMINANCE_FULL},
- * {@code world.rmiss.slang}'s disc + atmosphere + night constants,
- * {@code RtMaterialRegistry.EMISSIVE_STRENGTH}) and the compensation curve are all on this scale, so
+ * constants ({@code RtLookPackage}'s sun/moon illuminance, block/star/night-sky luminance,
+ * and exposure curve) and {@code world.rmiss.slang}'s derived disc/atmosphere levels are all on
+ * this scale, so
  * the reported EV100 is meant to be the true photometric value and IS comparable against the plan's
  * reference table. Confirming that in game within ~1 EV is stage U5 and has not been done.
  */

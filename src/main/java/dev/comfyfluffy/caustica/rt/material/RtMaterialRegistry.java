@@ -4,6 +4,7 @@ import com.mojang.blaze3d.platform.NativeImage;
 import dev.comfyfluffy.caustica.CausticaMod;
 import dev.comfyfluffy.caustica.mixin.SpriteContentsAccessor;
 import dev.comfyfluffy.caustica.rt.RtContext;
+import dev.comfyfluffy.caustica.rt.RtLookPackage;
 import dev.comfyfluffy.caustica.rt.accel.RtBuffer;
 import dev.comfyfluffy.caustica.rt.gen.MaterialHeaderData;
 import dev.comfyfluffy.caustica.rt.gen.MaterialHeaderData.Float4;
@@ -48,7 +49,7 @@ public final class RtMaterialRegistry {
     // HDR radiance of a full (level-15-equivalent) emitter, modulated by albedo — the single knob
     // (formerly duplicated as a literal in world.rgen.slang and RtLightCollector). Baked into every
     // emissive RtMaterialDesc.emissionStrength at compile time (compileDesc/compileEntityDesc), times
-    // any resource-pack emission.strength multiplier; see header()'s packing and RtMaterialOverrides.
+    // any resource-pack absolute emission.strength_cd_m2 override; see header() and RtMaterialOverrides.
     //
     // Photometric: cd/m² of the emitting surface, per {@link dev.comfyfluffy.caustica.rt.RtSceneUnits}
     // (docs/SCENE_UNITS_PLAN.md §3).
@@ -68,7 +69,9 @@ public final class RtMaterialRegistry {
     // because it is what the emitter contributes to the room, and it happens to land a torch's small
     // emissive footprint near 40 lm — a candle to a small torch — so the single knob is defensible until
     // the per-material audit (SCENE_UNITS_PLAN §6 Q4) actually happens. That audit is still not done.
-    public static final float EMISSIVE_STRENGTH = 2000.0f;
+    public static float defaultEmissionLuminanceCdM2() {
+        return RtLookPackage.current().lighting().blockEmissionLuminanceCdM2();
+    }
     private static final int EMISSION_STRENGTH_SHIFT = 8;
     private static final int EMISSION_STRENGTH_MASK = 65535;
     // Ceiling of the 16-bit fixed-point strength field, raised with the baseline above. HALF_MAX is the
@@ -485,7 +488,8 @@ public final class RtMaterialRegistry {
         } else {
             emissionSource = RtMaterialDesc.EmissionSource.NONE;
         }
-        float emissionStrength = emissionSource == RtMaterialDesc.EmissionSource.NONE ? 0.0f : EMISSIVE_STRENGTH;
+        float emissionStrength = emissionSource == RtMaterialDesc.EmissionSource.NONE
+                ? 0.0f : defaultEmissionLuminanceCdM2();
         return new RtMaterialDesc(model, source, features, roughness, metalness, ior, transmission,
                 emissionSource, emissionStrength, emissionSummary);
     }
@@ -497,7 +501,8 @@ public final class RtMaterialRegistry {
                 : (authored ? RtMaterialDesc.Source.LAB_PBR : RtMaterialDesc.Source.HEURISTIC);
         RtMaterialDesc.EmissionSource emissionSource = (features & FEATURE_SPEC) != 0
                 ? RtMaterialDesc.EmissionSource.LAB_PBR : RtMaterialDesc.EmissionSource.NONE;
-        float emissionStrength = emissionSource == RtMaterialDesc.EmissionSource.NONE ? 0.0f : EMISSIVE_STRENGTH;
+        float emissionStrength = emissionSource == RtMaterialDesc.EmissionSource.NONE
+                ? 0.0f : defaultEmissionLuminanceCdM2();
         return new RtMaterialDesc(MODEL_OPAQUE, source, features, RtMaterials.ENTITY_ROUGH, 0.0f,
                 1.0f, 0.0f, emissionSource, emissionStrength, emissionSummary);
     }
@@ -543,7 +548,7 @@ public final class RtMaterialRegistry {
                                              float albedoInvDu, float albedoInvDv) {
         int packedFeatures = desc.features() | (entry.maxLod() << MAX_LOD_SHIFT);
         // Packed unconditionally (0 for non-emissive materials): the shader multiplies surface.emission
-        // by this every time, regardless of source, so EMISSIVE_STRENGTH never needs its own copy there.
+        // by this every time, regardless of source, so the package baseline needs no shader copy.
         int strength = Math.round(Math.min(MAX_EMISSION_STRENGTH, desc.emissionStrength())
                 * (EMISSION_STRENGTH_MASK / MAX_EMISSION_STRENGTH));
         packedFeatures |= strength << EMISSION_STRENGTH_SHIFT;

@@ -6,6 +6,7 @@ import dev.comfyfluffy.caustica.CausticaMod;
 import dev.comfyfluffy.caustica.rt.RtContext;
 import dev.comfyfluffy.caustica.rt.RtDebugLabels;
 import dev.comfyfluffy.caustica.rt.RtSceneUnits;
+import dev.comfyfluffy.caustica.rt.RtLookPackage;
 import dev.comfyfluffy.caustica.rt.accel.RtBuffer;
 import dev.comfyfluffy.caustica.rt.accel.RtImage;
 import org.lwjgl.system.MemoryStack;
@@ -305,11 +306,11 @@ public final class RtExposure {
                 + ", centerWeight=" + autoConfig.centerWeightSigma + "/" + autoConfig.centerWeightFloor
                 + ", skyCap=" + autoConfig.skyWeightCap
                 + ", emissiveCap=" + autoConfig.emissiveWeightCap
-                + ", curve=" + CausticaConfig.Rt.Exposure.CURVE.get() + ")"
+                + ", curve=" + CausticaConfig.Rt.Exposure.curve() + ")"
                 : Float.toString(manualExposureScale());
         CausticaMod.LOGGER.info("RT display exposure: mode={}, exposure={}, "
-                        + "tonemap=aces2.0(look={},gamma={}), DLSS-RR exposure=NGX auto",
-                mode.configName, exposureText, CausticaConfig.Rt.Tonemap.LOOK.get(),
+                        + "tonemap=aces2.0(lookPackage={},gamma={}), DLSS-RR exposure=NGX auto",
+                mode.configName, exposureText, RtLookPackage.current().id(),
                 CausticaConfig.Rt.Tonemap.GAMMA.value());
     }
 
@@ -405,7 +406,7 @@ public final class RtExposure {
     }
 
     private ExposureCurve curveConfig() {
-        String spec = CausticaConfig.Rt.Exposure.CURVE.get();
+        String spec = CausticaConfig.Rt.Exposure.curve();
         if (cachedCurve != null && Objects.equals(cachedCurveSpec, spec)) {
             return cachedCurve;
         }
@@ -413,9 +414,8 @@ public final class RtExposure {
         try {
             parsed = parseCurve(spec);
         } catch (IllegalArgumentException e) {
-            CausticaMod.LOGGER.warn("Invalid exposure curve '{}'; using default '{}': {}",
-                    spec, CausticaConfig.Rt.Exposure.DEFAULT_CURVE, e.getMessage());
-            parsed = parseCurve(CausticaConfig.Rt.Exposure.DEFAULT_CURVE);
+            throw new IllegalStateException("Invalid exposure curve in look package '"
+                    + RtLookPackage.current().id() + "': " + spec, e);
         }
         cachedCurveSpec = spec;
         cachedCurve = parsed;

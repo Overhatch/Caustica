@@ -19,7 +19,7 @@ import java.util.Map;
 
 /** Optional resource-pack material properties compiled ahead of LabPBR and engine heuristics. */
 public final class RtMaterialOverrides {
-    public static final int FORMAT = 1;
+    public static final int FORMAT = 2;
     public static final RtMaterialOverrides EMPTY = new RtMaterialOverrides(List.of());
 
     private final List<Rule> rules;
@@ -77,12 +77,16 @@ public final class RtMaterialOverrides {
             roughness = optionalFloat(base, "roughness");
             metalness = optionalFloat(base, "metalness");
         }
-        Float emissionStrength = null;
+        Float emissionStrengthCdM2 = null;
         if (root.has("emission")) {
             JsonObject emission = root.getAsJsonObject("emission");
-            emissionStrength = optionalFloat(emission, "strength");
+            if (emission.has("strength")) {
+                throw new IllegalArgumentException(
+                        "emission.strength was removed; use absolute emission.strength_cd_m2");
+            }
+            emissionStrengthCdM2 = optionalFloat(emission, "strength_cd_m2");
             if (emission.has("color_source") && !"albedo".equals(emission.get("color_source").getAsString())) {
-                throw new IllegalArgumentException("format 1 only supports emission color_source=albedo");
+                throw new IllegalArgumentException("format 2 only supports emission color_source=albedo");
             }
         }
         Float transmission = null;
@@ -98,17 +102,19 @@ public final class RtMaterialOverrides {
         if (ior != null && (!Float.isFinite(ior) || ior <= 0.0f)) {
             throw new IllegalArgumentException("transmission.ior must be positive");
         }
-        if (emissionStrength != null && !Float.isFinite(emissionStrength)) {
-            throw new IllegalArgumentException("emission.strength must be finite");
+        if (emissionStrengthCdM2 != null && !Float.isFinite(emissionStrengthCdM2)) {
+            throw new IllegalArgumentException("emission.strength_cd_m2 must be finite");
         }
-        if (emissionStrength != null && (emissionStrength < 0.0f || emissionStrength > 5.0f)) {
-            float clamped = Math.max(0.0f, Math.min(5.0f, emissionStrength));
-            CausticaMod.LOGGER.warn("RT material override {}: emission.strength {} out of range [0,5], clamping to {}",
-                    source, emissionStrength, clamped);
-            emissionStrength = clamped;
+        if (emissionStrengthCdM2 != null
+                && (emissionStrengthCdM2 < 0.0f || emissionStrengthCdM2 > 65504.0f)) {
+            float clamped = Math.max(0.0f, Math.min(65504.0f, emissionStrengthCdM2));
+            CausticaMod.LOGGER.warn("RT material override {}: emission.strength_cd_m2 {} out of range "
+                            + "[0,65504], clamping to {}",
+                    source, emissionStrengthCdM2, clamped);
+            emissionStrengthCdM2 = clamped;
         }
         return new Rule(source, sprite, block, model, roughness, metalness, ior, transmission,
-                emissionStrength);
+                emissionStrengthCdM2);
     }
 
     public List<Rule> rules() {
@@ -118,12 +124,11 @@ public final class RtMaterialOverrides {
     public record Rule(Identifier source, Identifier sprite, Identifier block, Integer model,
                        Float roughness, Float metalness, Float ior, Float transmission,
                        /**
-                        * Multiplier on whatever emission the material naturally resolves to (LabPBR
-                        * {@code _s}, heuristic mask, or state-uniform block light) — NOT a replacement.
-                        * A material with no natural emission stays unlit no matter this value; this
-                        * cannot make a block glow that wasn't already emissive.
+                        * Absolute emitting-surface luminance in cd/m² for whatever emission mask the
+                        * material naturally resolves to (LabPBR {@code _s}, heuristic mask, or
+                        * state-uniform block light). A material with no natural emission stays unlit.
                         */
-                       Float emissionStrength) {
+                       Float emissionStrengthCdM2) {
         boolean matchesSprite(TextureAtlasSprite value) {
             return value != null && sprite.equals(value.contents().name());
         }
@@ -145,10 +150,11 @@ public final class RtMaterialOverrides {
                     : (model != null ? defaultIor(nextModel) : base.ior());
             float nextTransmission = transmission != null ? transmission
                     : (model != null ? defaultTransmission(nextModel) : base.transmission());
-            // A multiplier on the base's already-resolved strength (0 when emissionSource is NONE):
-            // this can brighten/dim an existing emitter but never light up a genuinely non-emissive one.
-            float nextEmissionStrength = emissionStrength != null
-                    ? base.emissionStrength() * emissionStrength : base.emissionStrength();
+            // An absolute emitting-surface luminance. It can replace the level of an existing
+            // LabPBR/heuristic/state emitter but does not create an emission mask where none exists.
+            float nextEmissionStrength = emissionStrengthCdM2 != null
+                    && base.emissionSource() != RtMaterialDesc.EmissionSource.NONE
+                    ? emissionStrengthCdM2 : base.emissionStrength();
             return new RtMaterialDesc(nextModel, RtMaterialDesc.Source.OVERRIDE, base.features(),
                     nextRoughness, nextMetalness, nextIor, nextTransmission,
                     base.emissionSource(), nextEmissionStrength, base.emissionSummary());

@@ -62,7 +62,8 @@ final class RtLightCollector {
      * when U2/U3 moved the baseline to physical units — exactly the mutual-tuning coupling
      * {@code docs/SCENE_UNITS_PLAN.md} exists to remove.
      */
-    private static final float LE_LUM_EPS = 0.001f * RtMaterialRegistry.EMISSIVE_STRENGTH;
+    private static final float LE_LUM_EPS =
+            0.001f * RtMaterialRegistry.defaultEmissionLuminanceCdM2();
 
     /** Samples per axis over the quad's (a,b) parameter square; matches the emission grid resolution. */
     private static final int SCAN = RtEmissionGrid.SIZE;
@@ -207,7 +208,7 @@ final class RtLightCollector {
 
             // Rectangle-mean radiance: every emissive sample lies inside the rectangle, so
             // sum/rectSamples preserves the quad's total emissive power at rectArea. emissionStrength()
-            // is the material's final HDR strength (EMISSIVE_STRENGTH baseline * any JSON multiplier,
+            // is the material's final HDR luminance (look-package baseline or absolute JSON override,
             // baked in RtMaterialRegistry) — the single knob shared with world.rchit's direct-hit shading.
             // Texture-grid averages are already linear BT.709; captured vertex/biome tint is still
             // sRGB-encoded. Combine in the authored basis, use its invariant Y for the membership gate,

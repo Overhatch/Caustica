@@ -55,6 +55,9 @@ public struct WorldPush {
     public float4   celestial;        // xyz celestial rotation axis, w star angle (rad)
     public float4   sunUv;            // vanilla sun sprite atlas rect (u0,v0,u1,v1)
     public float4   moonUv;           // vanilla current-moon-phase sprite atlas rect
+    // Versioned look-package light anchors. x sun illuminance (lux), y full-moon illuminance
+    // (lux), z night-sky luminance (cd/m²), w atmosphere saturation.
+    public float4   lookLighting;
     public float4   waterParams;      // xyz linear ACEScg camera-biome water tint, w wave time (s)
     public float4   waterAnchor;      // xy world-stable wave-domain anchor, z previous wave time
     public float4x4 curViewProj;      // forward camera-relative view-projection
@@ -229,7 +232,7 @@ public static const uint MATERIAL_FEATURE_SPEC = 1u;
 public static const uint MATERIAL_FEATURE_NORMAL = 2u;
 public static const uint MATERIAL_FEATURE_HEURISTIC_EMISSION = 4u;
 public static const uint MATERIAL_FEATURE_STOCHASTIC_ALPHA = 16u;
-// Final HDR emission strength (EMISSIVE_STRENGTH baseline * any JSON override multiplier), baked in Java
+// Final HDR emitting-surface luminance (look-package baseline or absolute JSON cd/m² override), baked in Java
 // at material-compile time (RtMaterialRegistry) and packed here as a 16-bit fraction of the max — every
 // emissive material carries a value (0 for non-emissive), not just resource-pack-overridden ones, so the
 // full features word's spare 16 bits (8..23) go to it instead of the 8 bits the old override-only field used.

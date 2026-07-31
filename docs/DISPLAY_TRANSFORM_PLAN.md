@@ -52,7 +52,7 @@ aware of the other is very unlikely to be the intended amount of compression.
 **D4 — the old commented-out `applyLook`** was dead display-space code guarding a real question:
 base AgX was intentionally flat/low-contrast, and the "washed out" impression was partly that —
 not a bug. It was removed with the ACES 2.0 migration. A real scene-referred ACES Look Transform
-layer has since replaced it; see [ACES_LOOKS.md](ACES_LOOKS.md).
+layer has since replaced it; see [LOOK_PACKAGES.md](LOOK_PACKAGES.md).
 
 ## 2. Target: ACES 2.0 output transform, baked to a LUT
 
@@ -204,10 +204,9 @@ likely reason it wasn't obviously visible before this LUT swap: AgX's failure mo
 "washes to white," ACES's is "stays hued but the hue can be slightly wrong" — the latter is a
 side effect of ACES rendering highlights *more* faithfully, not less.
 
-The runtime-selectable ACES Look Transform system in [ACES_LOOKS.md](ACES_LOOKS.md) now
-provides the correct place for a hue-specific correction if one is needed. The default
-`caustica-soft` look modestly reduces saturation, but does not claim to fully correct this
-ACES 2.0 hue characteristic.
+The versioned look-package LMT in [LOOK_PACKAGES.md](LOOK_PACKAGES.md) provides the correct
+place for a hue-specific correction if one is needed. The default package uses the authored
+Resolve curve.
 Mitigation: retuning exposure (§S3 in [EXPOSURE_PLAN.md](EXPOSURE_PLAN.md)) so lava's brightest
 pixels don't sit pinned at the top of the tone-scale directly reduces how often this is visible —
 check lava/glowstone specifically once that tuning pass happens, before deciding whether this needs

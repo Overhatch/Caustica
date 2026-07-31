@@ -252,7 +252,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // specular/dielectric bounces (showCelestial true) still add it, since no emitter NEE happened
         // along those. Emitters NOT in the light buffer (sparse/sub-threshold footprints, entities) are
         // never NEE-sampled, so they always gather — bit-identical to the no-NEE path, no energy lost.
-        // Emission is already the full HDR strength (EMISSIVE_STRENGTH baseline * any override
+        // Emission is already the full HDR luminance (look-package baseline or absolute cd/m² override
         // multiplier baked in Java at material-compile time — see MaterialHeader.features packing).
         float emission = payloadEmission();
         // One gate drives both the RIS call below and the direct-hit emission suppression here. They must

@@ -32,11 +32,6 @@ float pow2(float x) { return x * x; }
 // shared atmosphereTransmittance march, which lands ~117,000 lux under a zenith sun: the standard
 // "clear noon ≈ 100,000 lux" reference, 0.23 EV high, reddening and dimming into the horizon on exactly
 // the curve the visible sky follows.
-static const float SUN_ILLUMINANCE = 128000.0; // lux, normal incidence, top of atmosphere
-static const float MOON_ILLUMINANCE = 10.0;     // lux, full moon at the ground
-// Vibrance applied to the atmosphere in-scatter only (not discs/stars/night ambient): luminance-
-// preserving, so GI energy is unchanged.
-static const float SKY_SATURATION = 1.2;
 // VISIBLE disc half-angles, matched to vanilla: the sun/moon quads are drawn at half-width 30/20 at
 // distance 100 → half-angle = atan(0.30) / atan(0.20). Decoupled from the NEE light radius (≈0.6°).
 static const float SUN_DISC_TAN  = 0.30;           // vanilla sun quad, half-width 30 at distance 100
@@ -63,16 +58,11 @@ static const float MOON_DISC_SOLID_ANGLE = 4.0 * MOON_DISC_TAN * MOON_DISC_TAN; 
 // transmittanceToSpace(dir) at draw time.
 static const float3 SUN_DISC_TINT  = float3(1.038768, 0.995486, 0.930563); // (24, 23, 21.5) at luma 1
 static const float3 MOON_DISC_TINT = float3(0.922219, 1.003591, 1.193460); // (1.7, 1.85, 2.2) at luma 1
-static const float3 SUN_DISC_RADIANCE  = SUN_DISC_TINT * (SUN_ILLUMINANCE / SUN_DISC_SOLID_ANGLE);
-static const float3 MOON_DISC_RADIANCE = MOON_DISC_TINT * (MOON_ILLUMINANCE / MOON_DISC_SOLID_ANGLE);
 // Faint night-sky ambient so the night isn't pure black where the atmosphere in-scatter falls to zero:
 // airglow plus integrated starlight, ~0.0005 cd/m². Tints renormalised to luma 1 like the discs, so the
 // blue cast survives the level change. Whether a moonless night wants an explicit gameplay floor on top
 // of this is a design decision the plan defers (§6 Q3) — this constant is now the physical value, not
 // the fudge that used to stand in for one.
-static const float  NIGHT_LUMINANCE = 0.2;
-static const float3 NIGHT_ZENITH  = float3(0.490173, 0.980344, 2.695945) * NIGHT_LUMINANCE;
-static const float3 NIGHT_HORIZON = float3(0.676517, 0.992225, 2.029550) * NIGHT_LUMINANCE;
 
 // ---- Physically-based atmosphere (Nishita / O'Neil single scattering + ozone absorption). A view ray
 // is marched through the atmospheric shell; at each step the transmittance toward the sun is integrated
@@ -96,7 +86,6 @@ static const float  OZONE_WIDTH_H  = 15000.0;
 // separate atmosphere-only scale. Back-of-envelope this puts the zenith sky near 1e4 cd/m² at noon,
 // the right order for the ~5,000 cd/m² reference; SCENE_UNITS_PLAN §6 Q1 wants one in-game reading to
 // confirm the march carries no baked-in normalisation.
-static const float  SUN_INTENSITY = SUN_ILLUMINANCE;
 static const int    ATMOS_PRIMARY_STEPS = 16;
 static const int    ATMOS_LIGHT_STEPS   = 8;
 
@@ -112,7 +101,7 @@ float2 raySphere(float3 o, float3 d, float r) {
     return float2(-b - disc, -b + disc);
 }
 
-float3 atmosphere(float3 dir, float3 sunDir) {
+float3 atmosphere(float3 dir, float3 sunDir, float sunIlluminance) {
     float3 orig = float3(0.0, PLANET_R + 2000.0, 0.0);
     float2 t = raySphere(orig, dir, ATMOS_R);
     if (t.x > t.y) return float3(0.0, 0.0, 0.0);      // ray misses the atmosphere entirely
@@ -161,7 +150,7 @@ float3 atmosphere(float3 dir, float3 sunDir) {
         }
         tCur += segLen;
     }
-    return SUN_INTENSITY * (sumR * RAY_BETA * phaseR + sumM * MIE_BETA * phaseM);
+    return sunIlluminance * (sumR * RAY_BETA * phaseR + sumM * MIE_BETA * phaseM);
 }
 
 // Extinction from the camera to space along `dir` (Rayleigh + Mie + ozone; the sun-below-horizon case
@@ -273,6 +262,10 @@ void main(inout Payload payload) {
     float VdotS = dot(dir, sd);
     float sunUp = clamp((SdotU + 0.0625) / 0.125, 0.0, 1.0); // 0 well below horizon .. 1 above
     float starBrightness = worldPush.lightRadiance.w;
+    float sunIlluminance = worldPush.lookLighting.x;
+    float moonIlluminance = worldPush.lookLighting.y;
+    float nightLuminance = worldPush.lookLighting.z;
+    float skySaturation = worldPush.lookLighting.w;
     bool showCelestial = (payload.flags & PAYLOAD_SHOW_CELESTIAL) != 0u;
 
     // Physically-based in-scattering: blue zenith, bright/desaturated horizon, warm Mie halo + red
@@ -291,13 +284,15 @@ void main(inout Payload payload) {
         mdir = fl > 1.0e-4 ? float3(flat2.x / fl, 0.0, flat2.y / fl) : float3(1.0, 0.0, 0.0);
         downFade = exp(dir.y * 3.0);
     }
-    float3 col = atmosphere(mdir, sd);
+    float3 col = atmosphere(mdir, sd, sunIlluminance);
     // This atmosphere model is parameterized in its original linear BT.709 basis. Apply its
     // luminance-preserving look there, then cross into the ACEScg transport basis once at output.
     float lum = dot(col, float3(0.2126, 0.7152, 0.0722));
-    col = max(lerp(float3(lum, lum, lum), col, SKY_SATURATION), float3(0.0, 0.0, 0.0));
+    col = max(lerp(float3(lum, lum, lum), col, skySaturation), float3(0.0, 0.0, 0.0));
     float up = clamp(dir.y, 0.0, 1.0);
-    float3 nightAmbient = lerp(NIGHT_HORIZON, NIGHT_ZENITH, up);
+    float3 nightZenith = float3(0.490173, 0.980344, 2.695945) * nightLuminance;
+    float3 nightHorizon = float3(0.676517, 0.992225, 2.029550) * nightLuminance;
+    float3 nightAmbient = lerp(nightHorizon, nightZenith, up);
     col += nightAmbient * (1.0 - day);
     col *= downFade;
     col += stars(dir, starBrightness, VdotS, worldPush.celestial);
@@ -316,7 +311,8 @@ void main(inout Payload payload) {
             // survives, the halo collapses to ~0.
             float core = pow(clamp(dot(t, t) * 0.45, 0.0, 1.0), 6.0);
             // transmittanceToSpace reddens+dims the disc through the sunset on the sky's own curve.
-            col += SUN_DISC_RADIANCE * transmittanceToSpace(dir) * core * sunUp;
+            float3 sunDiscRadiance = SUN_DISC_TINT * (sunIlluminance / SUN_DISC_SOLID_ANGLE);
+            col += sunDiscRadiance * transmittanceToSpace(dir) * core * sunUp;
         }
         // Same horizon gate as the sun: with the soft-horizon change, below-horizon rays no longer clip
         // at the planet, so without this the moon disc would stay visible after it set.
@@ -328,7 +324,8 @@ void main(inout Payload payload) {
             // Moon: a smoothstep contrast ramp suppresses the faint halo while keeping the lit phase
             // shape from the texture. The transmittance tint gives a warm amber moon at moonrise/set.
             float m = smoothstep(0.0, 1.0, min(length(t), 1.0)) * 1.3;
-            col += MOON_DISC_RADIANCE * transmittanceToSpace(dir) * t * m * pow2(1.0 - day) * moonUp;
+            float3 moonDiscRadiance = MOON_DISC_TINT * (moonIlluminance / MOON_DISC_SOLID_ANGLE);
+            col += moonDiscRadiance * transmittanceToSpace(dir) * t * m * pow2(1.0 - day) * moonUp;
         }
     }
 

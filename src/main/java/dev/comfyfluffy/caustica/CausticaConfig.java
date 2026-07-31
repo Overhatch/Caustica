@@ -58,7 +58,7 @@ public final class CausticaConfig {
         Object[] touch = {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
-            Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.LOOK, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
+            Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
             Rt.Hdr.ENABLED, Ngx.PATH,
         };
     }
@@ -106,22 +106,21 @@ public final class CausticaConfig {
                         + " only reasonably compact glows become lights. stats/dump/dump-radius are debug logging.");
         FILE.setComment("tonemap",
                 " SDR + HDR display-transform: a baked ACES 2.0 output-transform LUT (see\n"
-                        + " docs/DISPLAY_TRANSFORM_PLAN.md). look selects a scene-referred ACES Look\n"
-                        + " Transform before the output transform; gamma is a luminance-preserving artistic\n"
+                        + " docs/DISPLAY_TRANSFORM_PLAN.md). The versioned look package supplies the\n"
+                        + " scene-referred LMT; gamma is a luminance-preserving artistic\n"
                         + " correction applied after both LUTs (1 is neutral; below 1 brightens midtones).");
         FILE.setComment("exposure",
                 " Auto-exposure metering and shaping (see docs/EXPOSURE_PLAN.md). Scene values are\n"
                         + " photometric since docs/SCENE_UNITS_PLAN.md U2: metered EV is EV100, and measured in\n"
                         + " game that is about +17.5 on noon sand, +7 in daylight shade, +1.5 on a lit night\n"
-                        + " street, -8 on a starlit sky. curve is either 'full' for legacy full adaptation or\n"
-                        + " four measured-EV100:compensation-EV control points; compensation is how far below\n"
+                        + " street, -8 on a starlit sky. The versioned look package supplies the four\n"
+                        + " measured-EV100:compensation-EV control points and absolute min/max EV guard rails;\n"
+                        + " compensation is how far below\n"
                         + " the noon reference that scene should RENDER, so a more negative floor means darker\n"
                         + " nights. adapt-darken / adapt-brighten are adaptation time constants in seconds,\n"
                         + " applied in EV space and named for what the scene did; darkening is slower on\n"
-                        + " purpose, the way eyes work. min-ev/max-ev bound the ABSOLUTE exposure multiplier\n"
-                        + " (about -17 at noon, +3.5 on a starlit sky) and are guard rails, not the controller\n"
-                        + " -- widening max-ev lets exposure run away on a dark frame. manual-ev is on that\n"
-                        + " same absolute scale in manual mode, so a daylight scene wants about -17 there,\n"
+                        + " purpose, the way eyes work. manual-ev is on the absolute scale in manual mode,\n"
+                        + " so a daylight scene wants about -17 there,\n"
                         + " while in auto mode it is an EV bias on top of the curve. sky-weight-cap and\n"
                         + " emissive-weight-cap bound those populations' final metering shares.");
         FILE.setComment("hdr",
@@ -733,12 +732,8 @@ public final class CausticaConfig {
             // curve can separate them -- what does is the asymmetric temporal adaptation above, which
             // holds a low exposure when you step from noon sun into shade. That is a real limit of this
             // controller, not a tuning miss.
-            public static final String DEFAULT_CURVE = "-2:-3, 2:-2.0, 8:0.0, 15:1.2";
             public static final StringSetting MODE =
                     string("caustica.rt.exposure.mode", "exposure.mode", "auto", Exposure::sanitizeMode);
-            public static final StringSetting CURVE =
-                    string("caustica.rt.exposure.curve", "exposure.curve", DEFAULT_CURVE,
-                            Exposure::sanitizeCurveSpec);
             public static final FloatSetting MANUAL_EV =
                     clampedFloat("caustica.rt.exposure.manualEv", "exposure.manual-ev",
                             0.0f, -15.0f, 15.0f);
@@ -755,10 +750,6 @@ public final class CausticaConfig {
             // the whole frame go black because the sun is in shot is worse than clamping it. The sky
             // metering cap already bounds the sun's share, so in practice this only engages on a
             // near-full-screen sun.
-            public static final FloatSetting MIN_EV =
-                    finiteFloat("caustica.rt.exposure.minEv", "exposure.min-ev", -15.0f);
-            public static final FloatSetting MAX_EV =
-                    finiteFloat("caustica.rt.exposure.maxEv", "exposure.max-ev", -2.0f);
             /**
              * Adaptation time constants in seconds, applied in EV space by the resolve. Named for what
              * the SCENE did: walking into a dark cave is "darken" (exposure has to rise), stepping back
@@ -809,16 +800,20 @@ public final class CausticaConfig {
             }
 
             public static float minEv() {
-                return Math.min(MIN_EV.value(), MAX_EV.value());
+                return dev.comfyfluffy.caustica.rt.RtLookPackage.current().exposure().minEv();
             }
 
             public static float maxEv() {
-                return Math.max(MIN_EV.value(), MAX_EV.value());
+                return dev.comfyfluffy.caustica.rt.RtLookPackage.current().exposure().maxEv();
+            }
+
+            public static String curve() {
+                return dev.comfyfluffy.caustica.rt.RtLookPackage.current().exposure().curve();
             }
 
             /**
-             * Sanity bound on an exposure multiplier, not an artistic one. Widened with {@link #MIN_EV}
-             * / {@link #MAX_EV} in U2: the old {@code 1e-4} floor sat above the 3.8e-6 that {@code -18
+             * Sanity bound on an exposure multiplier, not an artistic one. The old {@code 1e-4} floor
+             * sat above the 3.8e-6 that {@code -18
              * EV} asks for, so it would have truncated a physically ordinary noon exposure. The
              * controller's own min-ev/max-ev is what actually bounds this; here we only reject garbage.
              */
@@ -836,45 +831,19 @@ public final class CausticaConfig {
                 return "auto";
             }
 
-            private static String sanitizeCurveSpec(String value) {
-                if (value == null || value.isBlank()) {
-                    return DEFAULT_CURVE;
-                }
-                String trimmed = value.trim();
-                return "full".equalsIgnoreCase(trimmed) ? "full" : trimmed;
-            }
         }
 
         /**
          * Scene-referred ACES Look Transform plus the SDR + HDR display-transform operator: baked LUTs
-         * (see {@code RtToneLut}, {@code tools/bake_display_lut.py}, {@code docs/ACES_LOOKS.md}).
+         * (see {@code RtToneLut}, {@code tools/bake_display_lut.py}, {@code docs/LOOK_PACKAGES.md}).
          * Replaced the original in-shader AgX + per-channel HDR rolloff after an in-game A/B; that code
          * is gone, not just disabled — see {@code docs/DISPLAY_TRANSFORM_PLAN.md} plan step 4.
          */
         public static final class Tonemap {
-            public static final List<String> LOOKS =
-                    List.of("none", "caustica-soft", "resolve-curve",
-                            "agx-tone", "arri-reveal-tone", "red-tone");
-            public static final StringSetting LOOK =
-                    string("caustica.rt.tonemap.look", "tonemap.look", "caustica-soft", Tonemap::sanitizeLook);
             public static final FloatSetting GAMMA =
                     clampedFloat("caustica.rt.tonemap.gamma", "tonemap.gamma", 1.0f, 0.1f, 5.0f);
 
             private Tonemap() {
-            }
-
-            public static String lookResource(String look) {
-                return "none".equals(look) ? null : "look_" + look + ".bin";
-            }
-
-            private static String sanitizeLook(String value) {
-                if (value != null) {
-                    String normalized = value.trim().toLowerCase(java.util.Locale.ROOT);
-                    if (LOOKS.contains(normalized)) {
-                        return normalized;
-                    }
-                }
-                return "caustica-soft";
             }
         }
 

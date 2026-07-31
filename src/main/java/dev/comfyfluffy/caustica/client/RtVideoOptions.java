@@ -43,7 +43,6 @@ public final class RtVideoOptions {
         List<OptionInstance<?>> options = new ArrayList<>(List.of(
             exposureMode(),
             manualEv(),
-            look(),
             gamma(),
             spp(),
             maxBounces(),
@@ -101,17 +100,6 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(50, 150),
             Math.clamp(Math.round(setting.value() * 100.0f), 50, 150),
             hundredths -> setting.set(hundredths / 100.0f));
-    }
-
-    private static OptionInstance<String> look() {
-        StringSetting setting = CausticaConfig.Rt.Tonemap.LOOK;
-        return new OptionInstance<>(
-            "caustica.options.rt.look",
-            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.look.tooltip")),
-            (caption, value) -> Component.translatable("caustica.options.rt.look." + value),
-            new OptionInstance.Enum<>(CausticaConfig.Rt.Tonemap.LOOKS, Codec.STRING),
-            setting.get(),
-            setting::set);
     }
 
     private static OptionInstance<Integer> spp() {

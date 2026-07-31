@@ -168,7 +168,7 @@ Surface evaluateMaterial(MaterialHeader header, float2 atlasUv, float lod, float
             surface.emission = surface0.b * fallbackEmission;
         }
     }
-    // Final HDR emission strength (EMISSIVE_STRENGTH baseline * any JSON multiplier), baked in Java at
+    // Final HDR emitting-surface luminance (look-package baseline or absolute JSON cd/m² override), baked in Java at
     // material-compile time and packed unconditionally — see MATERIAL_EMISSION_STRENGTH_SHIFT. 0 for
     // non-emissive materials, so this multiply is always safe (and a no-op) when nothing above ran.
     float strength = float((header.features >> MATERIAL_EMISSION_STRENGTH_SHIFT)

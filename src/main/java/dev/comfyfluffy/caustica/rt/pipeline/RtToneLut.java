@@ -24,7 +24,7 @@ import java.nio.LongBuffer;
 
 /**
  * A baked ACES color-pipeline 3D LUT (scene-referred look or display transform; see
- * {@code tools/bake_display_lut.py} and {@code docs/ACES_LOOKS.md}). RGBA16F, one mip, loaded whole from a classpath
+ * {@code tools/bake_display_lut.py} and {@code docs/LOOK_PACKAGES.md}). RGBA16F, one mip, loaded whole from a classpath
  * resource and uploaded once via a staging buffer — same shape as {@code RtMaterialPageTexture}
  * but 3D and self-describing (the resource carries its own size + shaper range in a small header,
  * see {@link #load}).
@@ -65,9 +65,16 @@ public final class RtToneLut {
         return sampler;
     }
 
-    /** Loads {@code /caustica/rt/luts/<resourceName>} (e.g. {@code "look_caustica-soft.bin"}). */
+    /** Loads a display-transform resource from {@code /caustica/rt/luts/}. */
     public static RtToneLut load(RtContext ctx, String resourceName) {
-        String path = "/caustica/rt/luts/" + resourceName;
+        return loadResource(ctx, "/caustica/rt/luts/" + resourceName);
+    }
+
+    /** Loads an absolute classpath LUT resource, including an LMT owned by a look package. */
+    public static RtToneLut loadResource(RtContext ctx, String path) {
+        if (path == null || !path.startsWith("/")) {
+            throw new IllegalArgumentException("LUT resource path must be absolute: " + path);
+        }
         ByteBuffer data = readResource(path);
         try {
             data.order(ByteOrder.LITTLE_ENDIAN);
@@ -89,7 +96,7 @@ public final class RtToneLut {
                         + data.remaining() + " (size=" + size + ")");
             }
             ByteBuffer texels = data.slice(HEADER_BYTES, (int) (expectedBytes - HEADER_BYTES));
-            return upload(ctx, size, loStops, hiStops, texels, resourceName);
+            return upload(ctx, size, loStops, hiStops, texels, path);
         } finally {
             MemoryUtil.memFree(data);
         }

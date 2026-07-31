@@ -129,17 +129,13 @@ public final class RtComposite {
     // 18%-grey noon surface. It is therefore independent of SUN_ANGULAR_RADIUS, which only jitters the
     // shadow ray and so only sets penumbra softness.
     //
-    // SUN_ILLUMINANCE_TOA is the photometric solar constant (top of atmosphere); the shared
+    // The package's sun illuminance is the photometric solar constant (top of atmosphere); the shared
     // atmosphereTransmittance march below brings it to ~117,000 lux at a zenith sun and reddens/dims it
     // through sunset on exactly the curve the visible sky follows. world.rmiss anchors the atmosphere
     // in-scatter and the drawn sun disc on the same figure.
-    private static final float SUN_ILLUMINANCE_TOA = 128000.0f;
-    /** Full-moon ground illuminance, lux. Current phase controls 90%; the remaining 10% is fixed. */
-    private static final float MOON_ILLUMINANCE_FULL = 5.0f;
-    private static final float MOON_LIGHT_FIXED_FRACTION = 0.10f;
-    private static final float MOON_LIGHT_PHASE_FRACTION = 0.90f;
+    private static final RtLookPackage LOOK = RtLookPackage.current();
     // Cool moonlight tint, the previous (0.30, 0.36, 0.55) ratio renormalised to BT.709 luma 1 so it
-    // sets colour only and MOON_ILLUMINANCE_FULL alone sets level.
+    // sets colour only and the package's moon illuminance alone sets level.
     private static final float MOON_TINT_R = 0.831112f;
     private static final float MOON_TINT_G = 0.997335f;
     private static final float MOON_TINT_B = 1.523706f;
@@ -212,7 +208,6 @@ public final class RtComposite {
     private RtToneLut hdrToneLut;
     private RtToneLut lookLut;
     private int loadedHdrLutNits = -1;
-    private String loadedLook;
     private RtImage output;
     // Packed primary -> indirect continuations. Pass A is fixed at one sample and owns two records per
     // render pixel (base + optional transmission); Pass B resamples them at the configured SPP.
@@ -422,7 +417,7 @@ public final class RtComposite {
                             exposureMetadata.evScene(),
                             exposureMetadata.evTarget(),
                             exposureMetadata.evApplied(),
-                            CausticaConfig.Rt.Tonemap.LOOK.get(),
+                            LOOK.id() + "@" + LOOK.packageVersion(),
                             frameCounter));
             return true;
         } finally {
@@ -642,29 +637,18 @@ public final class RtComposite {
                 hdrToneLut = newHdrLut;
                 loadedHdrLutNits = wantedHdrNits;
             }
-            // ACES Look Transforms are scene-referred and shared by SDR/HDR. Keep one independently
-            // switchable look LUT ahead of both output-transform LUTs; "none" binds the SDR LUT as a
-            // harmless descriptor placeholder and disables the sample through the push constant.
-            String wantedLook = CausticaConfig.Rt.Tonemap.LOOK.get();
-            if (!wantedLook.equals(loadedLook)) {
-                String resource = CausticaConfig.Rt.Tonemap.lookResource(wantedLook);
-                RtToneLut newLookLut = resource != null ? RtToneLut.load(ctx, resource) : null;
-                if (newLookLut != null
-                        && (newLookLut.shaperLoStops != sdrToneLut.shaperLoStops
-                        || newLookLut.shaperHiStops != sdrToneLut.shaperHiStops)) {
-                    newLookLut.destroy();
-                    throw new IllegalStateException("look/output LUT shaper mismatch for " + resource);
-                }
-                if (loadedLook != null) {
-                    // The descriptor set itself may still be in use even when the previous mode was
-                    // "none" (binding 6 then held the SDR placeholder), so every live change must drain.
-                    ctx.waitIdle();
-                }
-                if (lookLut != null) {
+            // The scene-referred LMT is part of the immutable versioned look package and shared by
+            // both SDR and HDR output transforms. It cannot be switched independently from the
+            // package's exposure and photometric anchors.
+            if (lookLut == null) {
+                lookLut = RtToneLut.loadResource(ctx, LOOK.lmtResource());
+                if (lookLut.shaperLoStops != sdrToneLut.shaperLoStops
+                        || lookLut.shaperHiStops != sdrToneLut.shaperHiStops) {
                     lookLut.destroy();
+                    lookLut = null;
+                    throw new IllegalStateException("look/output LUT shaper mismatch for "
+                            + LOOK.lmtResource());
                 }
-                lookLut = newLookLut;
-                loadedLook = wantedLook;
             }
             // A resource reload re-stitches the block atlas. We've already torn down the world pipeline
             // (onResourceReloadStart) so nothing references the old atlas, but MC's deferred free keeps the
@@ -682,7 +666,7 @@ public final class RtComposite {
             // displayPipeline's descriptor set; this covers the case ensureOutput early-returned but
             // hdrToneLut/lookLut may have been hot-swapped just above; setImages is a no-op if the bound
             // views already match, so this is cheap on every other frame.
-            RtToneLut boundLookLut = lookLut != null ? lookLut : sdrToneLut;
+            RtToneLut boundLookLut = lookLut;
             displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                     sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
                     boundLookLut.view(), boundLookLut.sampler());
@@ -985,7 +969,7 @@ public final class RtComposite {
             worldPipeline.setStorageImage(output.view);
             bindGuideImages();
         }
-        RtToneLut boundLookLut = lookLut != null ? lookLut : sdrToneLut;
+        RtToneLut boundLookLut = lookLut;
         displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                 sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
                 boundLookLut.view(), boundLookLut.sampler());
@@ -1134,6 +1118,11 @@ public final class RtComposite {
                     sky.celestial(),
                     sky.sunUv(),
                     sky.moonUv(),
+                    new Float4(
+                            LOOK.lighting().sunIlluminanceLux(),
+                            LOOK.lighting().moonIlluminanceLux(),
+                            LOOK.lighting().nightSkyLuminanceCdM2(),
+                            LOOK.lighting().skySaturation()),
                     waterParams,
                     waterAnchor,
                     mvCurProjView,
@@ -1239,7 +1228,7 @@ public final class RtComposite {
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.displayMap")) {
                 displayPipeline.dispatch(cmd, displayW, displayH, CausticaConfig.Rt.Hdr.enabled(),
                         sdrToneLut.size, CausticaConfig.Rt.Tonemap.GAMMA.value(), loadedHdrLutNits,
-                        lookLut != null, lookLut != null ? lookLut.size : 1);
+                        true, lookLut.size);
             }
             hdrWrittenThisFrame = CausticaConfig.Rt.Hdr.enabled();
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // display output visible to debug composite
@@ -1338,7 +1327,8 @@ public final class RtComposite {
         // SkyRenderer uses), so the starfield wheels about the celestial pole tied to world time and
         // fades in/out at dusk/dawn exactly like vanilla. STAR_ANGLE is in degrees -> radians.
         starAngle = probe.getValue(EnvironmentAttributes.STAR_ANGLE, partial) * (float) (Math.PI / 180.0);
-        starBrightness = probe.getValue(EnvironmentAttributes.STAR_BRIGHTNESS, partial) * 10.0f;
+        starBrightness = probe.getValue(EnvironmentAttributes.STAR_BRIGHTNESS, partial)
+                * LOOK.lighting().starLuminanceCdM2();
         dayFactor = smoothstep(-0.08f, 0.10f, sunY);
         float[] trans = new float[3];
         if (sunY > -0.05f) {
@@ -1352,9 +1342,9 @@ public final class RtComposite {
             atmosphereTransmittance(sunX, sunY, sunZ, trans);
             float fade = smoothstep(-0.05f, 0.005f, sunY);
             lx = sunX; ly = sunY; lz = sunZ;
-            rr = SUN_ILLUMINANCE_TOA * trans[0] * fade;
-            rg = SUN_ILLUMINANCE_TOA * trans[1] * fade;
-            rb = SUN_ILLUMINANCE_TOA * trans[2] * fade;
+            rr = LOOK.lighting().sunIlluminanceLux() * trans[0] * fade;
+            rg = LOOK.lighting().sunIlluminanceLux() * trans[1] * fade;
+            rb = LOOK.lighting().sunIlluminanceLux() * trans[2] * fade;
             lightRadius = CausticaConfig.Rt.Composite.SUN_ANGULAR_RADIUS.value();
         } else {
             // Moon: dim cool light, ramping up from zero at the sun→moon handoff (sunY = -0.05, where
@@ -1363,7 +1353,7 @@ public final class RtComposite {
             // the fixed 10% floor keeps new-moon directional light present.
             atmosphereTransmittance(moonX, moonY, moonZ, trans);
             float moonStrength = smoothstep(0.04f, 0.22f, -sunY);
-            float moonPeak = MOON_ILLUMINANCE_FULL * moonLightScale(moonPhase);
+            float moonPeak = LOOK.lighting().moonIlluminanceLux() * moonLightScale(moonPhase);
             lx = moonX; ly = moonY; lz = moonZ;
             rr = MOON_TINT_R * moonPeak * moonStrength * trans[0];
             rg = MOON_TINT_G * moonPeak * moonStrength * trans[1];
@@ -1388,7 +1378,8 @@ public final class RtComposite {
 
     /** Directional moon-light scale: 10% fixed floor plus 90% from the visible phase. */
     static float moonLightScale(float moonPhaseIndex) {
-        return MOON_LIGHT_FIXED_FRACTION + MOON_LIGHT_PHASE_FRACTION * moonLitFraction(moonPhaseIndex);
+        return LOOK.lighting().moonPhaseFixedFraction()
+                + LOOK.lighting().moonPhaseFraction() * moonLitFraction(moonPhaseIndex);
     }
 
     /**
@@ -1549,7 +1540,6 @@ public final class RtComposite {
             lookLut = null;
         }
         loadedHdrLutNits = -1;
-        loadedLook = null;
         if (hdrCompositePipeline != null) {
             hdrCompositePipeline.destroy();
             hdrCompositePipeline = null;
