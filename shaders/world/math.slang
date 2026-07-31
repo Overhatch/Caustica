@@ -3,6 +3,7 @@
 
 import world_common;
 import world_core;
+import sky;
 
 public float luminance(float3 c) { return dot(c, ACESCG_LUMA); }
 
@@ -135,14 +136,15 @@ public float3 cosineDir(float3 n, inout uint s) {
     return normalize(local.x * t + local.y * b + local.z * n);
 }
 
-// Soft shadows: sample a direction within the light's SQUARE angular extent about `axis`. MC's
-// sun/moon are square quads, so the NEE shadow ray samples a square (not a cone) — the same square the
-// visible disc in world.rmiss uses, built from the same celestial tangent frame (right = arc-travel
-// direction, from worldPush.celestial.xyz). Averaged over frames by DLSS-RR this yields soft penumbrae that
-// widen with occluder distance (contact-hardening) for free. halfAngle <= 0 ⇒ exact direction (hard).
+// Soft shadows: sample a direction within the light's SQUARE angular extent about `axis`. MC's sun/moon
+// are square quads, so the NEE shadow ray samples a square (not a cone) — the same square, in the same
+// horizon-levelled tangent frame (sky.celestialSquareFrame), that world.rmiss draws the visible body in.
+// Averaged over frames by DLSS-RR this yields soft penumbrae that widen with occluder distance
+// (contact-hardening) for free. halfAngle <= 0 ⇒ exact direction (hard).
 public float3 sampleSquare(float3 axis, float halfAngle, inout uint s) {
-    float3 right = normalize(cross(axis, worldPush.celestial.xyz));
-    float3 up = cross(right, axis);
+    float3 right;
+    float3 up;
+    celestialSquareFrame(axis, right, up);
     float t = tan(halfAngle);
     float u = (rndf(s) * 2.0 - 1.0) * t;
     float v = (rndf(s) * 2.0 - 1.0) * t;

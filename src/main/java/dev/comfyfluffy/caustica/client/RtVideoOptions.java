@@ -46,7 +46,6 @@ public final class RtVideoOptions {
             gamma(),
             spp(),
             maxBounces(),
-            sunSize(),
             entities(),
             particles(),
             waterWaves(),
@@ -122,19 +121,6 @@ public final class RtVideoOptions {
             new OptionInstance.IntRange(2, 8),
             Math.clamp(setting.value(), 2, 8),
             setting::set);
-    }
-
-    private static OptionInstance<Integer> sunSize() {
-        // Stored in radians via the degrees->radians sanitizer; the slider works in tenths of a degree.
-        FloatSetting setting = CausticaConfig.Rt.Composite.SUN_ANGULAR_RADIUS;
-        int initialTenths = Math.clamp(Math.round((float) Math.toDegrees(setting.value()) * 10.0f), 1, 50);
-        return new OptionInstance<>(
-            "caustica.options.rt.sunSize",
-            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.sunSize.tooltip")),
-            (caption, tenths) -> Options.genericValueLabel(caption, Component.literal(String.format("%.1f°", tenths / 10.0))),
-            new OptionInstance.IntRange(1, 50),
-            initialTenths,
-            tenths -> setting.set(tenths / 10.0f));
     }
 
     private static OptionInstance<Boolean> entities() {

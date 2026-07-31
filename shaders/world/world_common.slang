@@ -30,6 +30,13 @@ public struct WorldPushConstants {
     public uint frameIndex;
 };
 
+// Minimal push block for the compute passes that only need to dereference the frame's WorldPush: the sky
+// LUT bakes read sun/moon/look state from the same BDA slot the trace does, so there is exactly one
+// per-frame source of sky state and no way for the LUT and the frame it shades to disagree.
+public struct PushAddr {
+    public uint64_t worldPushAddr;
+};
+
 // Block-breaking overlay entry: xyz = breaking block position (rebased, same space as gl_WorldRay*),
 // w = bindless entityAlbedoTex slot of the destroy-stage texture.
 public struct BreakEntry {
@@ -48,19 +55,24 @@ public struct WorldPush {
     public float2   jitter;
     public uint     flags;            // bit0 submerged, bit4 waves (bit1 was PBR-toggle, now unconditional)
     public uint     maxBounces;
-    public float4   sunDir;           // xyz true sun direction, w dayFactor 0..1
-    public float4   lightDir;         // xyz active NEE light dir, w square half-angle (rad)
-    public float4   lightRadiance;    // xyz scene-linear ACEScg HDR radiance, w star brightness
-    public float4   moonDir;          // xyz moon direction, w moonPhase (0 full .. 4 new)
-    public float4   celestial;        // xyz celestial rotation axis, w star angle (rad)
+    // ---- Sky state. Only what the CPU alone can know: Minecraft's four eased celestial angles (the
+    // 26.2 timeline drives them through a cubic-bezier ease and a datapack may replace the track, so
+    // they are read from the attribute probe rather than re-derived from the tick), its star brightness,
+    // the moon phase, and the look package's immutable constants. Every direction, colour, level and
+    // transmittance is derived in sky.slang from these — no atmosphere maths runs on the CPU any more.
+    public float4   celestial;        // x sun angle (rad), y moon angle, z star angle, w MC star brightness 0..1
+    // x sun illuminance (lux, top of atmosphere), y full-moon illuminance (lux), z night airglow
+    // (cd/m²), w star luminance anchor (cd/m²).
+    public float4   skyLook0;
+    // x noon south tilt (rad), y sun NEE half-angle (rad), z moon NEE half-angle (rad),
+    // w moon-phase fixed light fraction.
+    public float4   skyLook1;
+    // x drawn sun half-angle (rad), y drawn moon half-angle (rad), z viewer altitude (km),
+    // w moon phase index (0 full .. 4 new).
+    public float4   skyLook2;
+    public float4   skyLook3;         // x ground albedo, yzw reserved
     public float4   sunUv;            // vanilla sun sprite atlas rect (u0,v0,u1,v1)
     public float4   moonUv;           // vanilla current-moon-phase sprite atlas rect
-    // Versioned look-package light anchors. x sun illuminance (lux), y full-moon illuminance
-    // (lux), z night-sky luminance (cd/m²), w atmosphere saturation.
-    public float4   lookLighting;
-    // Twilight approximation: x broad multiple-scattering fill luminance (cd/m²),
-    // y altitude-aware planet-shadow softness (sin of angular width), zw reserved.
-    public float4   lookTwilight;
     public float4   waterParams;      // xyz linear ACEScg camera-biome water tint, w wave time (s)
     public float4   waterAnchor;      // xy world-stable wave-domain anchor, z previous wave time
     public float4x4 curViewProj;      // forward camera-relative view-projection

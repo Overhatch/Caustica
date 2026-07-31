@@ -1,242 +1,41 @@
-// Ray miss = sky. Per-frame sky data comes from the WorldPush BDA buffer addressed by the 8-byte push
-// constant. The shader writes full sky radiance (Rayleigh/Mie/ozone atmosphere + transmittance-tinted
-// sun/moon discs + soft horizon + starfield) into the payload's surface words, which world.rgen reads
-// back with payloadSky() and accumulates.
+// Ray miss = sky. Two sky-view LUT fetches (sun slice + moon slice) give the whole atmosphere; the disc
+// sprites, the starfield and the night airglow floor are added on top. Everything physical lives in
+// sky.slang, shared verbatim with the LUT bakes, so the sky a ray sees and the sky the LUT holds cannot
+// diverge.
 //
-// Every constant here is photometric (cd/m² and lux) and derived from a published figure — see
-// docs/SCENE_UNITS_PLAN.md §3. Absolute sky spans far more than a half can hold, which is why those
-// payload words are hand-packed and the miss view of them is a full float3.
+// What is NOT here any more: the per-ray Nishita march (now amortised into the per-frame LUT), the
+// twilight fill term, the night gradient constants, the saturation boost, the below-horizon ray-flatten
+// hack, and the `sunUp`/`moonUp` disc gates. Each was a blend seam; real multiple scattering and a
+// horizon-dense LUT parameterisation replace all of them (see sky.slang's header).
 //
-// Celestial discs (sun/moon) are gated by a packed payload flag, which raygen sets per-ray from the path
-// state: true on the primary ray and after every specular/dielectric bounce (so the sun/moon show up in
-// water/glass/metal reflections + refractions), false after a diffuse vertex did sun/moon NEE (so the
-// disc isn't double-counted against the direct light → fireflies). The atmosphere gradient + stars are
-// added on every miss (any bounce): stars aren't a NEE light, so they never double-count.
+// Celestial discs are gated by a packed payload flag, which raygen sets per-ray from the path state: true
+// on the primary ray and after every specular/dielectric bounce (so the sun/moon appear in water, glass
+// and metal reflections/refractions), false after a diffuse vertex did sun/moon NEE — otherwise the disc
+// would be counted twice against the direct light and show up as fireflies. The atmosphere and the stars
+// are added on every miss at any bounce: stars are not a NEE light, so they never double-count.
 import world_common;
+import sky;
 
 [[vk::push_constant]] WorldPushConstants pc;
 
-// Vanilla celestials atlas (sun + moon-phase sprites), bound by RtComposite. Sampled with an explicit
-// LOD (no derivatives in a miss shader). The sun/moon discs are drawn from its real texels.
+// Vanilla celestials atlas (sun + moon-phase sprites), bound by RtComposite. Sampled with an explicit LOD
+// (a miss shader has no derivatives). Keeping the real sprites means a resource pack's sun and moon still
+// show up, which a procedural disc would silently drop.
 [[vk::binding(9, 0)]] Sampler2D celestialsAtlas;
+[[vk::binding(10, 0)]] Sampler2D skyViewLut;
+[[vk::binding(11, 0)]] Sampler2D transmittanceLut;
 
-static const float PI = 3.14159265359;
-float pow2(float x) { return x * x; }
-
-// ---- Photometric anchors (docs/SCENE_UNITS_PLAN.md §3). A scene value is luminance in cd/m², so every
-// celestial constant below is derived from one of these two published figures and is individually
-// checkable, instead of only being meaningful relative to its neighbours.
-//
-// SUN_ILLUMINANCE is the photometric solar constant — illuminance on a surface normal to the sun at the
-// top of the atmosphere. RtComposite.skyPush anchors the NEE sunlight on the SAME figure, times the
-// shared atmosphereTransmittance march, which lands ~117,000 lux under a zenith sun: the standard
-// "clear noon ≈ 100,000 lux" reference, 0.23 EV high, reddening and dimming into the horizon on exactly
-// the curve the visible sky follows.
-// VISIBLE disc half-angles, matched to vanilla: the sun/moon quads are drawn at half-width 30/20 at
-// distance 100 → half-angle = atan(0.30) / atan(0.20). Decoupled from the NEE light radius (≈0.6°).
-static const float SUN_DISC_TAN  = 0.30;           // vanilla sun quad, half-width 30 at distance 100
-static const float MOON_DISC_TAN = 0.20;           // vanilla moon quad, half-width 20 at distance 100
-static const float SUN_DISC_HALF_ANGLE  = 0.29146; // atan(SUN_DISC_TAN)
-static const float MOON_DISC_HALF_ANGLE = 0.19740; // atan(MOON_DISC_TAN)
-// squareBody projects a gnomonic square spanning 2·tan(halfAngle) on a side, so the drawn body covers
-// (2·tan)² sr.
-static const float SUN_DISC_SOLID_ANGLE  = 4.0 * SUN_DISC_TAN * SUN_DISC_TAN;   // 0.36 sr
-static const float MOON_DISC_SOLID_ANGLE = 4.0 * MOON_DISC_TAN * MOON_DISC_TAN; // 0.16 sr
-// Disc radiance is derived from illuminance and the solid angle the body is actually DRAWN at
-// (L = E / Ω), deliberately not from its true surface luminance. Vanilla's sun sprite is ~62× the real
-// sun's angular radius, i.e. ~3900× its solid angle; painting it at the physical 1.6e9 cd/m² would put
-// ~3900× the sun's power into every path that sees the disc. Specular and dielectric bounces do see it,
-// and they already took the sun through NEE, so that double-count would go from harmless today (the
-// disc is far dimmer than the NEE light) to dominant, with fireflies off every glossy lobe. Deriving
-// from illuminance keeps the drawn disc's total power equal to the sun's at whatever size it is drawn,
-// and costs nothing visually — 3.6e5 cd/m² still sits ~15 EV over an 18%-grey noon surface, which the
-// ACES 2.0 output transform renders as pure white exactly like 1.6e9 would. The `core`/`m` sprite
-// shaping below only removes power from here, never adds, so the estimate stays conservative.
-//
-// The tints are the previous hand-picked warm/cool ratios renormalised to BT.709 luma 1, so they set
-// colour only and never level; the visible warm/red cast still comes from multiplying by
-// transmittanceToSpace(dir) at draw time.
-static const float3 SUN_DISC_TINT  = float3(1.038768, 0.995486, 0.930563); // (24, 23, 21.5) at luma 1
-static const float3 MOON_DISC_TINT = float3(0.922219, 1.003591, 1.193460); // (1.7, 1.85, 2.2) at luma 1
-// Faint night-sky ambient so the night isn't pure black where the atmosphere in-scatter falls to zero:
-// airglow plus integrated starlight, ~0.0005 cd/m². Tints renormalised to luma 1 like the discs, so the
-// blue cast survives the level change. Whether a moonless night wants an explicit gameplay floor on top
-// of this is a design decision the plan defers (§6 Q3) — this constant is now the physical value, not
-// the fudge that used to stand in for one.
-
-// ---- Physically-based atmosphere (Nishita / O'Neil single scattering + ozone absorption). A view ray
-// is marched through the atmospheric shell; at each step the transmittance toward the sun is integrated
-// (a second, shorter march), giving Rayleigh (blue-sky / red-sunset) + Mie (sun halo) in-scattered
-// radiance. World up = +Y; the camera sits a couple km above a spherical planet. Output is HDR in the
-// same units as tracePath.
-static const float  PLANET_R   = 6371000.0;
-static const float  ATMOS_R    = 6471000.0;        // 100 km shell
-static const float3 RAY_BETA   = float3(5.5e-6, 13.0e-6, 22.4e-6); // Rayleigh scattering at sea level
-static const float  MIE_BETA   = 21.0e-6;          // Mie scattering at sea level
-static const float  RAY_SCALE_H = 8000.0;          // Rayleigh density scale height
-static const float  MIE_SCALE_H = 1200.0;          // Mie density scale height
-static const float  MIE_G      = 0.758;            // Mie anisotropy (forward-scattering)
-// Ozone: absorption only (no scattering), tent-shaped density peaking at 25 km. Its green-heavy
-// absorption keeps the zenith deep blue at noon and turns twilight purple-orange.
-static const float3 OZONE_BETA = float3(0.650e-6, 1.881e-6, 0.085e-6);
-static const float  OZONE_CENTER_H = 25000.0;
-static const float  OZONE_WIDTH_H  = 15000.0;
-// The march takes irradiance in and produces radiance out (β has units 1/m, the phase functions 1/sr),
-// so the same photometric solar constant the NEE light uses is the physically correct input here — no
-// separate atmosphere-only scale. Back-of-envelope this puts the zenith sky near 1e4 cd/m² at noon,
-// the right order for the ~5,000 cd/m² reference; SCENE_UNITS_PLAN §6 Q1 wants one in-game reading to
-// confirm the march carries no baked-in normalisation.
-static const int    ATMOS_PRIMARY_STEPS = 16;
-static const int    ATMOS_LIGHT_STEPS   = 8;
-
-float ozoneDensity(float h) { return max(0.0, 1.0 - abs(h - OZONE_CENTER_H) / OZONE_WIDTH_H); }
-
-// Smaller root of ray vs sphere of radius r centred at origin (no-hit handled by x > y).
-float2 raySphere(float3 o, float3 d, float r) {
-    float b = dot(o, d);
-    float c = dot(o, o) - r * r;
-    float disc = b * b - c;
-    if (disc < 0.0) return float2(1.0e9, -1.0e9);
-    disc = sqrt(disc);
-    return float2(-b - disc, -b + disc);
-}
-
-// Fraction of the solar disc visible above the local geometric horizon at an atmosphere sample.
-// The horizon dips with altitude, so upper-atmosphere samples remain lit after ground sunset. A
-// finite transition replaces the old binary ray-vs-planet test, which drew a hard Earth-shadow
-// boundary across the sky when only a few primary-march samples changed state.
-float solarVisibility(float3 p, float3 sunDir, float shadowSoftnessSin) {
-    float radius = length(p);
-    float horizonDipSin = sqrt(max(1.0 - (PLANET_R * PLANET_R) / (radius * radius), 0.0));
-    float clearance = dot(p / radius, sunDir) + horizonDipSin;
-    float softness = max(shadowSoftnessSin, 1.0e-4);
-    return smoothstep(-softness, softness, clearance);
-}
-
-float3 atmosphere(float3 dir, float3 sunDir, float sunIlluminance, float shadowSoftnessSin) {
-    float3 orig = float3(0.0, PLANET_R + 2000.0, 0.0);
-    float2 t = raySphere(orig, dir, ATMOS_R);
-    if (t.x > t.y) return float3(0.0, 0.0, 0.0);      // ray misses the atmosphere entirely
-    float tStart = max(t.x, 0.0);
-    float tEnd = t.y;
-    float2 tGround = raySphere(orig, dir, PLANET_R);
-    if (tGround.x > 0.0) tEnd = min(tEnd, tGround.x); // clip the march at the planet surface
-    float segLen = (tEnd - tStart) / float(ATMOS_PRIMARY_STEPS);
-
-    float mu = dot(dir, sunDir);
-    float phaseR = 3.0 / (16.0 * PI) * (1.0 + mu * mu);
-    float g = MIE_G;
-    float phaseM = 3.0 / (8.0 * PI) * ((1.0 - g * g) * (1.0 + mu * mu))
-                 / ((2.0 + g * g) * pow(max(1.0 + g * g - 2.0 * g * mu, 0.0), 1.5));
-
-    float3 sumR = float3(0.0, 0.0, 0.0), sumM = float3(0.0, 0.0, 0.0);
-    float odR = 0.0, odM = 0.0, odO = 0.0;            // view-ray optical depth accumulators
-    float tCur = tStart;
-    for (int i = 0; i < ATMOS_PRIMARY_STEPS; i++) {
-        float3 p = orig + dir * (tCur + segLen * 0.5);
-        float h = length(p) - PLANET_R;
-        float hr = exp(-h / RAY_SCALE_H) * segLen;
-        float hm = exp(-h / MIE_SCALE_H) * segLen;
-        odR += hr; odM += hm; odO += ozoneDensity(h) * segLen;
-
-        float visibility = solarVisibility(p, sunDir, shadowSoftnessSin);
-        if (visibility <= 0.0) {
-            tCur += segLen;
-            continue;
-        }
-
-        // March toward the sun to accumulate the light-ray optical depth (transmittance to space).
-        float2 tl = raySphere(p, sunDir, ATMOS_R);
-        float lightEnd = tl.y;
-        // Near the geometric terminator the solar centre ray can hit the planet while a fraction of
-        // the finite disc remains visible. End the optical-depth integration at the surface rather
-        // than restoring the old binary "blocked" result; solarVisibility supplies the continuous
-        // visible fraction for that penumbra.
-        float2 lightGround = raySphere(p, sunDir, PLANET_R);
-        if (lightGround.x > 0.0) {
-            lightEnd = min(lightEnd, lightGround.x);
-        }
-        float segLenL = lightEnd / float(ATMOS_LIGHT_STEPS);
-        float tlCur = 0.0, odRL = 0.0, odML = 0.0, odOL = 0.0;
-        for (int j = 0; j < ATMOS_LIGHT_STEPS; j++) {
-            float3 pl = p + sunDir * (tlCur + segLenL * 0.5);
-            float hl = length(pl) - PLANET_R;
-            hl = max(hl, 0.0);
-            odRL += exp(-hl / RAY_SCALE_H) * segLenL;
-            odML += exp(-hl / MIE_SCALE_H) * segLenL;
-            odOL += ozoneDensity(hl) * segLenL;
-            tlCur += segLenL;
-        }
-        float3 tau = RAY_BETA * (odR + odRL) + MIE_BETA * 1.1 * (odM + odML)
-                   + OZONE_BETA * (odO + odOL);
-        float3 atten = exp(-tau);
-        sumR += hr * atten * visibility;
-        sumM += hm * atten * visibility;
-        tCur += segLen;
-    }
-    return sunIlluminance * (sumR * RAY_BETA * phaseR + sumM * MIE_BETA * phaseM);
-}
-
-// Low-frequency approximation of the higher-order scattering omitted by the single-scattering
-// march. Real twilight does not leave the anti-solar hemisphere black: light scattered through the
-// still-sunlit upper atmosphere is scattered again into the Earth's shadow. Keep this broad and
-// low-energy; the resolved sun-facing color still comes from the physical atmosphere above.
-float3 twilightMultipleScattering(float3 dir, float3 sunDir, float fillLuminance) {
-    float sunNearOrAboveHorizon =
-        smoothstep(-0.20, -0.02, sunDir.y) * (1.0 - smoothstep(0.04, 0.35, sunDir.y));
-    float broadHorizon = 0.55 + 0.45 * (1.0 - abs(dir.y));
-    // Use the full [-1,1] angular range, not a sun-facing hemisphere gate. Higher-order scattering
-    // mainly lifts the Earth's shadow; the resolved single-scattering march already supplies the
-    // strong warm color around the sun. Low-saturation unit-luminance tints avoid painting half the
-    // dome yellow while retaining a gentle cool-to-neutral gradient.
-    float sunward = smoothstep(0.0, 1.0, 0.5 + 0.5 * dot(dir, sunDir));
-    float3 shadowTint = float3(0.865, 1.018, 1.222);
-    float3 neutralTint = float3(1.035, 0.998, 0.936);
-    float3 tint = lerp(shadowTint, neutralTint, sunward);
-    float shadowLift = lerp(1.0, 0.65, sunward);
-    return tint * (fillLuminance * sunNearOrAboveHorizon * broadHorizon * shadowLift);
-}
-
-// Extinction from the camera to space along `dir` (Rayleigh + Mie + ozone; the sun-below-horizon case
-// needs no explicit planet test — a grazing/downward path picks up enormous optical depth, so the
-// transmittance rolls to zero smoothly on its own). Tints the sun/moon discs at draw time, and is ported
-// verbatim to RtComposite.writeSky so the NEE sunlight on terrain follows the identical sunset curve —
-// the disc, the sky, and the light can never disagree.
-float3 transmittanceToSpace(float3 dir) {
-    float3 orig = float3(0.0, PLANET_R + 2000.0, 0.0);
-    float2 t = raySphere(orig, dir, ATMOS_R);
-    if (t.y <= 0.0) return float3(1.0, 1.0, 1.0);
-    float segLen = t.y / float(ATMOS_LIGHT_STEPS);
-    float odR = 0.0, odM = 0.0, odO = 0.0;
-    for (int i = 0; i < ATMOS_LIGHT_STEPS; i++) {
-        float3 p = orig + dir * (segLen * (float(i) + 0.5));
-        float h = length(p) - PLANET_R;
-        odR += exp(-h / RAY_SCALE_H) * segLen;
-        odM += exp(-h / MIE_SCALE_H) * segLen;
-        odO += ozoneDensity(h) * segLen;
-    }
-    return exp(-(RAY_BETA * odR + MIE_BETA * 1.1 * odM + OZONE_BETA * odO));
-}
-
-// Build the celestial body's square tangent frame: `right` along the arc-travel direction, `up`
-// perpendicular within the sky. Shared by the visible disc and the NEE square sampling in raygen.
-void celestialFrame(float3 dir, float3 celestialAxis, out float3 right, out float3 up) {
-    right = normalize(cross(dir, celestialAxis));
-    up = cross(right, dir);
-}
-
-// Gnomonic projection of `dir` into the body's tangent square, in units of the half-angle. local ∈
-// [-1,1]² is inside the square. Returns 0 behind the body. The square (not a cone) matches MC's quad.
-float squareBody(float3 dir, float3 bodyDir, float halfAngle, float3 celestialAxis, out float2 local) {
-    float c = dot(dir, bodyDir);
-    if (c <= 1.0e-3) { local = float2(2.0, 2.0); return 0.0; }
-    float3 d = dir / c;                  // d·bodyDir == 1 (point on the tangent plane)
-    float3 r, u;
-    celestialFrame(bodyDir, celestialAxis, r, u);
-    float t = tan(halfAngle);
-    local = float2(dot(d, r), dot(d, u)) / t;
-    float m = max(abs(local.x), abs(local.y));
-    return 1.0 - smoothstep(0.90, 1.0, m); // soft square edge
+// Drawn disc radiance is derived from illuminance and the solid angle the body is actually DRAWN at
+// (L = E / Ω), deliberately not from its true surface luminance. Vanilla's sun quad subtends ~60x the real
+// sun, i.e. ~3900x its solid angle; painting it at the physical 1.6e9 cd/m² would put ~3900x the sun's
+// power into every path that sees it. Specular and dielectric bounces do see it and have already taken the
+// sun through NEE, so that double-count would go from harmless to dominant, with fireflies off every
+// glossy lobe. Deriving from illuminance keeps the drawn body's total power equal to the real one's at
+// whatever size it is drawn, and costs nothing visually: the result still sits ~15 EV over an 18%-grey
+// noon surface, which the ACES 2.0 output transform renders as pure white either way.
+float3 discRadiance(float illuminance, float halfAngle) {
+    float side = 2.0 * tan(halfAngle);      // the square spans this much on a side, gnomonically
+    return float3(illuminance / max(side * side, 1.0e-8));
 }
 
 // Dave Hoskins' hash13 (https://www.shadertoy.com/view/4djSRW): well-distributed and pattern-free.
@@ -252,21 +51,21 @@ float3 rotateAxis(float3 v, float3 axis, float ang) {
     return v * c + cross(axis, v) * s + axis * dot(axis, v) * (1.0 - c);
 }
 
-// Procedural starfield, a faithful port of vanilla's buildStars(): ~1500 discrete stars at random
-// sphere directions, each a small SQUARE billboard of random size + random rotation. A cube-map grid is
-// the spatial accelerator — at most one star per cell, placed at a hashed position INSET from the cell
-// edges (so its square never crosses into a neighbour), drawn as a hash-rotated square of hashed size.
-// The lookup direction is rotated about the celestial pole by -STAR_ANGLE so the field wheels with
-// world time like the real sky.
+// Procedural starfield, a faithful port of vanilla's buildStars(): ~1500 discrete stars at random sphere
+// directions, each a small SQUARE billboard of random size and rotation. A cube-map grid is the spatial
+// accelerator — at most one star per cell, at a hashed position inset from the cell edges (so its square
+// never crosses into a neighbour), drawn as a hash-rotated square of hashed size. The lookup direction is
+// rotated about the celestial pole by -starAngle so the field wheels with world time like the real sky.
 static const float STAR_CELLS     = 21.0;  // cube-face grid resolution; with the threshold gives ~1500 stars
 static const float STAR_THRESHOLD = 0.86;  // cell occupancy cutoff (higher = fewer stars)
-static const float STAR_HALF      = 0.045; // star half-size as a fraction of a cell (≈ vanilla 0.11° at center)
-float3 stars(float3 dir, float starBrightness, float VdotS, float4 celestial) {
-    if (starBrightness <= 0.0 || dir.y <= 0.0) return float3(0.0, 0.0, 0.0);
+static const float STAR_HALF      = 0.045; // star half-size as a fraction of a cell (≈ vanilla 0.11° at centre)
+float3 stars(float3 dir, SkyState state, float3 extinction) {
+    if (state.starLuminance <= 0.0 || dir.y <= 0.0) {
+        return float3(0.0);
+    }
     // Negative angle: rotating the LOOKUP direction is the inverse of rotating star geometry, so
-    // -starAngle makes the field wheel the SAME way as the sun/moon (whose world dirs are
-    // forward-rotated on the CPU).
-    float3 sdir = rotateAxis(dir, normalize(celestial.xyz), -celestial.w);
+    // -starAngle makes the field wheel the SAME way the sun and moon do.
+    float3 sdir = rotateAxis(dir, normalize(celestialAxis(state.noonTilt)), -state.starAngle);
     // Cube-map face + 2D gnomonic uv → uniform square cells, no pole/equator distortion.
     float3 a = abs(sdir);
     float2 uv;
@@ -276,112 +75,98 @@ float3 stars(float3 dir, float starBrightness, float VdotS, float4 celestial) {
     else                               { uv = sdir.xy / a.z; face = sdir.z > 0.0 ? 4.0 : 5.0; }
     float2 g = uv * STAR_CELLS;
     float3 id = float3(floor(g), face);
-    if (hash13(id) < STAR_THRESHOLD) return float3(0.0, 0.0, 0.0); // no star in this cell
-    // Per-star randoms: size, centre (inset so the rotated square stays inside the cell), rotation.
+    if (hash13(id) < STAR_THRESHOLD) {
+        return float3(0.0); // no star in this cell
+    }
     float sz = STAR_HALF * (0.6 + 0.8 * hash13(id + 53.0));
     float inset = sz * 1.5; // keeps the rotated square clear of the cell edge
     float2 center = inset + (1.0 - 2.0 * inset) * float2(hash13(id + 11.0), hash13(id + 23.0));
     float2 q = frac(g) - center;
-    float ang = hash13(id + 91.0) * 6.2831853;        // random per-star rotation (vanilla zRot)
+    float ang = hash13(id + 91.0) * 6.2831853;            // random per-star rotation (vanilla zRot)
     float cs = cos(ang), sn = sin(ang);
     q = float2(cs * q.x - sn * q.y, sn * q.x + cs * q.y); // GLSL mat2(cs,-sn,sn,cs) * q, written out
-    float box = max(abs(q.x), abs(q.y));               // Chebyshev distance → square
-    float star = 1.0 - smoothstep(sz * 0.6, sz, box);  // soft-edged square (helps DLSS stability)
-    if (star <= 0.0) return float3(0.0, 0.0, 0.0);
-    float bright = 0.55 + 0.45 * hash13(id + 71.0);    // mild per-star brightness variation
-    star *= bright * min(dir.y * 3.0, 1.0) * max(0.0, 1.0 - pow(abs(VdotS) * 1.002, 100.0));
-    // Per-star colour temperature: hash picks a spot on a warm-orange ↔ blue-white ramp (real star
-    // populations). Average luminance close to the old uniform constant so night exposure doesn't shift.
-    float3 starCol = lerp(float3(0.78, 0.60, 0.42), float3(0.50, 0.62, 0.95), hash13(id + 137.0));
-    return star * starCol * starBrightness;
+    float box = max(abs(q.x), abs(q.y));                  // Chebyshev distance → square
+    float star = 1.0 - smoothstep(sz * 0.6, sz, box);     // soft-edged square (helps DLSS stability)
+    if (star <= 0.0) {
+        return float3(0.0);
+    }
+    float bright = 0.55 + 0.45 * hash13(id + 71.0);       // mild per-star brightness variation
+    // Per-star colour temperature: a hash picks a spot on a warm-orange to blue-white ramp, matching real
+    // star populations. Extinction reddens and dims them toward the horizon on the atmosphere's own curve,
+    // which replaces the old hand-written `min(dir.y * 3, 1)` horizon fade.
+    float3 starColor = lerp(float3(0.78, 0.60, 0.42), float3(0.50, 0.62, 0.95), hash13(id + 137.0));
+    return star * bright * starColor * state.starLuminance * extinction;
+}
+
+/** Atmosphere in-scatter for a world direction: both bodies' slices of this frame's sky-view LUT. */
+float3 skyDome(float3 dir, SkyState state) {
+    float2 sunUv = skyViewLutUv(state.viewerRadiusKm, dir.y,
+            lightViewCosine(dir, state.sunDir), SKY_VIEW_BODY_SUN);
+    float2 moonUv = skyViewLutUv(state.viewerRadiusKm, dir.y,
+            lightViewCosine(dir, state.moonDir), SKY_VIEW_BODY_MOON);
+    return skyViewLut.SampleLevel(sunUv, 0.0).rgb + skyViewLut.SampleLevel(moonUv, 0.0).rgb;
 }
 
 [shader("miss")]
 void main(inout Payload payload) {
     WorldPush worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
+    SkyState state = skyState(worldPush);
     float3 dir = normalize(WorldRayDirection());
-    float day = worldPush.sunDir.w;
-    float3 sd = worldPush.sunDir.xyz;
-    float SdotU = sd.y;
-    float VdotS = dot(dir, sd);
-    float sunUp = clamp((SdotU + 0.0625) / 0.125, 0.0, 1.0); // 0 well below horizon .. 1 above
-    float starBrightness = worldPush.lightRadiance.w;
-    float sunIlluminance = worldPush.lookLighting.x;
-    float moonIlluminance = worldPush.lookLighting.y;
-    float nightLuminance = worldPush.lookLighting.z;
-    float skySaturation = worldPush.lookLighting.w;
-    float twilightFillLuminance = worldPush.lookTwilight.x;
-    float twilightShadowSoftnessSin = worldPush.lookTwilight.y;
     bool showCelestial = (payload.flags & PAYLOAD_SHOW_CELESTIAL) != 0u;
 
-    // Physically-based in-scattering: blue zenith, bright/desaturated horizon, warm Mie halo + red
-    // sunset all fall out of the Rayleigh/Mie/ozone march. At night the sun is below the horizon so the
-    // light march is blocked → near-zero; a faint night ambient + the rotating starfield sit underneath.
-    //
-    // Soft horizon: below-horizon rays used to march into the planet-surface clip, drawing a hard fixed
-    // line across the sky. Instead, march the ray flattened onto the horizon (same azimuth, y=0) so the
-    // gradient continues seamlessly downward, with an exponential falloff so it settles into darkness
-    // instead of a uniform bright band.
-    float3 mdir = dir;
-    float downFade = 1.0;
-    if (dir.y < 0.0) {
-        float2 flat2 = float2(dir.x, dir.z);
-        float fl = length(flat2);
-        mdir = fl > 1.0e-4 ? float3(flat2.x / fl, 0.0, flat2.y / fl) : float3(1.0, 0.0, 0.0);
-        downFade = exp(dir.y * 3.0);
-    }
-    float3 col = atmosphere(mdir, sd, sunIlluminance, twilightShadowSoftnessSin);
-    // This atmosphere model is parameterized in its original linear BT.709 basis. Apply its
-    // luminance-preserving look there, then cross into the ACEScg transport basis once at output.
-    float lum = dot(col, float3(0.2126, 0.7152, 0.0722));
-    col = max(lerp(float3(lum, lum, lum), col, skySaturation), float3(0.0, 0.0, 0.0));
-    float up = clamp(dir.y, 0.0, 1.0);
-    float3 nightZenith = float3(0.490173, 0.980344, 2.695945) * nightLuminance;
-    float3 nightHorizon = float3(0.676517, 0.992225, 2.029550) * nightLuminance;
-    float3 nightAmbient = lerp(nightHorizon, nightZenith, up);
-    col += nightAmbient * (1.0 - day);
-    col += twilightMultipleScattering(mdir, sd, twilightFillLuminance);
-    col *= downFade;
-    col += stars(dir, starBrightness, VdotS, worldPush.celestial);
+    float3 color = skyDome(dir, state);
+    // Airglow plus integrated unresolved starlight: the real floor of a moonless night sky (~1e-3 cd/m²),
+    // isotropic because it is emitted by the upper atmosphere itself rather than scattered from a body.
+    // Unlike the gradient it replaces, it is not a stand-in for missing multiple scattering — that is now
+    // in the LUT — so it stays a flat, physically small constant.
+    color += state.airglowLuminance;
 
-    // Sun & moon discs — sampled from the vanilla celestials atlas, gated to rays that haven't already
-    // accounted for the light via diffuse NEE. squareBody gives the body-local [-1,1] coord; the
-    // sprite's own texel coverage (alpha) shapes the disc.
+    // Extinction along the view ray: stars redden and dim into the horizon on exactly the curve the sky
+    // itself follows, because it is the same LUT that produced the sky. Zero angular radius — a star is a
+    // point, so it sets at the horizon line.
+    float3 extinction = transmittanceToSpace(transmittanceLut, state.viewerRadiusKm, dir, 0.0);
+    color += stars(dir, state, extinction);
+
     if (showCelestial) {
         float2 local;
-        squareBody(dir, sd, SUN_DISC_HALF_ANGLE, worldPush.celestial.xyz, local);
-        if (all(abs(local) < float2(1.0, 1.0))) {
-            float2 uv = lerp(worldPush.sunUv.xy, worldPush.sunUv.zw, local * 0.5 + 0.5);
-            float3 t = celestialsAtlas.SampleLevel(uv, 0.0).rgb;
-            // The vanilla sun sprite bakes a soft glow gradient into its texels; scaling that raw to HDR
-            // makes a huge ring. Raise the texture luminance to a high power — only the bright core
-            // survives, the halo collapses to ~0.
-            float core = pow(clamp(dot(t, t) * 0.45, 0.0, 1.0), 6.0);
-            // transmittanceToSpace reddens+dims the disc through the sunset on the sky's own curve.
-            float3 sunDiscRadiance = SUN_DISC_TINT * (sunIlluminance / SUN_DISC_SOLID_ANGLE);
-            col += sunDiscRadiance * transmittanceToSpace(dir) * core * sunUp;
+        if (celestialSquareLocal(dir, state.sunDir, state.sunDiscHalfAngle, local)) {
+            // Tint from the body's CENTRE, not from this ray. The drawn quad spans ~33 degrees (vanilla's
+            // size, not the real sun's half degree), so per-ray extinction would redden its lower limb by
+            // several stops relative to its upper one — an accurate answer to a question about a body that
+            // is 60x too large. The centre keeps the sprite one colour, as vanilla draws it.
+            float3 sunExtinction = transmittanceToSpace(transmittanceLut, state.viewerRadiusKm,
+                    state.sunDir, state.sunAngularRadius);
+            float2 uv = lerp(state.sunUv.xy, state.sunUv.zw, local * 0.5 + 0.5);
+            float3 texel = celestialsAtlas.SampleLevel(uv, 0.0).rgb;
+            // Vanilla's sun sprite bakes a soft glow gradient into its texels; scaling that raw to HDR
+            // makes a huge ring around the disc. Raising the texture luminance to a high power keeps only
+            // the bright core and collapses the painted halo to ~0 — the real halo comes from the Mie
+            // in-scatter in the LUT, which is where it belongs.
+            float core = pow(clamp(dot(texel, texel) * 0.45, 0.0, 1.0), 6.0);
+            color += discRadiance(state.sunIlluminance, state.sunDiscHalfAngle) * sunExtinction * core;
         }
-        // Same horizon gate as the sun: with the soft-horizon change, below-horizon rays no longer clip
-        // at the planet, so without this the moon disc would stay visible after it set.
-        float moonUp = clamp((worldPush.moonDir.y + 0.0625) / 0.125, 0.0, 1.0);
-        squareBody(dir, worldPush.moonDir.xyz, MOON_DISC_HALF_ANGLE, worldPush.celestial.xyz, local);
-        if (all(abs(local) < float2(1.0, 1.0)) && moonUp > 0.0) {
-            float2 uv = lerp(worldPush.moonUv.xy, worldPush.moonUv.zw, local * 0.5 + 0.5);
-            float3 t = srgbToLinear(celestialsAtlas.SampleLevel(uv, 0.0).rgb);
-            // Moon: a smoothstep contrast ramp suppresses the faint halo while keeping the lit phase
-            // shape from the texture. The transmittance tint gives a warm amber moon at moonrise/set.
-            float m = smoothstep(0.0, 1.0, min(length(t), 1.0)) * 1.3;
-            float3 moonDiscRadiance = MOON_DISC_TINT * (moonIlluminance / MOON_DISC_SOLID_ANGLE);
-            col += moonDiscRadiance * transmittanceToSpace(dir) * t * m * pow2(1.0 - day) * moonUp;
+        if (celestialSquareLocal(dir, state.moonDir, state.moonDiscHalfAngle, local)) {
+            float2 uv = lerp(state.moonUv.xy, state.moonUv.zw, local * 0.5 + 0.5);
+            float3 texel = srgbToLinear(celestialsAtlas.SampleLevel(uv, 0.0).rgb);
+            float3 moonExtinction = transmittanceToSpace(transmittanceLut, state.viewerRadiusKm,
+                    state.moonDir, state.moonAngularRadius);
+            // The phase sprite already carries the lit shape; a contrast ramp suppresses its faint painted
+            // halo while keeping that shape.
+            float shape = smoothstep(0.0, 1.0, min(length(texel), 1.0));
+            color += discRadiance(state.moonIlluminance, state.moonDiscHalfAngle)
+                   * moonExtinction * texel * shape;
         }
+        // No separate horizon gate on either body. A set sun or moon goes dark because its extinction is
+        // zero below the horizon, which is the same reason its NEE light is zero — one mechanism, instead
+        // of the pair of hand-placed smoothsteps that previously had to agree with each other.
     }
 
     // The sky goes out in absolute scene units at full fp32 — packSky writes the payload's three surface
-    // words as raw floats rather than as halves, which is why the sun disc's 3.6e5 cd/m² needs neither a
-    // pre-exposure scale nor a clamp to stay representable here. The fp16 ceiling reappears only at
-    // world.rgen's outImage store, where docs/SCENE_UNITS_PLAN.md §2 puts the sun-disc clamp anyway.
-    // packSky also overwrites the normal view, so there is no separate normal clear below.
-    packSky(payload, bt709ToAcesCg(max(col, float3(0.0))));
+    // words as raw floats rather than halves, which is why the sun disc's ~1e5 cd/m² needs neither a
+    // pre-exposure scale nor a clamp to stay representable. The fp16 ceiling reappears only at world.rgen's
+    // outImage store, where docs/SCENE_UNITS_PLAN.md §2 puts the sun-disc clamp anyway. packSky also
+    // overwrites the normal view, so there is no separate normal clear below.
+    packSky(payload, bt709ToAcesCg(max(color, float3(0.0))));
     payload.hitT = -1.0;
     payload.motionPrev = half3(0.0h, 0.0h, 0.0h);
     payload.f0 = half3(0.0h, 0.0h, 0.0h);

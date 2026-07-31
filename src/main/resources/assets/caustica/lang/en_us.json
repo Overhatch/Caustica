@@ -18,9 +18,6 @@
 	"caustica.options.rt.maxBounces": "Path Bounces",
 	"caustica.options.rt.maxBounces.tooltip": "Maximum number of secondary path-tracing bounces after the primary hit. Higher captures more indirect light but costs more.",
 
-	"caustica.options.rt.sunSize": "Sun Size",
-	"caustica.options.rt.sunSize.tooltip": "Angular radius of the sun and moon disk. Larger discs cast softer shadow penumbrae.",
-
 	"caustica.options.rt.entities": "Ray-Traced Entities",
 	"caustica.options.rt.entities.tooltip": "Include entities and block entities in the ray-traced scene.",
 

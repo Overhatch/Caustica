@@ -556,12 +556,10 @@ public final class CausticaConfig {
                     clampedInt("caustica.rt.maxBounces", "composite.max-bounces", 4, 2, 8);
             public static final BooleanSetting WATER_WAVES =
                     bool("caustica.rt.waterWaves", "composite.water-waves", true);
-            public static final FloatSetting SUN_ANGULAR_RADIUS =
-                    radians("caustica.rt.sunAngularRadius", "composite.sun-angular-radius-deg", 0.6f);
-            public static final FloatSetting MOON_ANGULAR_RADIUS =
-                    radians("caustica.rt.moonAngularRadius", "composite.moon-angular-radius-deg", 1.5f);
-            public static final FloatSetting SUN_NOON_SOUTH_TILT =
-                    radians("caustica.rt.sunNoonSouthDeg", "composite.sun-noon-south-tilt-deg", 30.0f);
+            // Sun/moon angular radii and the noon south tilt moved into the versioned look package
+            // (look.json "sky"): they shape the sky alongside the exposure curve, the LMT and the
+            // photometric anchors that were already authored there, and splitting them across two
+            // sources meant a package could not fully describe its own look.
             public static final FloatSetting JITTER_SIGN_X =
                     finiteFloat("caustica.rt.jitterSignX", "composite.jitter-sign-x", 1.0f);
             public static final FloatSetting JITTER_SIGN_Y =

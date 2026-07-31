@@ -217,6 +217,7 @@ abstract class GenerateShaderRecords extends DefaultTask {
             ["displayPushProbe", "DisplayPush", "DisplayPushData"],
             ["debugPresentPushProbe", "DebugPresentPush", "DebugPresentPushData"],
             ["bloomPushProbe", "BloomPush", "BloomPushData"],
+            ["pushAddrLayoutProbe", "PushAddr", "PushAddrData"],
     ]
 
     // NOT private: Gradle decorates this abstract task with a generated subclass, and Groovy's

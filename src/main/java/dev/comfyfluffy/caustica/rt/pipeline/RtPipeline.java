@@ -95,10 +95,13 @@ public final class RtPipeline {
     private final long bindlessPool;
     private final long bindlessSet;
     private final int skyAtlasBinding;
+    private final int skyViewLutBinding;
+    private final int skyTransmittanceLutBinding;
     private boolean destroyed;
 
     private RtPipeline(RtContext ctx, long dsl, long pool, long[] sets, long layout, long pipeline, RtBuffer sbt, long stride, int raygenCount, int missCount, int hitGroupCount, int pushConstantSize, int pushConstantStages, int firstExtraBinding,
-                       long bindlessLayout, long bindlessPool, long bindlessSet, int skyAtlasBinding) {
+                       long bindlessLayout, long bindlessPool, long bindlessSet, int skyAtlasBinding,
+                       int skyViewLutBinding, int skyTransmittanceLutBinding) {
         this.ctx = ctx;
         this.descriptorSetLayout = dsl;
         this.descriptorPool = pool;
@@ -122,6 +125,8 @@ public final class RtPipeline {
         this.bindlessPool = bindlessPool;
         this.bindlessSet = bindlessSet;
         this.skyAtlasBinding = skyAtlasBinding;
+        this.skyViewLutBinding = skyViewLutBinding;
+        this.skyTransmittanceLutBinding = skyTransmittanceLutBinding;
     }
 
     /**
@@ -156,7 +161,13 @@ public final class RtPipeline {
             // Sky rewrite: the vanilla celestials atlas (sun + moon phases), sampled by world.rmiss to
             // draw the sun/moon discs. Canonical material pages live in the bindless set, not set 0.
             int skyBinding = skyAtlas ? materialBase : -1;
-            int skySamplers = skyAtlas ? 1 : 0;
+            // Atmosphere LUTs (RtSkyLut): the per-frame sky-view table the miss shader answers with, and
+            // the transmittance table BOTH stages read -- the miss shader to tint the visible sun/moon and
+            // stars, raygen to colour the NEE sun/moonlight. Sharing one binding is what makes the light on
+            // terrain and the sky's own sunset the same number instead of two computations to keep in sync.
+            int skyViewBinding = skyAtlas ? materialBase + 1 : -1;
+            int transmittanceBinding = skyAtlas ? materialBase + 2 : -1;
+            int skySamplers = skyAtlas ? 3 : 0;
             int bindingCount = firstExtraBinding + extraStorageImages + skySamplers;
             VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(bindingCount, stack);
             binds.get(0).binding(0).descriptorType(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
@@ -175,6 +186,10 @@ public final class RtPipeline {
             if (skyAtlas) {
                 binds.get(skyBinding).binding(skyBinding).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                         .descriptorCount(1).stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR);
+                binds.get(skyViewBinding).binding(skyViewBinding).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                        .descriptorCount(1).stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR);
+                binds.get(transmittanceBinding).binding(transmittanceBinding).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                        .descriptorCount(1).stageFlags(VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_RAYGEN_BIT_KHR);
             }
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
             LongBuffer p = stack.mallocLong(1);
@@ -367,7 +382,8 @@ public final class RtPipeline {
             }
             sbt.flush();
             return new RtPipeline(ctx, dsl, pool, sets, layout, pipeline, sbt, stride, raygenCount, missCount, hitGroupCount, pushConstantSize, pcStages, firstExtraBinding,
-                    bindlessLayout, bindlessPool, bindlessSet, skyBinding);
+                    bindlessLayout, bindlessPool, bindlessSet, skyBinding,
+                    skyViewBinding, transmittanceBinding);
         }
     }
 
@@ -450,6 +466,12 @@ public final class RtPipeline {
 
     public boolean hasSkyAtlas() {
         return skyAtlasBinding >= 0;
+    }
+
+    /** Bind this frame's atmosphere LUTs (see {@link RtSkyLut}); both share the LUT's own sampler. */
+    public void setSkyLuts(long skyViewImageView, long transmittanceImageView, long sampler) {
+        writeAtlasBinding(skyViewLutBinding, skyViewImageView, sampler);
+        writeAtlasBinding(skyTransmittanceLutBinding, transmittanceImageView, sampler);
     }
 
     private void writeAtlasBinding(int binding, long imageView, long sampler) {

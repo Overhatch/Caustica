@@ -29,6 +29,11 @@ import trace;
 import trace_ser;
 #endif
 import lighting;
+import sky;
+
+// Atmospheric transmittance LUT (RtSkyLut), also bound to world.rmiss at the same binding: raygen reads it
+// to colour the NEE sun/moonlight, the miss shader reads it to tint the visible discs and stars.
+[[vk::binding(11, 0)]] Sampler2D transmittanceLut;
 
 public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
     float3 L = float3(0.0, 0.0, 0.0);
@@ -188,8 +193,8 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         if (material == MATERIAL_PARTICLE) {
             float3 albedo = payloadAlbedo();
 
-            float3 lightDir = worldPush.lightDir.xyz;
-            float lightHalfAngle = worldPush.lightDir.w;
+            float3 lightDir = celestialLight.dir;
+            float lightHalfAngle = celestialLight.halfAngle;
             if (lightHalfAngle > 0.0) {
                 lightDir = sampleSquare(lightDir, lightHalfAngle, seed);
             }
@@ -202,7 +207,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 float3 shadowOrigin = hitPos + (signedNdl >= 0.0 ? n : -n) * SURF_BIAS;
                 float3 vis = visibility(shadowOrigin, lightDir, 10000.0).transmittance;
                 if (max(vis.r, max(vis.g, vis.b)) > 0.0) {
-                    L += throughput * albedo * INV_PI * worldPush.lightRadiance.xyz * ndl * vis;
+                    L += throughput * albedo * INV_PI * celestialLight.illuminance * ndl * vis;
                 }
             }
 
@@ -265,11 +270,11 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
 
         // NEE: direct light from the dominant celestial body (sun by day, moon by night) — Lambert
         // diffuse + GGX specular, one shadow ray. Jitter the light direction within its square angular
-        // extent (worldPush.lightDir.w half-angle) so the shadow ray samples the light's quad — soft penumbrae
+        // extent (celestialLight.halfAngle) so the shadow ray samples the light's quad — soft penumbrae
         // over accumulation. The same sampled direction drives ndl, the shadow ray, and the specular
         // half-vector.
-        float3 lightDir = worldPush.lightDir.xyz;
-        float lightHalfAngle = worldPush.lightDir.w;
+        float3 lightDir = celestialLight.dir;
+        float lightHalfAngle = celestialLight.halfAngle;
         if (lightHalfAngle > 0.0) {
             lightDir = sampleSquare(lightDir, lightHalfAngle, seed);
         }
@@ -293,7 +298,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 float G = ggxG1(ndv, rough) * ggxG1(ndl, rough); // separable Smith masking
                 float3 F = fresnelSchlick(vdh, F0);
                 brdf += (D * G) * F / (4.0 * ndv * ndl); // Cook–Torrance specular
-                L += throughput * brdf * worldPush.lightRadiance.xyz * ndl * vis;
+                L += throughput * brdf * celestialLight.illuminance * ndl * vis;
             }
         }
 
@@ -328,7 +333,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 }
                 if (max(visB.r, max(visB.g, visB.b)) > 0.0) {
                     float cosT = dot(lightDir, rd);
-                    L += throughput * diffAlb * sss * SSS_STRENGTH * hg(cosT, SSS_G) * backNdl * worldPush.lightRadiance.xyz * visB;
+                    L += throughput * diffAlb * sss * SSS_STRENGTH * hg(cosT, SSS_G) * backNdl * celestialLight.illuminance * visB;
                 }
             }
         }
@@ -389,6 +394,13 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
 [shader("raygeneration")]
 void main() {
     worldPush = ConstPtr<WorldPush>(pc.worldPushAddr)[0];
+    // Derive this dispatch's directional light once. Two transmittance-LUT fetches replace the Java port
+    // of the atmosphere march that used to compute this on the CPU, and — because world.rmiss tints the
+    // visible sun/moon with the very same LUT — the light on terrain and the sky's sunset are now the
+    // same number rather than two implementations that have to be kept in agreement by hand.
+    celestialLight = dominantCelestialLight(skyState(worldPush), transmittanceLut);
+    // The path integral is ACEScg end to end; sky.slang works in linear BT.709, so this is the one seam.
+    celestialLight.illuminance = bt709ToAcesCg(celestialLight.illuminance);
     uint2 dispatchIndex = DispatchRaysIndex().xy;
     uint2 dimensions = DispatchRaysDimensions().xy;
     int2 pix = int2(dispatchIndex);

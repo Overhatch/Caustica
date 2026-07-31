@@ -56,14 +56,17 @@ public struct DisplayPush {
     public float hdrPeakNits;   // mastering peak baked into the currently bound HDR ACES LUT
     public int lookEnabled;     // 0 = identity, 1 = apply the scene-referred ACES look LUT
     public float lookLutSize;   // lookLut texels per axis (independent of the output-transform LUT size)
-    public float bloomStrength; // scene-referred blurred highlight signal added before the LMT
+    // Scene-referred blurred highlight signal added before the LMT. The bloom pyramid's level 0 holds the
+    // SUM of every band, so RtComposite folds the 1/levelCount normalisation into this value: the authored
+    // look-package strength then means the same thing whichever level count the resolution supports.
+    public float bloomStrength;
 };
 
 public struct BloomPush {
-    public int mode;            // 0 extract/downsample, 1 horizontal blur, 2 vertical blur
+    public int mode;            // 0 prefilter+downsample, 1 downsample, 2 tent upsample (accumulate)
     public float threshold;     // exposed scene-linear ACEScg luminance
     public float softKnee;      // absolute exposed scene-linear knee width
-    public float radius;        // half-resolution filtered sample-offset multiplier
+    public float radius;        // upsample tent radius in SOURCE texels; resolution-independent
 };
 
 public struct DebugPresentPush {

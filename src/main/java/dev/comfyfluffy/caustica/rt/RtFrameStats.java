@@ -64,10 +64,19 @@ public final class RtFrameStats {
                     "frame.prepareTlas",
                     "frame.recordTlas",
                     "frame.trace",
+                    "frame.skyLut",
+                    // The wavefront split replaced "frame.trace" with these two, and the debug composite
+                    // added a third, but none of them were registered here — so enabling profiling threw
+                    // from indexOf() instead of reporting them. stage() early-returns while profiling is
+                    // off, which is why it went unnoticed.
+                    "frame.tracePrimary",
+                    "frame.traceIndirect",
                     "frame.exposure",
                     "frame.dlssRr",
                     "frame.upscale",
+                    "frame.bloom",
                     "frame.displayMap",
+                    "frame.debugPresent",
                     "frame.copyOutput"
             },
             new String[] {"sectionsSnapshotted", "sectionCopies", "terrainBuildsCompleted",

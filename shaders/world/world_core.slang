@@ -2,6 +2,7 @@
 // Import first: everything below depends on pc, worldPush and payload.
 
 import world_common;
+import sky;
 
 [[vk::push_constant]] public WorldPushConstants pc;
 
@@ -61,9 +62,16 @@ public float payloadTransmission() { return unpackHalf2(payload.iorTransmission)
 public static const float PI = 3.14159265359;
 public static const float INV_PI = 0.31830988618;
 
-// The analytic sky (gradient + sun/moon discs + stars) is computed in world.rmiss. On a miss, raygen
-// reads payloadSky() and accumulates that radiance. The directional NEE light is pushed separately
-// as worldPush.lightDir / worldPush.lightRadiance / worldPush.sunDir.
+// The sky (atmosphere LUT + sun/moon discs + stars) is evaluated in world.rmiss. On a miss, raygen reads
+// payloadSky() and accumulates that radiance.
+//
+// The single directional NEE light — whichever of the sun and moon actually delivers more light through
+// the atmosphere — is DERIVED, not pushed: world.rgen fills this in from sky.dominantCelestialLight() once
+// per dispatch, using the same transmittance LUT world.rmiss tints the visible discs with. That shared
+// source is what guarantees the light on terrain and the sky's own sunset can never disagree; the previous
+// arrangement kept a hand-maintained Java port of the atmosphere march for exactly this value.
+// Illuminance here is ACEScg (the transport basis), converted once where it is assigned.
+public static CelestialLight celestialLight = {};
 public static const float SURF_BIAS = 0.005;  // offset secondary-ray origins along the normal (anti-acne)
 public static const float RAY_TMIN = 0.001;   // tiny tmin: the normal offset already clears the surface
 

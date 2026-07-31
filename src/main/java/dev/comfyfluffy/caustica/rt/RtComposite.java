@@ -59,6 +59,7 @@ import dev.comfyfluffy.caustica.rt.material.RtMaterialOverrides;
 import dev.comfyfluffy.caustica.rt.material.RtMaterialRegistry;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDebugPresentPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtBloomPipeline;
+import dev.comfyfluffy.caustica.rt.pipeline.RtSkyLut;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDisplayPipeline;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssFg;
 import dev.comfyfluffy.caustica.rt.pipeline.RtDlssRr;
@@ -120,31 +121,20 @@ public final class RtComposite {
         return CausticaConfig.Rt.Composite.WATER_WAVES.value();
     }
 
-    // Finite sun/moon angular sizes let NEE shadow rays sample the light disk (soft, contact-hardening
-    // penumbrae). Radii in degrees; the real sun/moon are ~0.27°, but a touch larger reads pleasantly.
     private static final int WATER_ANCHOR_MASK = 4095;
-    // Celestial NEE light levels, in the photometric units of {@link RtSceneUnits} (see
-    // docs/SCENE_UNITS_PLAN.md §3). WorldPush.lightRadiance is consumed by world.rgen as the light's
-    // ILLUMINANCE at normal incidence (lux) — the NEE term is brdf·E·ndl with no solid-angle factor, and
-    // the diffuse BRDF's 1/π is what turns 100,000 lux into the plan's 31,800 cd/m² white / 5,730 cd/m²
-    // 18%-grey noon surface. It is therefore independent of SUN_ANGULAR_RADIUS, which only jitters the
-    // shadow ray and so only sets penumbra softness.
+    // The versioned look package owns every photometric anchor and, since the sky rewrite, the sky's
+    // geometry too (docs/SCENE_UNITS_PLAN.md §3, docs/LOOK_PACKAGES.md). Its sun illuminance is the
+    // photometric solar constant at the top of the atmosphere; the shader's transmittance LUT brings that
+    // to ~117,000 lux under a zenith sun and reddens/dims it through sunset, and because world.rmiss tints
+    // the visible disc from the same LUT, the light on terrain and the sky's sunset are one number.
     //
-    // The package's sun illuminance is the photometric solar constant (top of atmosphere); the shared
-    // atmosphereTransmittance march below brings it to ~117,000 lux at a zenith sun and reddens/dims it
-    // through sunset on exactly the curve the visible sky follows. world.rmiss anchors the atmosphere
-    // in-scatter and the drawn sun disc on the same figure.
+    // world.rgen consumes it as ILLUMINANCE at normal incidence (lux) — the NEE term is brdf·E·ndl with no
+    // solid-angle factor, and the diffuse BRDF's 1/π is what turns 100,000 lux into the plan's
+    // 31,800 cd/m² white / 5,730 cd/m² 18%-grey noon surface. It is therefore independent of the sky
+    // package's angular radii, which only jitter the shadow ray and so only set penumbra softness.
     private static final RtLookPackage LOOK = RtLookPackage.current();
-    // Cool moonlight tint, the previous (0.30, 0.36, 0.55) ratio renormalised to BT.709 luma 1 so it
-    // sets colour only and the package's moon illuminance alone sets level.
-    private static final float MOON_TINT_R = 0.831112f;
-    private static final float MOON_TINT_G = 0.997335f;
-    private static final float MOON_TINT_B = 1.523706f;
     private static final Identifier SUN_ID = Identifier.withDefaultNamespace("sun");
     private static final Identifier[] MOON_IDS = createMoonIds();
-    // Celestial rotation axis (the pole the sun/moon arc about): perpendicular to the east-west arc,
-    // tilted by SUN_NOON_SOUTH_TILT. Pushed so the sky shader can build the sun/moon square's tangent
-    // frame (right = travel direction) and wheel the starfield. = normalize(noonDir x sunriseDir).
     // Sign of the sub-pixel jitter as reported to DLSS-RR + applied to the primary ray, mirroring the
     // validated DLSS-SR convention (Vulkan flipped clip space wants Y negated).
     private static float jitterSignX() {
@@ -153,26 +143,6 @@ public final class RtComposite {
 
     private static float jitterSignY() {
         return CausticaConfig.Rt.Composite.JITTER_SIGN_Y.value();
-    }
-
-    private static float sunNoonTilt() {
-        return CausticaConfig.Rt.Composite.SUN_NOON_SOUTH_TILT.value();
-    }
-
-    private static float sunNoonY() {
-        return Mth.cos(sunNoonTilt());
-    }
-
-    private static float sunNoonZ() {
-        return Mth.sin(sunNoonTilt());
-    }
-
-    private static float celestialAxisY() {
-        return -sunNoonZ();
-    }
-
-    private static float celestialAxisZ() {
-        return sunNoonY();
     }
 
     // Monotonic per-composite frame counter used for cache eviction, shader sampling, and diagnostics.
@@ -205,6 +175,9 @@ public final class RtComposite {
     private int pushSlot;
     private RtDisplayPipeline displayPipeline;
     private RtBloomPipeline bloomPipeline;
+    // Atmosphere LUTs (transmittance + multiple scattering + this frame's sky view). Device-lifetime; the
+    // two static tables are baked on the first frame that records the pass.
+    private RtSkyLut skyLut;
     private RtDebugPresentPipeline debugPresentPipeline;
     private RtToneLut sdrToneLut;
     private RtToneLut hdrToneLut;
@@ -215,8 +188,9 @@ public final class RtComposite {
     // render pixel (base + optional transmission); Pass B resamples them at the configured SPP.
     private RtBuffer continuationQueue;
     private RtImage displayImage;
-    private RtImage bloomA;
-    private RtImage bloomB;
+    // Bloom pyramid, finest first: level 0 is half display resolution and each level halves again. The
+    // display mapper reads level 0, which the upsample sweep leaves holding the sum of every band.
+    private RtImage[] bloomLevels = new RtImage[0];
     // Parallel PQ-encoded ([0,1], ST.2084) HDR display image. Written alongside displayImage when HDR is
     // enabled. When the PQ swapchain is active, the combined UI overlay is composited over this image, then
     // this image is blitted straight to the swapchain.
@@ -616,6 +590,9 @@ public final class RtComposite {
             if (bloomPipeline == null) {
                 bloomPipeline = RtBloomPipeline.create(ctx);
             }
+            if (skyLut == null) {
+                skyLut = RtSkyLut.create(ctx);
+            }
             if (debugPresentPipeline == null) {
                 debugPresentPipeline = RtDebugPresentPipeline.create(ctx);
             }
@@ -676,8 +653,8 @@ public final class RtComposite {
             RtToneLut boundLookLut = lookLut;
             displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                     sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
-                    boundLookLut.view(), boundLookLut.sampler(), bloomA.view, bloomPipeline.sampler());
-            bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomA.view, bloomB.view);
+                    boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler());
+            bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomLevels);
             debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
                     gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
                     exposure.stateBuffer());
@@ -806,6 +783,12 @@ public final class RtComposite {
         long celView = celestialsAtlasView();
         if (worldPipeline.hasSkyAtlas()) {
             worldPipeline.setSkyAtlas(celView != 0L ? celView : atlasView, sampler);
+            // Atmosphere LUTs live for the device's lifetime, but the world pipeline's descriptor sets do
+            // not (a resource reload rebuilds it), so rebind them alongside the atlas.
+            if (skyLut != null) {
+                worldPipeline.setSkyLuts(skyLut.skyViewView(), skyLut.transmittanceView(),
+                        skyLut.sampler());
+            }
         }
         setCelestialUvAtlas(celView);
         // Atlas UVs and material IDs are one resource epoch. Drop old terrain as a unit rather than
@@ -913,7 +896,7 @@ public final class RtComposite {
         int rrQuality = rrEnabled ? RtDlssRr.quality() : Integer.MIN_VALUE;
         if (output != null && continuationQueue != null
                 && displayImage != null && hdrDisplayImage != null && rrOutput != null
-                && bloomA != null && bloomB != null && exposure.ready()
+                && bloomLevels.length > 0 && exposure.ready()
                 && displayW == width && displayH == height
                 && renderSizeRrEnabled == rrEnabled && renderSizeRrQuality == rrQuality) {
             return;
@@ -925,12 +908,7 @@ public final class RtComposite {
         if (hdrDisplayImage != null) {
             hdrDisplayImage.destroy();
         }
-        if (bloomA != null) {
-            bloomA.destroy();
-        }
-        if (bloomB != null) {
-            bloomB.destroy();
-        }
+        destroyBloomLevels();
         if (output != null) {
             output.destroy();
         }
@@ -967,14 +945,20 @@ public final class RtComposite {
         displayImage = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R8G8B8A8_UNORM, "RT display image " + width + "x" + height);
         // PQ-encoded ([0,1], ST.2084) HDR display image, written in parallel by display.comp when HDR mode is active.
         hdrDisplayImage = ctx.createStorageImage(width, height, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "RT HDR display image " + width + "x" + height);
+        // Bloom pyramid. Level 0 is half display resolution (the prefilter's 13-tap already covers a 5x5
+        // display-pixel footprint, so nothing is lost by starting there); each further level halves again
+        // until the look package's level count or the smallest useful size is reached.
         int bloomWidth = Math.max(1, (width + 1) / 2);
         int bloomHeight = Math.max(1, (height + 1) / 2);
-        bloomA = ctx.createStorageImage(bloomWidth, bloomHeight,
-                VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
-                "RT bloom A " + bloomWidth + "x" + bloomHeight);
-        bloomB = ctx.createStorageImage(bloomWidth, bloomHeight,
-                VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
-                "RT bloom B " + bloomWidth + "x" + bloomHeight);
+        int bloomLevelCount = RtBloomPipeline.levelsFor(bloomWidth, bloomHeight, LOOK.bloom().levels());
+        bloomLevels = new RtImage[bloomLevelCount];
+        for (int level = 0; level < bloomLevelCount; level++) {
+            bloomLevels[level] = ctx.createStorageImage(bloomWidth, bloomHeight,
+                    VK10.VK_FORMAT_R16G16B16A16_SFLOAT,
+                    "RT bloom level " + level + " " + bloomWidth + "x" + bloomHeight);
+            bloomWidth = Math.max(1, bloomWidth / 2);
+            bloomHeight = Math.max(1, bloomHeight / 2);
+        }
         // Guide buffers match the trace (render) resolution; DLSS-RR consumes them at render res.
         gNormal = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide normal roughness " + renderW + "x" + renderH);
         gAlbedo = ctx.createStorageImage(renderW, renderH, VK10.VK_FORMAT_R16G16B16A16_SFLOAT, "guide diffuse albedo " + renderW + "x" + renderH);
@@ -995,11 +979,20 @@ public final class RtComposite {
         RtToneLut boundLookLut = lookLut;
         displayPipeline.setImages(displayImage.view, rrOutput.view, exposure.image().view, hdrDisplayImage.view,
                 sdrToneLut.view(), sdrToneLut.sampler(), hdrToneLut.view(), hdrToneLut.sampler(),
-                boundLookLut.view(), boundLookLut.sampler(), bloomA.view, bloomPipeline.sampler());
-        bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomA.view, bloomB.view);
+                boundLookLut.view(), boundLookLut.sampler(), bloomLevels[0].view, bloomPipeline.sampler());
+        bloomPipeline.setImages(rrOutput.view, exposure.image().view, bloomLevels);
         debugPresentPipeline.setImages(displayImage.view, gNormal.view, gAlbedo.view, gDepth.view,
                 gMotion.view, gSpecAlbedo.view, gSpecMotion.view, rrOutput.view, exposure.image().view,
                 exposure.stateBuffer());
+    }
+
+    private void destroyBloomLevels() {
+        for (RtImage level : bloomLevels) {
+            if (level != null) {
+                level.destroy();
+            }
+        }
+        bloomLevels = new RtImage[0];
     }
 
     /**
@@ -1135,24 +1128,13 @@ public final class RtComposite {
                     new Float2(jitterX, jitterY),
                     flags,
                     maxBounces(),
-                    sky.sunDir(),
-                    sky.lightDir(),
-                    sky.lightRadiance(),
-                    sky.moonDir(),
                     sky.celestial(),
+                    sky.look0(),
+                    sky.look1(),
+                    sky.look2(),
+                    sky.look3(),
                     sky.sunUv(),
                     sky.moonUv(),
-                    new Float4(
-                            LOOK.lighting().sunIlluminanceLux(),
-                            LOOK.lighting().moonIlluminanceLux(),
-                            LOOK.lighting().nightSkyLuminanceCdM2(),
-                            LOOK.lighting().skySaturation()),
-                    new Float4(
-                            LOOK.lighting().twilightFillLuminanceCdM2(),
-                            Mth.sin(LOOK.lighting().twilightShadowSoftnessDegrees()
-                                    * (float) (Math.PI / 180.0)),
-                            0.0f,
-                            0.0f),
                     waterParams,
                     waterAnchor,
                     mvCurProjView,
@@ -1207,6 +1189,14 @@ public final class RtComposite {
                     terrain.lightLocalAliasBufferAddress(), terrain.lightGridCellBufferAddress(),
                     terrain.lightGridSpanBufferAddress(), continuationQueue.deviceAddress,
                     (int) frameCounter).write(pushConstants);
+            // Sky LUTs, from the same WorldPush slot the trace is about to read: the sky the LUT holds and
+            // the sky the frame shades are built from one set of angles, not two. Recorded here (after the
+            // push flush, before the trace) so the miss shader's very first fetch sees this frame's dome.
+            try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("frame.skyLut")) {
+                skyLut.record(cmd, pushBuf.deviceAddress);
+            }
+            VulkanCommandEncoder.memoryBarrier(cmd, stack); // sky LUT writes visible to raygen/miss
+
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "world primary trace");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.tracePrimary")) {
                 active.trace(cmd, renderW, renderH, pushConstants, 0);
@@ -1257,16 +1247,19 @@ public final class RtComposite {
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "bloom");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.bloom")) {
                 RtLookPackage.Bloom bloom = LOOK.bloom();
-                float resolutionScaledRadius = bloom.radius() * (displayH / 1080.0f);
-                bloomPipeline.dispatch(cmd, bloomA.width, bloomA.height,
-                        bloom.thresholdSceneLinear(), bloom.softKneeFraction(), resolutionScaledRadius);
+                // The tent radius is in source texels, so it needs no resolution scaling: the pyramid's
+                // reach is set by its level count, and each level's texel already scales with the frame.
+                // (The old single Gaussian had to scale its pixel spacing, which is exactly what made its
+                // taps land further apart than a texel and draw the replica lattice.)
+                bloomPipeline.dispatch(cmd, bloomLevels,
+                        bloom.thresholdSceneLinear(), bloom.softKneeFraction(), bloom.radius());
             }
 
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "map RT to display");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.displayMap")) {
                 displayPipeline.dispatch(cmd, displayW, displayH, CausticaConfig.Rt.Hdr.enabled(),
                         sdrToneLut.size, CausticaConfig.Rt.Tonemap.GAMMA.value(), loadedHdrLutNits,
-                        true, lookLut.size, LOOK.bloom().strength());
+                        true, lookLut.size, LOOK.bloom().strength() / bloomLevels.length);
             }
             hdrWrittenThisFrame = CausticaConfig.Rt.Hdr.enabled();
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // display output visible to debug composite
@@ -1337,87 +1330,65 @@ public final class RtComposite {
         return count == result.length ? result : java.util.Arrays.copyOf(result, count);
     }
 
-    private record SkyPush(Float4 sunDir, Float4 lightDir, Float4 lightRadiance, Float4 moonDir,
-                           Float4 celestial, Float4 sunUv, Float4 moonUv) {}
+    private record SkyPush(Float4 celestial, Float4 look0, Float4 look1, Float4 look2, Float4 look3,
+                           Float4 sunUv, Float4 moonUv) {}
 
     private record CelestialUv(Float4 sun, Float4 moon) {}
 
     /**
-     * Derive the celestial light from Minecraft's time of day as typed values for {@link WorldPushData}.
-     * Celestial angles come from the camera's {@link EnvironmentAttributeProbe} (partial-tick
-     * interpolated). {@code caustica.rt.sunNoonSouthDeg} tilts the east-west arc toward south (+Z) at
-     * noon.
+     * This frame's sky state: Minecraft's four eased celestial angles, its star brightness, the moon
+     * phase, and the look package's sky constants. Nothing else.
+     *
+     * <p>Every direction, colour, level and atmospheric transmittance is derived in {@code sky.slang}
+     * from these values. That is a deliberate inversion of what used to happen here: this method used to
+     * build the sun and moon world vectors, pick which body was the light, run a Java port of the shader's
+     * Rayleigh/Mie/ozone march to colour it, and blend a day factor — a second implementation of the
+     * atmosphere whose constants had to be kept identical to the shader's by hand.
+     *
+     * <p>The angles come from the camera's {@link EnvironmentAttributeProbe} rather than from the tick:
+     * in 26.2 they are timeline tracks driven through a cubic-bezier ease, and a datapack can replace the
+     * track outright, so the probe is the only source that stays correct for a custom dimension.
+     *
+     * <p>The sky-view LUT's viewer altitude tracks the camera's real world height above sea level (1
+     * block = 1 m), not the look package's fixed reference altitude: a build-limit mod or a rocket/space
+     * mod climbing toward the 100 km shell should see the atmosphere actually thin out. Clamped to the
+     * same [0, 99] km range {@link RtLookPackage} validates the package's own constant against, so an
+     * absurd Y (or one beyond the modelled shell) degrades to the shell edge instead of an LUT sample
+     * outside its baked domain.
      */
     private SkyPush skyPush() {
-        float sunX, sunY, sunZ, dayFactor, lx, ly, lz, rr, rg, rb, lightRadius;
-        float moonX, moonY, moonZ, moonPhase, starAngle, starBrightness;
         Minecraft mc = Minecraft.getInstance();
         float partial = mc.getDeltaTracker().getGameTimeDeltaPartialTick(false);
         var probe = mc.gameRenderer.mainCamera().attributeProbe();
-        float sunAngle = probe.getValue(EnvironmentAttributes.SUN_ANGLE, partial) * (float) (Math.PI / 180.0);
-        float moonAngle = probe.getValue(EnvironmentAttributes.MOON_ANGLE, partial) * (float) (Math.PI / 180.0);
-        float sunNoon = Mth.cos(sunAngle);
-        sunX = -Mth.sin(sunAngle); sunY = sunNoonY() * sunNoon; sunZ = sunNoonZ() * sunNoon;
-        float moonNoon = Mth.cos(moonAngle);
-        moonX = -Mth.sin(moonAngle); moonY = sunNoonY() * moonNoon; moonZ = sunNoonZ() * moonNoon;
-        moonPhase = probe.getValue(EnvironmentAttributes.MOON_PHASE, partial).index(); // 0 full .. 4 new
-        // Stars: use Minecraft's actual celestial rotation + brightness (the same values vanilla's
-        // SkyRenderer uses), so the starfield wheels about the celestial pole tied to world time and
-        // fades in/out at dusk/dawn exactly like vanilla. STAR_ANGLE is in degrees -> radians.
-        starAngle = probe.getValue(EnvironmentAttributes.STAR_ANGLE, partial) * (float) (Math.PI / 180.0);
-        starBrightness = probe.getValue(EnvironmentAttributes.STAR_BRIGHTNESS, partial)
-                * LOOK.lighting().starLuminanceCdM2();
-        dayFactor = smoothstep(-0.08f, 0.10f, sunY);
-        float[] trans = new float[3];
-        if (sunY > -0.05f) {
-            // Sun stays the NEE light through the whole sunset: its colour/intensity is the atmosphere's
-            // own transmittance (same Rayleigh+Mie+ozone march as the sky shader — see
-            // atmosphereTransmittance), so it whitens overhead and reddens+dims into the horizon on
-            // exactly the curve the visible sky follows. The old hand-tuned warmth ramp switched to the
-            // moon at sunY == 0 while the sun was still at ~16% strength, which read as a hard light pop
-            // at sunset/sunrise; transmittance is already near zero at the horizon, and the short
-            // smoothstep below carries the remainder to exactly zero before the moon takes over.
-            atmosphereTransmittance(sunX, sunY, sunZ, trans);
-            float fade = smoothstep(-0.05f, 0.005f, sunY);
-            lx = sunX; ly = sunY; lz = sunZ;
-            rr = LOOK.lighting().sunIlluminanceLux() * trans[0] * fade;
-            rg = LOOK.lighting().sunIlluminanceLux() * trans[1] * fade;
-            rb = LOOK.lighting().sunIlluminanceLux() * trans[2] * fade;
-            lightRadius = CausticaConfig.Rt.Composite.SUN_ANGULAR_RADIUS.value();
-        } else {
-            // Moon: dim cool light, ramping up from zero at the sun→moon handoff (sunY = -0.05, where
-            // the sun fade also reaches zero) so the switch is invisible. The shared transmittance makes
-            // a low moon warm amber and a high moon silver. Phase controls 90% of the full-moon level;
-            // the fixed 10% floor keeps new-moon directional light present.
-            atmosphereTransmittance(moonX, moonY, moonZ, trans);
-            float moonStrength = smoothstep(0.04f, 0.22f, -sunY);
-            float moonPeak = LOOK.lighting().moonIlluminanceLux() * moonLightScale(moonPhase);
-            lx = moonX; ly = moonY; lz = moonZ;
-            rr = MOON_TINT_R * moonPeak * moonStrength * trans[0];
-            rg = MOON_TINT_G * moonPeak * moonStrength * trans[1];
-            rb = MOON_TINT_B * moonPeak * moonStrength * trans[2];
-            lightRadius = CausticaConfig.Rt.Composite.MOON_ANGULAR_RADIUS.value();
-        }
+        int seaLevel = mc.level != null ? mc.level.getSeaLevel() : 0;
+        float viewerAltitudeKm = Math.clamp((float) ((camY - seaLevel) / 1000.0), 0.0f, 99.0f);
+        float toRadians = (float) (Math.PI / 180.0);
+        float sunAngle = probe.getValue(EnvironmentAttributes.SUN_ANGLE, partial) * toRadians;
+        float moonAngle = probe.getValue(EnvironmentAttributes.MOON_ANGLE, partial) * toRadians;
+        // Stars use Minecraft's own celestial rotation and brightness (the values vanilla's SkyRenderer
+        // uses), so the field wheels about the celestial pole tied to world time and fades in and out at
+        // dusk/dawn exactly like vanilla's.
+        float starAngle = probe.getValue(EnvironmentAttributes.STAR_ANGLE, partial) * toRadians;
+        float starBrightness = probe.getValue(EnvironmentAttributes.STAR_BRIGHTNESS, partial);
+        float moonPhase = probe.getValue(EnvironmentAttributes.MOON_PHASE, partial).index(); // 0 full .. 4 new
+
+        RtLookPackage.Sky sky = LOOK.sky();
+        RtLookPackage.Lighting lighting = LOOK.lighting();
         CelestialUv uv = celestialUv(moonPhase);
         return new SkyPush(
-                new Float4(sunX, sunY, sunZ, dayFactor),
-                new Float4(lx, ly, lz, lightRadius),
-                linearAcesCgFromBt709(rr, rg, rb, starBrightness),
-                new Float4(moonX, moonY, moonZ, moonPhase),
-                new Float4(0f, celestialAxisY(), celestialAxisZ(), starAngle),
+                new Float4(sunAngle, moonAngle, starAngle, starBrightness),
+                new Float4(lighting.sunIlluminanceLux(), lighting.moonIlluminanceLux(),
+                        lighting.nightAirglowLuminanceCdM2(), lighting.starLuminanceCdM2()),
+                new Float4(sky.sunNoonSouthTiltDegrees() * toRadians,
+                        sky.sunAngularRadiusDegrees() * toRadians,
+                        sky.moonAngularRadiusDegrees() * toRadians,
+                        lighting.moonPhaseFixedFraction()),
+                new Float4(sky.sunDiscHalfAngleDegrees() * toRadians,
+                        sky.moonDiscHalfAngleDegrees() * toRadians,
+                        viewerAltitudeKm, moonPhase),
+                new Float4(sky.groundAlbedo(), 0f, 0f, 0f),
                 uv.sun(),
                 uv.moon());
-    }
-
-    /** Minecraft moon phases are 0 = full, 4 = new, then mirror back toward full through phase 7. */
-    static float moonLitFraction(float moonPhaseIndex) {
-        return Math.abs(moonPhaseIndex - 4.0f) / 4.0f;
-    }
-
-    /** Directional moon-light scale: 10% fixed floor plus 90% from the visible phase. */
-    static float moonLightScale(float moonPhaseIndex) {
-        return LOOK.lighting().moonPhaseFixedFraction()
-                + LOOK.lighting().moonPhaseFraction() * moonLitFraction(moonPhaseIndex);
     }
 
     /**
@@ -1465,12 +1436,6 @@ public final class RtComposite {
         celestialUvMoonPhase = moonPhase;
     }
 
-    /** Hermite smoothstep matching GLSL semantics (0 below edge0, 1 above edge1). */
-    private static float smoothstep(float edge0, float edge1, float x) {
-        float t = Math.clamp((x - edge0) / (edge1 - edge0), 0f, 1f);
-        return t * t * (3f - 2f * t);
-    }
-
     private static Float4 linearAcesCgFromSrgb(double r, double g, double b, float w) {
         return linearAcesCgFromBt709(
                 srgbToLinear(r), srgbToLinear(g), srgbToLinear(b), w);
@@ -1490,39 +1455,6 @@ public final class RtComposite {
                 : Math.pow((value + 0.055) / 1.055, 2.4);
     }
 
-    /**
-     * RGB transmittance from the camera to space along {@code dir} — a verbatim port of
-     * {@code world.rmiss}'s {@code transmittanceToSpace} (Rayleigh + Mie + ozone optical depth, 8-step
-     * march from 2 km altitude; constants must stay in lock-step with the shader). This is what colours
-     * the NEE sun/moonlight: because the sky shader tints its visible discs with the identical function,
-     * the light on terrain and the sky's sunset can never disagree. A direction below the geometric
-     * horizon accumulates enormous optical depth, so the result rolls to zero smoothly on its own —
-     * no explicit planet-shadow test needed.
-     */
-    private static void atmosphereTransmittance(float dx, float dy, float dz, float[] out) {
-        final double planetR = 6371000.0, atmosR = 6471000.0;
-        final double[] rayBeta = {5.5e-6, 13.0e-6, 22.4e-6};
-        final double mieBeta = 21.0e-6 * 1.1;
-        final double[] ozoneBeta = {0.650e-6, 1.881e-6, 0.085e-6};
-        final double oy = planetR + 2000.0;
-        // Larger root of ray vs atmosphere sphere, origin (0, oy, 0).
-        double b = oy * dy;
-        double tEnd = -b + Math.sqrt(Math.max(b * b - (oy * oy - atmosR * atmosR), 0.0));
-        double seg = tEnd / 8.0;
-        double odR = 0.0, odM = 0.0, odO = 0.0;
-        for (int i = 0; i < 8; i++) {
-            double t = seg * (i + 0.5);
-            double px = dx * t, py = oy + dy * t, pz = dz * t;
-            double h = Math.sqrt(px * px + py * py + pz * pz) - planetR;
-            odR += Math.exp(-h / 8000.0) * seg;
-            odM += Math.exp(-h / 1200.0) * seg;
-            odO += Math.max(0.0, 1.0 - Math.abs(h - 25000.0) / 15000.0) * seg;
-        }
-        for (int i = 0; i < 3; i++) {
-            out[i] = (float) Math.exp(-(rayBeta[i] * odR + mieBeta * odM + ozoneBeta[i] * odO));
-        }
-    }
-
     public void destroy() {
         // Teardown runs after the device is idle (CLIENT_STOPPING waits), so the TLAS ring's slots are no
         // longer in flight and can be freed immediately.
@@ -1538,14 +1470,7 @@ public final class RtComposite {
             hdrDisplayImage.destroy();
             hdrDisplayImage = null;
         }
-        if (bloomA != null) {
-            bloomA.destroy();
-            bloomA = null;
-        }
-        if (bloomB != null) {
-            bloomB.destroy();
-            bloomB = null;
-        }
+        destroyBloomLevels();
         if (fgHudlessImage != null) {
             fgHudlessImage.destroy();
             fgHudlessImage = null;
@@ -1572,6 +1497,10 @@ public final class RtComposite {
         if (bloomPipeline != null) {
             bloomPipeline.destroy();
             bloomPipeline = null;
+        }
+        if (skyLut != null) {
+            skyLut.destroy();
+            skyLut = null;
         }
         if (debugPresentPipeline != null) {
             debugPresentPipeline.destroy();

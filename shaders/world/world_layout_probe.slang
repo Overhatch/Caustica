@@ -70,6 +70,16 @@ void probeDebugPresentPush(uint3 id : SV_DispatchThreadID) {
     }
 }
 
+// The sky LUT compute passes push only the frame's WorldPush device address (see world_common.PushAddr).
+[[vk::push_constant]] PushAddr pushAddrLayoutProbe;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void probePushAddr(uint3 id : SV_DispatchThreadID) {
+    if (id.x == 0xFFFFFFFFu) {
+        float sink = float(pushAddrLayoutProbe.worldPushAddr);
+    }
+}
+
 [[vk::push_constant]] BloomPush bloomPushProbe;
 [shader("compute")]
 [numthreads(1, 1, 1)]
