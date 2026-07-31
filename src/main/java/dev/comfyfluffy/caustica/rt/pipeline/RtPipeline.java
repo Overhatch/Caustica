@@ -61,7 +61,7 @@ import static org.lwjgl.vulkan.KHRRayTracingPipeline.vkGetRayTracingShaderGroupH
  * supported by passing an array; {@code traceRayEXT}'s {@code missIndex} selects among them.
  */
 public final class RtPipeline {
-    private static final String SHADER_DIR = "/caustica/rt/";
+    private static final String SHADER_DIR = "/caustica/shaders/";
     /** Set 1: entity albedo plus three independently indexed canonical material-page arrays. */
     private static final int BINDLESS_BINDINGS = 4;
     private static final int ENTITY_ALBEDO_BINDING = 0;

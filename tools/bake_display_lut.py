@@ -20,7 +20,7 @@ Usage:
 
 Regenerate whenever SHAPER_LO/HI, LUT_SIZE, or the OCIO config/view below changes. The baked
 .bin files are committed binary resources. The display transforms live in
-src/main/resources/caustica/rt/luts/; the sole LMT lives beside the default package JSON.
+src/main/resources/caustica/color/luts/; the sole LMT lives beside the default package JSON.
 """
 import argparse
 import hashlib
@@ -44,9 +44,9 @@ SHAPER_LO_STOPS = -12.0
 SHAPER_HI_STOPS = 12.0
 
 LUT_SIZE = 65  # samples per axis; N^3 total. See docs/DISPLAY_TRANSFORM_PLAN.md S2 sizing note.
-OUT_DIR = Path(__file__).resolve().parent.parent / "src/main/resources/caustica/rt/luts"
+OUT_DIR = Path(__file__).resolve().parent.parent / "src/main/resources/caustica/color/luts"
 LOOK_PACKAGE_DIR = (
-    Path(__file__).resolve().parent.parent / "src/main/resources/caustica/rt/looks/default"
+    Path(__file__).resolve().parent.parent / "src/main/resources/caustica/color/looks/default"
 )
 
 # HDR REC2020 nits: ACES 2.0 does not parameterize peak luminance continuously -- OCIO's builtin

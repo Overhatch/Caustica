@@ -30,7 +30,7 @@ public record RtLookPackage(
     /** Mirrors RtBloomPipeline.MAX_LEVELS; validated here so a bad package fails at load, not at resize. */
     private static final int MAX_BLOOM_LEVELS = 8;
     public static final String DEFAULT_ID = "default";
-    public static final String DEFAULT_JSON = "/caustica/rt/looks/default/look.json";
+    public static final String DEFAULT_JSON = "/caustica/color/looks/default/look.json";
     private static final RtLookPackage DEFAULT = load(DEFAULT_JSON);
 
     public static RtLookPackage current() {

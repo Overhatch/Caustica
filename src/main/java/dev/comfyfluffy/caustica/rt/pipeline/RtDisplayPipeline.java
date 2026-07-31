@@ -31,7 +31,7 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
 
 /** Maps the display-res scene-linear ACEScg RT image to sRGB SDR and, when enabled, PQ/BT.2020 HDR. */
 public final class RtDisplayPipeline {
-    private static final String SHADER_DIR = "/caustica/rt/";
+    private static final String SHADER_DIR = "/caustica/shaders/";
     /** Push constants: output/look LUT state plus gamma and HDR peak nits. */
     private static final int PUSH_BYTES = DisplayPushData.BYTE_SIZE;
 

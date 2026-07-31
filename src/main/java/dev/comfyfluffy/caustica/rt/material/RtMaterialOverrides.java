@@ -30,7 +30,7 @@ public final class RtMaterialOverrides {
 
     public static RtMaterialOverrides load() {
         Map<Identifier, Resource> resources = Minecraft.getInstance().getResourceManager().listResources(
-                "caustica/materials", id -> id.getPath().endsWith(".json"));
+                "materials", id -> id.getPath().endsWith(".json"));
         List<Map.Entry<Identifier, Resource>> ordered = new ArrayList<>(resources.entrySet());
         ordered.sort(Map.Entry.comparingByKey(Comparator.comparing(Identifier::toString)));
         List<Rule> rules = new ArrayList<>();

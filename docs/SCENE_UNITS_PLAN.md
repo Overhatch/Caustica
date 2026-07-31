@@ -2,7 +2,7 @@
 
 > Historical implementation record: named constants and intermediate values below document the
 > passes that led here. The current runtime calibration source is the versioned default
-> [`look.json`](../src/main/resources/caustica/rt/looks/default/look.json); see
+> [`look.json`](../src/main/resources/caustica/color/looks/default/look.json); see
 > [LOOK_PACKAGES.md](LOOK_PACKAGES.md).
 
 Status: **U0–U4 implemented, U5 first pass measured in game** (2026-07-29). U2's constants validate

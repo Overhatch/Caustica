@@ -42,7 +42,7 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
  * without perturbing the exposure controller's history.
  */
 public final class RtDebugPresentPipeline {
-    private static final String SHADER_DIR = "/caustica/rt/";
+    private static final String SHADER_DIR = "/caustica/shaders/";
     private static final int PUSH_BYTES = DebugPresentPushData.BYTE_SIZE;
 
     private final RtContext ctx;

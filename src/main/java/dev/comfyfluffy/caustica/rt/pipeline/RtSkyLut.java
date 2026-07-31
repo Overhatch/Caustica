@@ -56,7 +56,7 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
  * single-buffered.
  */
 public final class RtSkyLut {
-    private static final String SHADER_DIR = "/caustica/rt/";
+    private static final String SHADER_DIR = "/caustica/shaders/";
     // Keep in lock-step with the same-named constants in shaders/world/sky.slang.
     public static final int TRANSMITTANCE_WIDTH = 256;
     public static final int TRANSMITTANCE_HEIGHT = 64;

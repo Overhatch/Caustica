@@ -65,9 +65,9 @@ public final class RtToneLut {
         return sampler;
     }
 
-    /** Loads a display-transform resource from {@code /caustica/rt/luts/}. */
+    /** Loads a display-transform resource from {@code /caustica/color/luts/}. */
     public static RtToneLut load(RtContext ctx, String resourceName) {
-        return loadResource(ctx, "/caustica/rt/luts/" + resourceName);
+        return loadResource(ctx, "/caustica/color/luts/" + resourceName);
     }
 
     /** Loads an absolute classpath LUT resource, including an LMT owned by a look package. */

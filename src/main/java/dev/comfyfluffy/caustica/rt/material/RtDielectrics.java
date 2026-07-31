@@ -16,7 +16,7 @@ import java.util.Map;
  * <p>Sprite-keyed rather than block-keyed because the material registry compiles per sprite, and
  * resolved once per sprite so it adds no variants to the profile x model x emission cross product. A
  * resource pack that renames textures falls back to the soda-lime default, and a
- * {@code caustica/materials/*.json} rule can set {@code transmission.ior} explicitly.
+ * {@code materials/*.json} rule can set {@code transmission.ior} explicitly.
  */
 public final class RtDielectrics {
     private RtDielectrics() {}

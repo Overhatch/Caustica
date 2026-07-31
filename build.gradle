@@ -78,7 +78,7 @@ processResources {
 
 // Compile GLSL and Slang sources to SPIR-V at build time instead of tracking binaries. Requires
 // glslangValidator, slangc, and spirv-val from the Vulkan SDK or PATH.
-def shaderGenRoot = layout.buildDirectory.dir("generated/shaders") // classpath root -> /caustica/rt/*.spv
+def shaderGenRoot = layout.buildDirectory.dir("generated/shaders") // classpath root -> /caustica/shaders/*.spv
 
 def resolveVulkanTool = { String name ->
 	def exe = org.gradle.internal.os.OperatingSystem.current().windows ? ".exe" : ""
@@ -188,7 +188,7 @@ def compileShaders = tasks.register("compileShaders", CompileShaders) {
 	group = "build"
 	description = "Compiles shaders/** shader sources to SPIR-V and validates them."
 	srcDir = file("shaders")
-	outDir = layout.buildDirectory.dir("generated/shaders/caustica/rt")
+	outDir = layout.buildDirectory.dir("generated/shaders/caustica/shaders")
 	glslang = resolveVulkanTool("glslangValidator")
 	spirvVal = resolveVulkanTool("spirv-val")
 	slangc = resolveVulkanTool("slangc")
@@ -212,7 +212,7 @@ tasks.named("test", Test) {
 sourceSets.main.java.srcDir(files(layout.buildDirectory.dir("generated/sources/shaderRecords")).builtBy(generateShaderRecords))
 
 // Emit the .spv into the main resources so they land in the jar / on the runClient classpath at the
-// same /caustica/rt/ path the loader (RtPipeline/RtBlendPipeline) reads. builtBy wires the dependency.
+// same /caustica/shaders/ path the pipeline loaders read. builtBy wires the dependency.
 sourceSets.main.resources.srcDir(files(shaderGenRoot).builtBy(compileShaders))
 
 def ngxNativeGenRoot = layout.buildDirectory.dir("generated/ngx-natives")

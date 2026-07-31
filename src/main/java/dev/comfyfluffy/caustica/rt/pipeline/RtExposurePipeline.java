@@ -33,7 +33,7 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
 
 /** Compute pipelines for histogram auto-exposure over the RT HDR trace output. */
 final class RtExposurePipeline {
-    private static final String SHADER_DIR = "/caustica/rt/";
+    private static final String SHADER_DIR = "/caustica/shaders/";
 
     private final RtContext ctx;
     private final long histDescriptorSetLayout;

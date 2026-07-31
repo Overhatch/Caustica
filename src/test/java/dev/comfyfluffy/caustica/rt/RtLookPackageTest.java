@@ -56,6 +56,6 @@ final class RtLookPackageTest {
 
     private static RtLookPackage parse(String json) {
         return RtLookPackage.parse(JsonParser.parseString(json).getAsJsonObject(),
-                "/caustica/rt/looks/test/look.json");
+                "/caustica/color/looks/test/look.json");
     }
 }

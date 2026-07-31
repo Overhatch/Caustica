@@ -53,7 +53,7 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
  * Blaze3D device bring-up) with one colour attachment, no depth, dynamic viewport/scissor.
  */
 public final class RtOverlayPipelines {
-    private static final String SHADER_DIR = "/caustica/rt/";
+    private static final String SHADER_DIR = "/caustica/shaders/";
 
     private RtOverlayPipelines() {
     }

@@ -47,7 +47,7 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
  * consumes the finished pyramid, whose level 0 accumulates every band.
  */
 public final class RtBloomPipeline {
-    private static final String SHADER = "/caustica/rt/bloom.comp.spv";
+    private static final String SHADER = "/caustica/shaders/bloom.comp.spv";
     /** Pyramid depth ceiling. Level 7 of a 4K pyramid is already 15x8 texels — nothing wider is useful. */
     public static final int MAX_LEVELS = 8;
     private static final int MODE_PREFILTER = 0;

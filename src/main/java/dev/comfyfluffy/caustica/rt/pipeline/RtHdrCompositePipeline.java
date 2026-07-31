@@ -35,7 +35,7 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
  * blitted to the PQ swapchain.
  */
 public final class RtHdrCompositePipeline {
-    private static final String SHADER_DIR = "/caustica/rt/";
+    private static final String SHADER_DIR = "/caustica/shaders/";
     private static final int PUSH_BYTES = Float.BYTES; // float paperWhiteNits
 
     private final RtContext ctx;
