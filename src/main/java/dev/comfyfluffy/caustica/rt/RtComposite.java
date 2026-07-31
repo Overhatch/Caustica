@@ -74,6 +74,7 @@ import dev.comfyfluffy.caustica.rt.terrain.RtTerrain;
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
 import java.nio.file.Path;
+import java.util.Objects;
 
 /**
  * On-screen composite. Each frame, ray-trace into a render-res storage image (+ guide buffers), use
@@ -121,6 +122,7 @@ public final class RtComposite {
     }
 
     private static final int WATER_ANCHOR_MASK = 4095;
+    private static final double EXPOSURE_TELEPORT_RESET_DISTANCE = 16.0;
     // The versioned look package owns every photometric anchor and, since the sky rewrite, the sky's
     // geometry too (docs/SCENE_UNITS_PLAN.md §3, docs/LOOK_PACKAGES.md). Its sun illuminance is the
     // photometric solar constant at the top of the atmosphere; the shader's transmittance LUT brings that
@@ -286,6 +288,13 @@ public final class RtComposite {
     private double camY;
     private double camZ;
     private boolean frameCaptured;
+    private Object exposureWorldIdentity;
+    private Object exposureDimensionKey;
+    private Object exposureCameraType;
+    private double exposureLastCamX;
+    private double exposureLastCamY;
+    private double exposureLastCamZ;
+    private boolean exposureContinuityValid;
     private long celestialUvAtlasHandle;
     private int celestialUvMoonPhase = -1;
     private float sunU0;
@@ -501,6 +510,37 @@ public final class RtComposite {
         frameCaptured = true;
     }
 
+    /** Reset exposure filtering after an explicit render-state invalidation such as F3+A. */
+    public void resetExposureHistory() {
+        exposureContinuityValid = false;
+        exposure.requestReset();
+    }
+
+    private boolean exposureDiscontinuity() {
+        Minecraft mc = Minecraft.getInstance();
+        Object world = mc.level;
+        Object dimension = mc.level != null ? mc.level.dimension() : null;
+        Object cameraType = mc.options.getCameraType();
+        double dx = camX - exposureLastCamX;
+        double dy = camY - exposureLastCamY;
+        double dz = camZ - exposureLastCamZ;
+        double teleportDistanceSq = EXPOSURE_TELEPORT_RESET_DISTANCE * EXPOSURE_TELEPORT_RESET_DISTANCE;
+        boolean reset = !exposureContinuityValid
+                || exposureWorldIdentity != world
+                || !Objects.equals(exposureDimensionKey, dimension)
+                || !Objects.equals(exposureCameraType, cameraType)
+                || dx * dx + dy * dy + dz * dz > teleportDistanceSq;
+
+        exposureWorldIdentity = world;
+        exposureDimensionKey = dimension;
+        exposureCameraType = cameraType;
+        exposureLastCamX = camX;
+        exposureLastCamY = camY;
+        exposureLastCamZ = camZ;
+        exposureContinuityValid = true;
+        return reset;
+    }
+
     /**
      * The frame's forward camera-relative view-projection (jitter-free), exactly what {@code world.rgen}
      * traced with — overlay raster passes ({@code dev.comfyfluffy.caustica.rt.overlay}) reuse it so their content lands
@@ -666,8 +706,8 @@ public final class RtComposite {
             exposure.ensureResources(ctx);
             // Latch pre-exposure for the whole frame: recordFrame's world push and the exposure
             // resolve both consume it and must see the identical value, or the raygen multiply and
-            // the display divide stop cancelling. See RtExposure.beginFrame().
-            exposure.beginFrame();
+            // the display divide stop cancelling. See RtExposure.beginFrame(boolean).
+            exposure.beginFrame(exposureDiscontinuity());
             refreshPipelineShapeIfNeeded(ctx);
             RtPipeline active = ensureWorld(ctx);
             if (materialEpochTraceGate) {
@@ -1475,6 +1515,7 @@ public final class RtComposite {
         // Teardown runs after the device is idle (CLIENT_STOPPING waits), so the TLAS ring's slots are no
         // longer in flight and can be freed immediately.
         tlasRing.destroy();
+        exposureContinuityValid = false;
         if (RtDlssRr.enabled()) {
             RtDlssRr.INSTANCE.destroy();
         }

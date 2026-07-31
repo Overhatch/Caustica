@@ -3,8 +3,8 @@
 // original (previous, initialized)
 // pair with S0's read-only diagnostics (evScene/evTarget/evApplied/clipLowFrac/clipHighFrac), read
 // back one frame late on the CPU for the debug log line in RtExposure -- see docs/EXPOSURE_PLAN.md S0.
-// resetSeq/evHistory are reserved for S4 (hard reset, median-of-N flash rejection) and are neither
-// read nor written here yet.
+// S4 keeps temporal state GPU-side. The CPU advances resetSeq when scene continuity breaks; a
+// mismatch snaps to this frame's target in one dispatch, without a host write or fence.
 
 import display_common;
 import bindings;
@@ -14,6 +14,7 @@ import bindings;
 static const float LOG_MIN = -12.0;
 static const float LOG_MAX = 12.0;
 static const float LOG_STEP = (LOG_MAX - LOG_MIN) / 256.0;
+static const float DEADBAND_EV = 0.05;
 
 float binCenter(uint bin) {
     return LOG_MIN + (float(bin) + 0.5) * LOG_STEP;
@@ -144,7 +145,13 @@ void main() {
     float target = clamp(residualTarget * preExposure, exp2(pc.minEv), exp2(pc.maxEv));
 
     bool initialized = stateBuf[0].initialized != 0u;
-    float prev = initialized ? max(stateBuf[0].previous, 1.0e-12) : target;
+    bool reset = !initialized || stateBuf[0].resetSeq != pc.resetSeq;
+    float targetEv = log2(max(target, 1.0e-12));
+    if (reset) {
+        stateBuf[0].resetSeq = pc.resetSeq;
+    }
+    float prevEv = reset ? targetEv : log2(max(stateBuf[0].previous, 1.0e-12));
+
     // Smooth in EV space, not in linear exposure space (docs/EXPOSURE_PLAN.md S4). Linear smoothing is
     // wildly asymmetric for reasons that have nothing to do with the time constants: lerping toward a
     // much LARGER target crosses most of the ratio in the first frame, while lerping toward a much
@@ -154,17 +161,24 @@ void main() {
     // In EV space a 15 EV swing takes the same 3.4*tau either way, so the time constants below are the
     // only thing that sets the asymmetry, and they can express the real one: light adaptation is quick,
     // dark adaptation is slow.
-    float rate = target > prev ? pc.adaptDarken : pc.adaptBrighten;
-    float alpha = initialized ? 1.0 - exp(-pc.frameTimeSeconds / max(rate, 1.0e-4)) : 1.0;
-    float exposure = exp2(lerp(log2(prev), log2(target), clamp(alpha, 0.0, 1.0)));
+    float exposureEv = prevEv;
+    float deltaEv = targetEv - prevEv;
+    if (!reset && abs(deltaEv) >= DEADBAND_EV) {
+        float rate = deltaEv > 0.0 ? pc.adaptDarken : pc.adaptBrighten;
+        float alpha = 1.0 - exp(-pc.frameTimeSeconds / max(rate, 1.0e-4));
+        exposureEv = prevEv + deltaEv * clamp(alpha, 0.0, 1.0);
+    } else if (reset) {
+        exposureEv = targetEv;
+    }
+    float exposure = exp2(exposureEv);
 
     // previous stays ABSOLUTE: it is both the smoothing history and the value RtExposure reads back
     // to choose next frame's preExposure.
     stateBuf[0].previous = exposure;
     stateBuf[0].initialized = 1u;
     stateBuf[0].evScene = evScene;
-    stateBuf[0].evTarget = log2(max(target, 1.0e-12));
-    stateBuf[0].evApplied = log2(max(exposure, 1.0e-12));
+    stateBuf[0].evTarget = targetEv;
+    stateBuf[0].evApplied = exposureEv;
     stateBuf[0].clipLowFrac = (float(histBins[0]) + float(histBins[256]) * skyScale
             + float(histBins[512]) * emissiveScale) / total;
     stateBuf[0].clipHighFrac = (float(histBins[255]) + float(histBins[511]) * skyScale

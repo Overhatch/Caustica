@@ -134,8 +134,20 @@ abstract class GenerateShaderRecords extends DefaultTask {
         }
     }
 
+    private static String emitReadExpression(Map type, Map binding, String base) {
+        def address = at(base, (binding.offset ?: 0) as int)
+        if (type.kind != "scalar") {
+            throw new GradleException("generated readers currently support scalar fields only: ${type}")
+        }
+        def method = type.scalarType == "float32" ? "getFloat"
+                : (type.scalarType in ["int32", "uint32"] ? "getInt"
+                : (type.scalarType in ["int64", "uint64"] ? "getLong" : null))
+        if (method == null) throw new GradleException("unsupported scalar reader: ${type.scalarType}")
+        "src.${method}(${address})"
+    }
+
     // NOT private: see the comment on extractPushConstantType -- same closure-dispatch issue.
-    static String generateJava(Map rootType, int byteSize, String className) {
+    static String generateJava(Map rootType, int byteSize, String className, boolean emitReader = false) {
         def fields = rootType.fields as List<Map>
         def arrays = fields.findAll { it.type.kind == "array" }
         def vectors = new LinkedHashSet<String>()
@@ -183,6 +195,19 @@ abstract class GenerateShaderRecords extends DefaultTask {
             emitWrite(sb, field.type as Map, field.binding as Map, "${field.name}()", "0", "        ", 0)
         }
         sb << "    }\n\n"
+
+        if (emitReader) {
+            sb << "    public static ${className} read(ByteBuffer src) {\n"
+            sb << "        Objects.requireNonNull(src, \"src\");\n"
+            sb << "        if (src.capacity() < BYTE_SIZE) throw new IllegalArgumentException(\"${className} buffer is too small: \" + src.capacity());\n"
+            sb << "        return new ${className}(\n"
+            fields.eachWithIndex { field, i ->
+                sb << "                ${emitReadExpression(field.type as Map, field.binding as Map, '0')}"
+                sb << (i + 1 == fields.size() ? "\n" : ",\n")
+            }
+            sb << "        );\n"
+            sb << "    }\n\n"
+        }
 
         vectors.sort().each { name ->
             def count = Integer.parseInt(name.substring(name.length() - 1))
@@ -264,6 +289,14 @@ abstract class GenerateShaderRecords extends DefaultTask {
         Map materialHeaderType = materialProbeArray.type.elementType as Map
         int materialHeaderByteSize = materialProbeArray.type.uniformStride as int
 
+        def exposureStateParameter = reflection.parameters.find { it.name == "exposureStateLayoutProbe" }
+        def exposureStateProbeArray = exposureStateParameter?.type?.resultType?.fields?.find { it.name == "values" }
+        if (exposureStateProbeArray?.type?.kind != "array" || exposureStateProbeArray.type.elementType?.name != "ExposureState") {
+            throw new GradleException("unexpected ExposureState reflection probe shape")
+        }
+        Map exposureStateType = exposureStateProbeArray.type.elementType as Map
+        int exposureStateByteSize = exposureStateProbeArray.type.uniformStride as int
+
         def generatedRoot = outDir.get().asFile
         if (generatedRoot.exists() && !generatedRoot.deleteDir()) {
             throw new GradleException("failed to clear generated shader record sources under ${generatedRoot}")
@@ -274,6 +307,8 @@ abstract class GenerateShaderRecords extends DefaultTask {
                 generateJava(worldType, worldByteSize, "WorldPushData"), "UTF-8")
         new File(packageDir, "MaterialHeaderData.java").setText(
                 generateJava(materialHeaderType, materialHeaderByteSize, "MaterialHeaderData"), "UTF-8")
+        new File(packageDir, "ExposureStateData.java").setText(
+                generateJava(exposureStateType, exposureStateByteSize, "ExposureStateData", true), "UTF-8")
 
         PUSH_CONSTANT_PROBES.each { probeName, structName, className ->
             Map type = extractPushConstantType(reflection, probeName, structName)

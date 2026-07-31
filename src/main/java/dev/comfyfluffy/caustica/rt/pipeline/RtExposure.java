@@ -9,6 +9,7 @@ import dev.comfyfluffy.caustica.rt.RtSceneUnits;
 import dev.comfyfluffy.caustica.rt.RtLookPackage;
 import dev.comfyfluffy.caustica.rt.accel.RtBuffer;
 import dev.comfyfluffy.caustica.rt.accel.RtImage;
+import dev.comfyfluffy.caustica.rt.gen.ExposureStateData;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.VK10;
@@ -16,6 +17,8 @@ import org.lwjgl.vulkan.VkClearColorValue;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkImageSubresourceRange;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.Objects;
 
 /** Owns the display exposure value shared by the RT compositor's display-mapping passes. */
@@ -29,26 +32,13 @@ public final class RtExposure {
     private long lastDiagLogNanos;
     private String cachedCurveSpec;
     private ExposureCurve cachedCurve;
-    /** This frame's latched pre-exposure; see {@link #beginFrame()}. */
+    private Mode lastFrameMode;
+    private ControllerConfig lastControllerConfig;
+    private boolean resetRequested = true;
+    private int resetSequence;
+    /** This frame's latched pre-exposure; see {@link #beginFrame(boolean)}. */
     private float framePreExposure = 1.0f;
 
-    // ExposureState byte layout (std430, see pipelines/exposure_resolve/bindings.slang) -- must match field-for-
-    // field. Population/curve diagnostics append after S4's already-reserved history fields so their
-    // existing offsets remain stable.
-    private static final int STATE_BYTES = 88;
-    private static final long OFF_PREVIOUS = 0L;
-    private static final long OFF_INITIALIZED = 4L;
-    private static final long OFF_EV_SCENE = 8L;
-    private static final long OFF_EV_TARGET = 12L;
-    private static final long OFF_EV_APPLIED = 16L;
-    private static final long OFF_CLIP_LOW_FRAC = 20L;
-    private static final long OFF_CLIP_HIGH_FRAC = 24L;
-    private static final long OFF_METERING_SKY_SCALE = 64L;
-    private static final long OFF_METERING_SKY_FRAC = 68L;
-    private static final long OFF_CURVE_COMPENSATION = 72L;
-    private static final long OFF_EFFECTIVE_SLOPE = 76L;
-    private static final long OFF_METERING_EMISSIVE_SCALE = 80L;
-    private static final long OFF_METERING_EMISSIVE_FRAC = 84L;
     private static final long DIAG_LOG_INTERVAL_NANOS = 1_000_000_000L;
 
     public RtImage image() {
@@ -95,10 +85,9 @@ public final class RtExposure {
                     Float.NaN, ev, ev);
         }
         state.invalidate();
+        ExposureStateData snapshot = readState();
         return new CaptureMetadata(pre, residualExposure, absolute, currentMode.configName,
-                MemoryUtil.memGetFloat(state.mapped + OFF_EV_SCENE),
-                MemoryUtil.memGetFloat(state.mapped + OFF_EV_TARGET),
-                MemoryUtil.memGetFloat(state.mapped + OFF_EV_APPLIED));
+                snapshot.evScene(), snapshot.evTarget(), snapshot.evApplied());
     }
 
     public void ensureResources(RtContext ctx) {
@@ -108,7 +97,8 @@ public final class RtExposure {
         // The final debug pass always binds the state buffer, including in manual mode. Keep this tiny
         // resource permanently available; histogram/pipeline allocation remains auto-only.
         if (state == null) {
-            state = ctx.createBuffer(STATE_BYTES, VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, "exposure state");
+            state = ctx.createBuffer(ExposureStateData.BYTE_SIZE, VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                    true, "exposure state");
             resetAutoHistory();
         }
         if (mode() == Mode.AUTO) {
@@ -164,6 +154,11 @@ public final class RtExposure {
             image.destroy();
             image = null;
         }
+        lastFrameMode = null;
+        lastControllerConfig = null;
+        resetRequested = true;
+        resetSequence = 0;
+        framePreExposure = 1.0f;
     }
 
     // Manual mode's exposure scale, also used as the auto-history seed (resetAutoHistory) so the very
@@ -206,17 +201,18 @@ public final class RtExposure {
             return;
         }
         lastDiagLogNanos = now;
-        float evScene = MemoryUtil.memGetFloat(state.mapped + OFF_EV_SCENE);
-        float evTarget = MemoryUtil.memGetFloat(state.mapped + OFF_EV_TARGET);
-        float evApplied = MemoryUtil.memGetFloat(state.mapped + OFF_EV_APPLIED);
-        float clipLowFrac = MemoryUtil.memGetFloat(state.mapped + OFF_CLIP_LOW_FRAC);
-        float clipHighFrac = MemoryUtil.memGetFloat(state.mapped + OFF_CLIP_HIGH_FRAC);
-        float skyScale = MemoryUtil.memGetFloat(state.mapped + OFF_METERING_SKY_SCALE);
-        float skyFrac = MemoryUtil.memGetFloat(state.mapped + OFF_METERING_SKY_FRAC);
-        float curveCompensation = MemoryUtil.memGetFloat(state.mapped + OFF_CURVE_COMPENSATION);
-        float effectiveSlope = MemoryUtil.memGetFloat(state.mapped + OFF_EFFECTIVE_SLOPE);
-        float emissiveScale = MemoryUtil.memGetFloat(state.mapped + OFF_METERING_EMISSIVE_SCALE);
-        float emissiveFrac = MemoryUtil.memGetFloat(state.mapped + OFF_METERING_EMISSIVE_FRAC);
+        ExposureStateData snapshot = readState();
+        float evScene = snapshot.evScene();
+        float evTarget = snapshot.evTarget();
+        float evApplied = snapshot.evApplied();
+        float clipLowFrac = snapshot.clipLowFrac();
+        float clipHighFrac = snapshot.clipHighFrac();
+        float skyScale = snapshot.meteringSkyScale();
+        float skyFrac = snapshot.meteringSkyFrac();
+        float curveCompensation = snapshot.curveCompensation();
+        float effectiveSlope = snapshot.effectiveSlope();
+        float emissiveScale = snapshot.meteringEmissiveScale();
+        float emissiveFrac = snapshot.meteringEmissiveFrac();
         AutoConfig cfg = autoConfig();
         boolean pinnedLow = evTarget <= cfg.minEv() + 0.01f;
         boolean pinnedHigh = evTarget >= cfg.maxEv() - 0.01f;
@@ -251,9 +247,10 @@ public final class RtExposure {
         if (mode() != Mode.AUTO) {
             return String.format(java.util.Locale.ROOT, "RT exposure: manual %s EV", fmt(manualEv()));
         }
-        float evScene = MemoryUtil.memGetFloat(state.mapped + OFF_EV_SCENE);
-        float evTarget = MemoryUtil.memGetFloat(state.mapped + OFF_EV_TARGET);
-        float evApplied = MemoryUtil.memGetFloat(state.mapped + OFF_EV_APPLIED);
+        ExposureStateData snapshot = readState();
+        float evScene = snapshot.evScene();
+        float evTarget = snapshot.evTarget();
+        float evApplied = snapshot.evApplied();
         AutoConfig cfg = autoConfig();
         String clamp = evTarget <= cfg.minEv() + 0.01f ? " (min clamp)"
                 : evTarget >= cfg.maxEv() - 0.01f ? " (max clamp)" : "";
@@ -273,20 +270,17 @@ public final class RtExposure {
         if (state == null || state.mapped == 0L) {
             return;
         }
-        // Zero the whole widened struct, not just (previous, initialized): the S0 diagnostic fields
-        // and the reserved S4 fields (resetSeq, evHistory) should start clean too, not carry over
-        // whatever garbage a fresh VMA allocation happened to contain.
-        MemoryUtil.memSet(state.mapped, 0, STATE_BYTES);
         // Under physical units (U2) this seed can be ~15 EV off for an auto-mode daylight scene, since
         // manual-ev defaults to 0. That is a two-frame transient, not a bug: initialized == 0 makes the
         // resolve snap to its computed target rather than smooth toward it, and the frame after that
         // meters against a preExposure derived from it. Deliberately not special-cased -- a seed that
         // guessed at scene brightness would be a second, unowned exposure model.
-        MemoryUtil.memPutFloat(state.mapped + OFF_PREVIOUS, manualExposureScale());
-        MemoryUtil.memPutInt(state.mapped + OFF_INITIALIZED, 0);
-        MemoryUtil.memPutFloat(state.mapped + OFF_METERING_SKY_SCALE, 1.0f);
-        MemoryUtil.memPutFloat(state.mapped + OFF_METERING_EMISSIVE_SCALE, 1.0f);
-        state.flush(0L, STATE_BYTES);
+        new ExposureStateData(
+                manualExposureScale(), 0,
+                0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0,
+                1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f
+        ).write(stateDataBuffer());
+        state.flush(0L, ExposureStateData.BYTE_SIZE);
         lastFrameNanos = 0L;
         lastDiagLogNanos = 0L;
     }
@@ -338,7 +332,8 @@ public final class RtExposure {
                 CausticaConfig.Rt.Exposure.SKY_WEIGHT_CAP.value(),
                 CausticaConfig.Rt.Exposure.EMISSIVE_WEIGHT_CAP.value(),
                 curveConfig(),
-                preExposure());
+                preExposure(),
+                resetSequence);
     }
 
     /**
@@ -352,8 +347,28 @@ public final class RtExposure {
      * values within one frame. Latching once removes that race; the residual absorbs whatever the
      * latched value failed to predict.
      */
-    public void beginFrame() {
-        framePreExposure = computePreExposure();
+    public void beginFrame(boolean sceneDiscontinuity) {
+        Mode currentMode = mode();
+        ControllerConfig currentConfig = currentMode == Mode.AUTO ? controllerConfig() : null;
+        boolean reset = currentMode == Mode.AUTO
+                && (resetRequested || sceneDiscontinuity || lastFrameMode != Mode.AUTO
+                || !Objects.equals(lastControllerConfig, currentConfig));
+        if (reset) {
+            resetSequence++;
+            lastFrameNanos = 0L;
+        }
+        resetRequested = false;
+        lastFrameMode = currentMode;
+        lastControllerConfig = currentConfig;
+
+        // On a reset frame the previous world's exposure is a poor storage-scale prediction. Unity is
+        // neutral and the resolve removes it exactly; subsequent frames resume last-frame prediction.
+        framePreExposure = reset ? 1.0f : computePreExposure();
+    }
+
+    /** Request a GPU-side history reset on the next auto-exposure frame. */
+    public void requestReset() {
+        resetRequested = true;
     }
 
     /**
@@ -386,15 +401,24 @@ public final class RtExposure {
         // multiplier, and physical units (U2) put noon at ~3e-5 absolute, which that floor would
         // truncate -- silently de-centring exactly the case pre-exposure exists to handle. The
         // controller's own minEv/maxEv already bound this value; here we only reject garbage.
-        float previous = MemoryUtil.memGetFloat(state.mapped + OFF_PREVIOUS);
+        float previous = readState().previous();
         return Float.isFinite(previous) && previous > 0.0f ? previous : 1.0f;
     }
 
-    record AutoConfig(float key, float minEv, float maxEv, float adaptDarken, float adaptBrighten, float evBias,
+    private ByteBuffer stateDataBuffer() {
+        return MemoryUtil.memByteBuffer(state.mapped, ExposureStateData.BYTE_SIZE).order(ByteOrder.nativeOrder());
+    }
+
+    private ExposureStateData readState() {
+        return ExposureStateData.read(stateDataBuffer());
+    }
+
+    record AutoConfig(float key, float minEv, float maxEv, float adaptDarken, float adaptBrighten,
+                      float evBias,
                       float lowPercentile, float highPercentile, int stride,
                       float centerWeightSigma, float centerWeightFloor, float skyWeightCap,
                       float emissiveWeightCap,
-                      ExposureCurve curve, float preExposure) {
+                      ExposureCurve curve, float preExposure, int resetSequence) {
         /**
          * Offset taking the resolve's {@code log2(metered stored luminance)} to EV100. The metered
          * buffer holds {@code L * preExposure}, so the pre-exposure has to come back out before the
@@ -403,6 +427,33 @@ public final class RtExposure {
         float evOffset() {
             return RtSceneUnits.EV100_OFFSET - (float) (Math.log(Math.max(preExposure, 1.0e-12f)) / Math.log(2.0));
         }
+    }
+
+    private ControllerConfig controllerConfig() {
+        return new ControllerConfig(
+                CausticaConfig.Rt.Exposure.KEY.value(),
+                CausticaConfig.Rt.Exposure.minEv(),
+                CausticaConfig.Rt.Exposure.maxEv(),
+                CausticaConfig.Rt.Exposure.ADAPT_DARKEN.value(),
+                CausticaConfig.Rt.Exposure.ADAPT_BRIGHTEN.value(),
+                manualEv(),
+                CausticaConfig.Rt.Exposure.LOW_PERCENTILE.value(),
+                CausticaConfig.Rt.Exposure.HIGH_PERCENTILE.value(),
+                CausticaConfig.Rt.Exposure.STRIDE.value(),
+                CausticaConfig.Rt.Exposure.CENTER_WEIGHT_SIGMA.value(),
+                CausticaConfig.Rt.Exposure.CENTER_WEIGHT_FLOOR.value(),
+                CausticaConfig.Rt.Exposure.SKY_WEIGHT_CAP.value(),
+                CausticaConfig.Rt.Exposure.EMISSIVE_WEIGHT_CAP.value(),
+                curveConfig(),
+                CausticaConfig.Rt.Exposure.PRE_EXPOSURE.value());
+    }
+
+    private record ControllerConfig(
+            float key, float minEv, float maxEv, float adaptDarken, float adaptBrighten,
+            float evBias,
+            float lowPercentile, float highPercentile, int stride,
+            float centerWeightSigma, float centerWeightFloor, float skyWeightCap,
+            float emissiveWeightCap, ExposureCurve curve, boolean preExposureEnabled) {
     }
 
     private ExposureCurve curveConfig() {

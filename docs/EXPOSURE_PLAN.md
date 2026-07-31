@@ -1,6 +1,7 @@
 # Exposure Plan — smarter metering and adaptation
 
-Status: **implementation in progress** — S0–S3 are implemented.
+Status: **S0–S4 implemented; S5 evaluated and deferred unless radiance metering shows a concrete
+albedo-driven failure in play.**
 Written 2026-07-27 against `bt2020-only`
 
 > **Upstream dependency added 2026-07-29:** [SCENE_UNITS_PLAN.md](SCENE_UNITS_PLAN.md) moves the
@@ -136,8 +137,7 @@ evExposure = log2(key) - evScene + comp(evScene) + evBias
 | Torch-lit cave | −2 to −2.5 EV, torch cores still not clipped |
 | Deep dark, no light source | floor at `minEv`, i.e. genuinely black |
 
-**Filter (S4).** Exponential in EV with a slew limit, a deadband, a median-of-N transient
-rejector, and a hard reset input.
+**Filter (S4).** Exponential adaptation in EV with a deadband and a hard reset input.
 
 ## 3. Stages
 
@@ -147,7 +147,7 @@ Nothing below is tunable blind. The state buffer is already host-visible and map
 mostly bookkeeping.
 
 - Widen `ExposureState` to a struct: `evScene`, `evTarget`, `evApplied`, `clipLowFrac`,
-  `clipHighFrac`, `resetSeq`, plus the S3 history ring. Read it CPU-side one frame late (debug
+  `clipHighFrac`, and `resetSeq`. Read it CPU-side one frame late (debug
   only — no fence needed, a stale value is fine for a HUD). **Done.**
 - Throttled log line behind `FrameStats.ENABLED` with the full diagnostic set (evScene/evTarget/
   evApplied, clip fractions, sky/emissive scale+weight, curve compensation, effective slope). **Done**
@@ -174,17 +174,18 @@ the sky/terrain split obvious.
 
 **Status (2026-07-27): state widening, log line, and the two debug views are done.**
 `ExposureState` (std430, `exposure_resolve.comp.slang`) initially widened from
-`(previous, initialized)` to 64 bytes, then S2/S3 appended sky-weight/curve diagnostics and the
-emissive follow-up added 8 bytes, for 88 bytes total:
+`(previous, initialized)` with S0 diagnostics, then S2/S3 appended sky-weight/curve diagnostics and
+the emissive follow-up added 8 bytes, for 56 bytes total:
 adds `evScene`/`evTarget`/`evApplied` (all EV, i.e. log2), `clipLowFrac`/`clipHighFrac`
 (fraction of metered pixels landing in the histogram's extreme bins — the "is the meter's dynamic
-range clipping" reading, distinct from whether the EV clamp itself is pinned), and reserves
-`resetSeq`/`evHistory[8]` for S4 (declared now, neither read nor written yet, so the buffer layout
-doesn't need to change again when S4 lands). No behavior change: the linear-space smoothing math is
-untouched, these are read-only diagnostics alongside it. `RtExposure.logDiagnosticsIfDue()` logs
+range clipping" reading, distinct from whether the EV clamp itself is pinned), plus S4's
+`resetSeq`. The CPU advances the sequence across discontinuities and the resolve snaps to the new
+target. `RtExposure.logDiagnosticsIfDue()` logs
 them once/second, gated behind the existing `caustica.rt.frameStats` toggle (reused rather than a
 new flag — that's already "I want renderer internals" for this codebase) and flags when `evTarget`
-is sitting at the `minEv`/`maxEv` clamp boundary, directly surfacing D1's diagnosis.
+is sitting at the `minEv`/`maxEv` clamp boundary, directly surfacing D1's diagnosis. Its 56-byte
+Std430 layout is reflected from the shared Slang definition into generated `ExposureStateData`;
+host initialization and reads contain no duplicated byte offsets.
 
 **Debug presentation + the two exposure views done (2026-07-27).** `writeDebugView` was removed
 from the primary raygen — the hottest, occupancy-bound shader in the renderer — and replaced with
@@ -322,28 +323,36 @@ Mode 9 displays the actual same-frame emissive scale, and diagnostics report its
 Rewrite the smoothing in EV space (D4, D5):
 
 ```
-evT   = median(history[N])            // N = 8 frames, rejects lightning/explosion flashes
+evT   = current metered target
 tau   = (evT < evPrev) ? tauBrighten : tauDarken     // named for what the IMAGE does
 step  = (evT - evPrev) * (1 - exp(-dt / tau))
-step  = clamp(step, -maxEvPerSec * dt, maxEvPerSec * dt)
-ev    = |evT - evPrev| < deadbandEv ? evPrev : evPrev + step
+ev    = |evT - evPrev| < 0.05 EV ? evPrev : evPrev + step
 ```
 
-- The median ring is 8 floats in the state buffer; the flash is 1–3 frames of 8 and never becomes
-  the median. Note this adds ~4 frames of lag to *genuine* steps — the slew limit and `tau` already
-  dominate that, so it should not be perceptible, but check it in the S0 trace.
-- **Hard reset** (`alpha = 1`, clear the ring) on: dimension change, respawn/teleport
+- **Hard reset** (`alpha = 1`) on: dimension change, respawn/teleport
   (large `camDelta`), camera-type change, `manual → auto`, exposure config change, and the first
   frame after a world load. Drive it with a CPU-side `resetSeq` counter in the push constant that
   the shader compares against the stored one — no extra dispatch, no CPU/GPU race.
-- Asymmetric defaults with a physical justification: walking out of a cave into noon *should*
-  blind briefly (slow darken, ~0.8 s), while the reverse should recover faster than a real eye or
-  the game is unplayable (~0.4 s). Current 0.12/0.35 s are both far faster than any eye.
+- Asymmetric defaults with a physical justification: walking into darkness adapts slowly (~2.0 s),
+  while stepping into a brighter scene recovers faster (~0.4 s). Both are compressed from real human
+  adaptation times for playability while preserving the correct direction of the asymmetry.
 
-*Acceptance:* a lightning strike moves `evApplied` by <0.1 EV; a portal transition snaps in one
-frame; no visible pumping under flickering torchlight.
+*Acceptance:* a portal transition snaps in one frame; ordinary metering noise does not cause visible
+pumping under flickering torchlight.
+
+**Status (2026-07-31): implemented; play acceptance pending.** The resolve applies a fixed 0.05 EV
+deadband and asymmetric exponential response directly to the current target. A reset sequence snaps to the new
+target on that frame. The CPU advances it on world/dimension replacement,
+camera-mode changes, movement over 16 blocks in one rendered frame, manual→auto, any exposure-controller
+configuration change, first world frame, and explicit render-state invalidation. Reset frames use neutral
+pre-exposure for storage and the resolve removes it exactly; no host write or GPU fence is introduced.
 
 ### S5 — Illuminance metering
+
+**Status: deferred.** Current radiance metering already has centre weighting, percentile trimming,
+and exact sky/emissive population caps. Demodulating by guide albedo would invalidate the calibrated
+curve and introduces instability on dark, metallic, transparent, and guide-edge pixels. Revisit only
+if a controlled material-reskin test exposes an objectionable albedo-driven EV shift.
 
 Meter `radiance / max(albedo, 0.08)` for non-sky pixels using `gAlbedo`, fetched nearest with the
 same render→display scaling as S2's depth (D3).
@@ -408,13 +417,10 @@ existing convention):
 | `sky-weight-cap` | 0.25 | S2 |
 | `emissive-weight-cap` | 0.10 | S2/S5 follow-up |
 | `curve` (4 control points, or `full`) | `-6:-2.0, -3:-0.8, 0:0.0, 4:0.4` | S3 |
-| `tau-brighten` / `tau-darken` | 0.4 / 0.8 s | S4 |
-| `max-ev-per-second` | 1.5 | S4 |
-| `deadband-ev` | 0.05 | S4 |
-| `median-frames` | 8 | S4 |
+| `adapt-brighten` / `adapt-darken` | 0.4 / 2.0 s | S4 |
 | `illuminance-metering` | false → true once validated | S5 |
 
-Renames: `adapt-up`/`adapt-down` → `tau-brighten`/`tau-darken` with inverted sense (D4). These are
+Renames: `adapt-up`/`adapt-down` → `adapt-brighten`/`adapt-darken` with inverted sense (D4). These are
 user-visible config keys, so either migrate on load or accept the break — the mod is pre-release,
 so accepting the break and logging once is fine.
 
@@ -425,7 +431,7 @@ Removals: `pc.pixelCount` from the resolve push constant (S1).
 The exposure block is two dispatches, one buffer fill and two barriers per frame, currently timed
 as `frame.exposure` ([RtFrameStats.java:67](../src/main/java/dev/comfyfluffy/caustica/rt/RtFrameStats.java)).
 S1's stride makes the histogram ~4x cheaper; S2/S5 add a nearest fetch of `gDepth`/`gAlbedo` per
-sampled pixel; S3/S4 are ~50 extra ALU ops in a single-invocation dispatch, i.e. free. Net expected
+sampled pixel; S3/S4 add a few ALU ops in a single-invocation dispatch, i.e. free. Net expected
 change is **negative** (faster than today), which is worth confirming rather than assuming — the
 profile in [GPU_PERF_PLAN.md](GPU_PERF_PLAN.md) says this frame is latency-bound, so a removed
 full-res read matters more than the op count suggests.
@@ -435,12 +441,10 @@ full-res read matters more than the op count suggests.
 1. **Where does the curve get authored?** Four control points in a TOML string is developer-facing.
    If exposure ever becomes a user-facing quality setting, it wants 2–3 named presets
    (`cinematic` / `neutral` / `full-adaptation`) with the curve hidden behind them.
-2. **Does the median rejector fight the slew limiter?** Both add lag; S0's trace will show whether
-   `median-frames = 8` is doing anything the limiter was not already doing. Measure before keeping.
-3. **Is S5's percentile trim really enough for emitters?** Unknown until it is run against a
+2. **Is S5's percentile trim really enough for emitters?** Unknown until it is run against a
    glowstone/lava scene. The fallback (an emissive guide bit) is a shader plumbing change, not a
    redesign, so the risk is bounded.
-4. **Weather.** Rain darkens the sky and the sky cap interacts with that; probably fine, but it is
+3. **Weather.** Rain darkens the sky and the sky cap interacts with that; probably fine, but it is
    a reference scene the §S3 table does not currently cover.
 
 ## 7. Recommended order

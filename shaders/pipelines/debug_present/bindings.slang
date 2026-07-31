@@ -1,20 +1,4 @@
-public struct ExposureState {
-    public float previous;
-    public uint initialized;
-    public float evScene;
-    public float evTarget;
-    public float evApplied;
-    public float clipLowFrac;
-    public float clipHighFrac;
-    public uint resetSeq;
-    public float evHistory[8];
-    public float meteringSkyScale;
-    public float meteringSkyFrac;
-    public float curveCompensation;
-    public float effectiveSlope;
-    public float meteringEmissiveScale;
-    public float meteringEmissiveFrac;
-};
+import display_common;
 
 [[vk::binding(0, 0)]] [format("rgba8")] public RWTexture2D<float4> outputImage;
 [[vk::binding(1, 0)]] [format("rgba16f")] public RWTexture2D<float4> gNormal;

@@ -217,7 +217,8 @@ final class RtExposurePipeline {
                     frameTimeSeconds, config.evBias(), config.lowPercentile(), config.highPercentile(),
                     config.skyWeightCap(), curve.scene0(), curve.compensation0(), curve.scene1(),
                     curve.compensation1(), curve.scene2(), curve.compensation2(), curve.scene3(),
-                    curve.compensation3(), config.emissiveWeightCap(), config.evOffset(), config.preExposure()
+                    curve.compensation3(), config.emissiveWeightCap(), config.evOffset(), config.preExposure(),
+                    config.resetSequence()
             ).write(push);
             VK10.vkCmdPushConstants(cmd, resolvePipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, 1, 1, 1);

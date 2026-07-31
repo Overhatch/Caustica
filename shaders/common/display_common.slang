@@ -47,6 +47,27 @@ public struct ExposureResolvePush {
     // and to keep minEv/maxEv bounding ABSOLUTE exposure rather than the residual.
     public float evOffset;
     public float preExposure;
+    // S4 temporal controller. resetSeq invalidates GPU exposure history without a host write or fence.
+    public uint resetSeq;
+};
+
+// Persistent auto-exposure controller state. This shared definition is also reflected into
+// ExposureStateData.java so host reads and initialization follow Slang's Std430 layout.
+public struct ExposureState {
+    public float previous;
+    public uint initialized;
+    public float evScene;
+    public float evTarget;
+    public float evApplied;
+    public float clipLowFrac;
+    public float clipHighFrac;
+    public uint resetSeq;
+    public float meteringSkyScale;
+    public float meteringSkyFrac;
+    public float curveCompensation;
+    public float effectiveSlope;
+    public float meteringEmissiveScale;
+    public float meteringEmissiveFrac;
 };
 
 public struct DisplayPush {
