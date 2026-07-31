@@ -17,12 +17,18 @@ public final class RtScreenshotExporter {
     private RtScreenshotExporter() {
     }
 
-    public static void export(File workDir, Consumer<Component> callback) {
+    /**
+     * Exports the RT image and returns the exact filename vanilla should use for the paired PNG.
+     * Returns {@code null} only when a filename cannot be reserved, allowing the caller to fall back to
+     * vanilla's ordinary auto-naming path.
+     */
+    public static String exportPaired(File workDir, Consumer<Component> callback) {
         Path screenshotDirectory = workDir.toPath().resolve("screenshots");
-        Path output = nextPairedPath(screenshotDirectory);
         try {
+            Files.createDirectories(screenshotDirectory);
+            Path output = nextPairedPath(screenshotDirectory);
             if (!RtComposite.INSTANCE.exportLatestResidualExposureExr(output)) {
-                return;
+                return pngName(output);
             }
             File file = output.toFile().getAbsoluteFile();
             Component link = Component.literal(file.getName())
@@ -30,11 +36,18 @@ public final class RtScreenshotExporter {
                     .withStyle(style -> style.withClickEvent(new ClickEvent.OpenFile(file)));
             callback.accept(Component.literal("Saved residual-exposure ACEScg EXR: ").append(link));
             CausticaMod.LOGGER.info("Saved residual-exposure ACEScg screenshot to {}", file);
+            return pngName(output);
         } catch (Exception e) {
             CausticaMod.LOGGER.warn("Couldn't save residual-exposure ACEScg screenshot", e);
             callback.accept(Component.literal("Couldn't save Caustica EXR: " + e.getMessage())
                     .withStyle(ChatFormatting.RED));
+            return null;
         }
+    }
+
+    private static String pngName(Path exrPath) {
+        String name = exrPath.getFileName().toString();
+        return name.substring(0, name.length() - ".exr".length()) + ".png";
     }
 
     private static Path nextPairedPath(Path directory) {

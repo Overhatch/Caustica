@@ -53,7 +53,7 @@ public final class RtVideoOptions {
         ));
         if (CausticaConfig.Rt.Hdr.swapchainPqAvailable()) {
             options.add(hdrEnabled());
-            options.add(hdrPaperWhite());
+            options.add(hdrUiBrightness());
             options.add(hdrPeak());
         }
         options.add(debugView());
@@ -171,14 +171,14 @@ public final class RtVideoOptions {
             });
     }
 
-    private static OptionInstance<Integer> hdrPaperWhite() {
-        FloatSetting setting = CausticaConfig.Rt.Hdr.PAPER_WHITE_NITS;
+    private static OptionInstance<Integer> hdrUiBrightness() {
+        FloatSetting setting = CausticaConfig.Rt.Hdr.UI_NITS;
         return new OptionInstance<>(
-            "caustica.options.rt.hdrPaperWhite",
-            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.hdrPaperWhite.tooltip")),
+            "caustica.options.rt.hdrUiBrightness",
+            OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.hdrUiBrightness.tooltip")),
             (caption, nits) -> Options.genericValueLabel(caption, Component.literal(nits + " nits")),
-            new OptionInstance.IntRange(80, 1000),
-            Math.clamp(Math.round(setting.value()), 80, 1000),
+            new OptionInstance.IntRange(80, 500),
+            Math.clamp(Math.round(setting.value()), 80, 500),
             nits -> setting.set(nits.floatValue()));
     }
 

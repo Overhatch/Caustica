@@ -37,7 +37,7 @@ import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.*;
  */
 public final class RtSdrPresentPipeline {
     private static final String SHADER_DIR = "/caustica/shaders/pipelines/sdr_present/";
-    private static final int PUSH_BYTES = Float.BYTES; // float paperWhiteNits
+    private static final int PUSH_BYTES = Float.BYTES; // float uiNits
 
     private final RtContext ctx;
     private final long descriptorSetLayout;
@@ -136,12 +136,12 @@ public final class RtSdrPresentPipeline {
         boundSampler = sampler;
     }
 
-    public void dispatch(VkCommandBuffer cmd, int width, int height, float paperWhiteNits) {
+    public void dispatch(VkCommandBuffer cmd, int width, int height, float uiNits) {
         try (MemoryStack stack = MemoryStack.stackPush(); RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "sdr present")) {
             VK10.vkCmdBindPipeline(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             VK10.vkCmdBindDescriptorSets(cmd, VK10.VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, stack.longs(descriptorSet), null);
             ByteBuffer push = stack.malloc(PUSH_BYTES);
-            push.putFloat(0, paperWhiteNits);
+            push.putFloat(0, uiNits);
             VK10.vkCmdPushConstants(cmd, pipelineLayout, VK10.VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
             VK10.vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
         }

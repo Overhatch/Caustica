@@ -59,7 +59,7 @@ public final class CausticaConfig {
             Rt.ENABLED, Rt.Composite.SPP, Rt.Composite.MAX_BOUNCES, Rt.Terrain.ASYNC_DISPATCH_PER_PASS, Rt.Omm.ENABLED,
             Rt.Entities.ENABLED, Rt.Entities.GLOW_ENABLED, Rt.EntityTextures.MAX_TEXTURES, Rt.DlssRr.ENABLED, Rt.Fg.ENABLED,
             Rt.Reflex.ENABLED, Rt.Exposure.MODE, Rt.Tonemap.GAMMA, Rt.FrameStats.ENABLED,
-            Rt.Hdr.ENABLED, Ngx.PATH,
+            Rt.Screenshots.EXR_ENABLED, Rt.Hdr.ENABLED, Ngx.PATH,
         };
     }
 
@@ -125,8 +125,11 @@ public final class CausticaConfig {
                         + " emissive-weight-cap bound those populations' final metering shares.");
         FILE.setComment("hdr",
                 " HDR display output (ST.2084/PQ). When enabled the swapchain is created in PQ automatically\n"
-                        + " (falls back to SDR if the surface doesn't advertise it). paper-white-nits / peak-nits\n"
-                        + " drive the scene-HDR -> display mapping.");
+                        + " (falls back to SDR if the surface doesn't advertise it). ui-nits controls the\n"
+                        + " brightness of SDR-authored UI; peak-nits selects the baked ACES mastering target.");
+        FILE.setComment("screenshots",
+                " Screenshot extras. exr-enabled adds a scene-linear ACEScg EXR beside vanilla's F2 PNG\n"
+                        + " while the RT renderer has a completed frame available.");
     }
 
     private static Path resolveConfigPath() {
@@ -853,6 +856,15 @@ public final class CausticaConfig {
             }
         }
 
+        /** Optional high-dynamic-range screenshot output paired with vanilla's F2 PNG. */
+        public static final class Screenshots {
+            public static final BooleanSetting EXR_ENABLED =
+                    bool("caustica.rt.screenshots.exr", "screenshots.exr-enabled", false);
+
+            private Screenshots() {
+            }
+        }
+
         /** Startup Vulkan inventory + {@code VK_EXT_device_fault} reporting on device loss. See {@code VulkanDiagnostics}. */
         public static final class Diagnostics {
             /** Heavy driver-side crash diagnostics: vendor diagnostics-config extensions (shader debug
@@ -872,13 +884,13 @@ public final class CausticaConfig {
          * HDR display output. When enabled the swapchain is created in PQ (ST.2084/HDR10 — the display-ready
          * encoding both HDR10 swapchains and DLSS Frame Generation require; whatever pixel format the surface
          * pairs with that color space, commonly a 10-bit UNORM), falling back to SDR if the surface doesn't
-         * advertise it. The nit values drive the scene-HDR → display mapping: SDR paper white maps to
-         * {@code paperWhiteNits}, and highlights roll off toward {@code peakNits}.
+         * advertise it. The ACES LUT owns scene-to-display mapping; {@code uiNits} places SDR-authored UI
+         * in that PQ output, while {@code peakNits} selects the LUT's mastering target.
          */
         public static final class Hdr {
             public static final BooleanSetting ENABLED = bool("caustica.rt.hdr", "hdr.enabled", false);
-            public static final FloatSetting PAPER_WHITE_NITS =
-                    clampedFloat("caustica.rt.hdr.paperWhiteNits", "hdr.paper-white-nits", 200.0f, 80.0f, 500.0f);
+            public static final FloatSetting UI_NITS =
+                    clampedFloat("caustica.rt.hdr.uiNits", "hdr.ui-nits", 200.0f, 80.0f, 500.0f);
             public static final FloatSetting PEAK_NITS =
                     clampedFloat("caustica.rt.hdr.peakNits", "hdr.peak-nits", 1000.0f, 80.0f, 5000.0f);
 
@@ -930,14 +942,9 @@ public final class CausticaConfig {
                 return SWAPCHAIN_PQ_ACTIVE && ENABLED.value();
             }
 
-            /** Absolute nits SDR paper white maps to in the PQ encode (ST.2084 is referenced to 10000 nits). */
-            public static float paperWhiteNits() {
-                return PAPER_WHITE_NITS.value();
-            }
-
-            /** Highlight headroom above paper white, in paper-white-referred units ({@code >= 1}). */
-            public static float headroom() {
-                return Math.max(1.0f, PEAK_NITS.value() / Math.max(1.0f, PAPER_WHITE_NITS.value()));
+            /** Absolute brightness assigned to SDR-authored UI in the PQ output. */
+            public static float uiNits() {
+                return UI_NITS.value();
             }
 
             /**

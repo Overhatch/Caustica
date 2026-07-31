@@ -668,13 +668,6 @@ public final class RtComposite {
             // package's exposure and photometric anchors.
             if (lookLut == null) {
                 lookLut = RtToneLut.loadResource(ctx, LOOK.lmtResource());
-                if (lookLut.shaperLoStops != sdrToneLut.shaperLoStops
-                        || lookLut.shaperHiStops != sdrToneLut.shaperHiStops) {
-                    lookLut.destroy();
-                    lookLut = null;
-                    throw new IllegalStateException("look/output LUT shaper mismatch for "
-                            + LOOK.lmtResource());
-                }
             }
             // A resource reload re-stitches the block atlas. We've already torn down the world pipeline
             // (onResourceReloadStart) so nothing references the old atlas, but MC's deferred free keeps the
@@ -704,10 +697,6 @@ public final class RtComposite {
             // manual -> auto at runtime (video settings), the auto-mode histogram/state/pipeline must be
             // allocated before recordFrame's exposure.record() below needs them, or it throws.
             exposure.ensureResources(ctx);
-            // Latch pre-exposure for the whole frame: recordFrame's world push and the exposure
-            // resolve both consume it and must see the identical value, or the raygen multiply and
-            // the display divide stop cancelling. See RtExposure.beginFrame(boolean).
-            exposure.beginFrame(exposureDiscontinuity());
             refreshPipelineShapeIfNeeded(ctx);
             RtPipeline active = ensureWorld(ctx);
             if (materialEpochTraceGate) {
@@ -1079,6 +1068,9 @@ public final class RtComposite {
         // Reserve the graphics-use value that guards this frame's reusable TLAS and entity resources.
         RtGpuExecutor.GraphicsUse graphicsUse = gpuExecutor.beginGraphicsUse(encoder);
         RtGpuExecutor.GraphicsUseWaiter graphicsUseWaiter = gpuExecutor.graphicsUseWaiter();
+        // Reuse a completed readback slot, then latch one pre-exposure value for both raygen and resolve.
+        // This belongs after the timeline snapshot and before any world push data is written.
+        exposure.beginFrame(exposureDiscontinuity(), graphicsUseWaiter);
         pendingGraphicsUse = graphicsUse;
         RtEntities.FrameEntities frameEntities = null;
         VkCommandBuffer cmd = encoder.allocateAndBeginTransientCommandBuffer();
@@ -1293,6 +1285,7 @@ public final class RtComposite {
             try (RtDebugLabels.Scope ignored = RtDebugLabels.scope(ctx, cmd, "exposure");
                  RtFrameStats.Scope ignoredStats = RtFrameStats.FRAME.stage("frame.exposure")) {
                 exposure.record(ctx, cmd, stack, rrOutput, gDepth, gAlbedo);
+                exposure.recordStateReadback(cmd, stack);
             }
             VulkanCommandEncoder.memoryBarrier(cmd, stack); // exposure image visible to the display mapper
 
@@ -1345,6 +1338,7 @@ public final class RtComposite {
         // Do not attach a merely reserved token: failed recording may never signal it. Once execute succeeds,
         // every owner in this frame's manifest is protected through the final overlay consumer.
         RtEntities.INSTANCE.markGraphicsUse(frameEntities, graphicsUse);
+        exposure.markStateReadbackUse(graphicsUse);
     }
 
     /**
@@ -1737,7 +1731,7 @@ public final class RtComposite {
                     VkDependencyInfo preDep = VkDependencyInfo.calloc(stack).sType$Default().pMemoryBarriers(pre);
                     KHRSynchronization2.vkCmdPipelineBarrier2KHR(cmd, preDep);
                     hdrCompositePipeline.setImages(hdrDisplayImage.view, overlayView, hdrUiSampler);
-                    hdrCompositePipeline.dispatch(cmd, src.width, src.height, CausticaConfig.Rt.Hdr.paperWhiteNits());
+                    hdrCompositePipeline.dispatch(cmd, src.width, src.height, CausticaConfig.Rt.Hdr.uiNits());
                 }
                 RtUiOverlay.markConsumed();
             }
@@ -1867,7 +1861,7 @@ public final class RtComposite {
             KHRSynchronization2.vkCmdPipelineBarrier2KHR(cmd, preDep);
 
             sdrPresentPipeline.setImages(dst.view, sdrMainView, hdrUiSampler);
-            sdrPresentPipeline.dispatch(cmd, dst.width, dst.height, CausticaConfig.Rt.Hdr.paperWhiteNits());
+            sdrPresentPipeline.dispatch(cmd, dst.width, dst.height, CausticaConfig.Rt.Hdr.uiNits());
 
             // Swapchain UNDEFINED -> TRANSFER_DST, plus make the compute write visible to the blit read.
             VkImageMemoryBarrier2.Buffer toDst = VkImageMemoryBarrier2.calloc(1, stack).sType$Default();

@@ -23,7 +23,7 @@ Two unrelated tonemappers, chosen by `hdrEnabled`, both fed the same exposure sc
 
 Both are implemented in [display/main.comp.slang](../shaders/pipelines/display/main.comp.slang); the UI composite
 ([hdr_composite/main.comp.slang](../shaders/pipelines/hdr_composite/main.comp.slang)) and `sdr_present/main.comp.slang`
-independently place sRGB-authored UI at `paperWhiteNits` in the same BT.2020/PQ target.
+independently place sRGB-authored UI at `uiNits` in the same BT.2020/PQ target.
 
 ## 1. Diagnosis
 
@@ -102,12 +102,12 @@ the polynomial + two 3×3 matrix multiplies it replaces, likely cheaper than tod
 simpler — worth confirming against [GPU_PERF_PLAN.md](GPU_PERF_PLAN.md)'s latency-bound framing
 once implemented, same as the exposure plan's own cost note.
 
-`paperWhiteNits` **changes meaning**: under ACES 2.0 the peak-luminance parameter (not a
+The old `paperWhiteNits` setting **changed meaning**: under ACES 2.0 the peak-luminance parameter (not a
 user-set nit level) determines where scene diffuse white lands in the tonemap. The setting has to
 survive, but only as the UI-placement value it's independently used for in
 [hdr_composite/main.comp.slang:66](../shaders/pipelines/hdr_composite/main.comp.slang) and `sdr_present/main.comp.slang`
-(where to put sRGB-authored UI in nits) — it should be renamed/re-scoped in config to make that
-clear, and `Hdr.headroom()` goes away since the LUT bake already encodes the peak-nits relationship.
+(where to put sRGB-authored UI in nits). It is now `uiNits` / `hdr.ui-nits`, and the redundant
+`Hdr.headroom()` helper is gone because the LUT bake already encodes the peak-nits relationship.
 
 ## 4. Infrastructure needed
 
@@ -257,7 +257,7 @@ Capability and current state are deliberately separate:
 - `isPqSdrPresentActive()` remains for menus/loading frames while HDR is active (and the short
   toggle-to-reconfigure interval), but is bypassed once HDR-off recreation produces native SDR.
 
-Consequently, `paper-white-nits` no longer changes whole-image brightness with HDR disabled: native
+Consequently, `ui-nits` does not change whole-image brightness with HDR disabled: native
 SDR uses Minecraft's ordinary presentation. It still places SDR-authored UI/menu content at an
 absolute luminance when that content must be embedded into an active PQ swapchain.
 

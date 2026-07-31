@@ -57,8 +57,6 @@ changes while the renderer is being built.
 - When HDR is enabled on Linux, Caustica selects GLFW's native Wayland backend automatically. X11/XWayland surfaces generally do not expose the required HDR10/PQ format.
 - If Minecraft falls back to OpenGL after a crash, re-enable the Vulkan backend
   before using Caustica again.
-- F2 saves vanilla's display PNG and, while RT is active, a same-basename scene-linear
-  ACEScg EXR for look development. See [the EXR workflow](docs/EXR_WORKFLOW.md).
 
 ## Compatibility
 

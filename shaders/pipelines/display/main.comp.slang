@@ -136,7 +136,7 @@ float3 tonemap(float3 lookedAcesCg) {
 }
 
 // Same shaper as tonemap() but sampling the HDR LUT, whose range is already PQ-encoded BT.2020 -- no
-// separate encode or paperWhite/headroom mapping needed.
+// separate encode or UI-brightness mapping needed.
 float3 tonemapHdr(float3 lookedAcesCg) {
     float3 uvw = shaperEncode(lookedAcesCg);
     return displayGammaHdr(hdrToneLut.SampleLevel(lutTexCoord(uvw, pc.lutSize), 0.0).rgb);

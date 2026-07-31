@@ -2,7 +2,7 @@
 import bindings;
 
 struct PresentPush {
-    float paperWhiteNits;
+    float uiNits;
 };
 [[vk::push_constant]] PresentPush pc;
 
@@ -41,7 +41,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
     if (tid.x >= width || tid.y >= height) return;
 
     int2 pix = int2(tid.xy);
-    float3 nits709 = srgbToLinear(sourceImage.Load(int3(pix, 0)).rgb) * pc.paperWhiteNits;
+    float3 nits709 = srgbToLinear(sourceImage.Load(int3(pix, 0)).rgb) * pc.uiNits;
     float3 nits2020 = mul(BT709_TO_BT2020, nits709);
     float3 pq = float3(pqEncode(nits2020.x), pqEncode(nits2020.y), pqEncode(nits2020.z));
     outputImage[pix] = float4(pq, 1.0);

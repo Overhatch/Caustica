@@ -32,6 +32,10 @@ import java.nio.LongBuffer;
 public final class RtToneLut {
     private static final int MAGIC = 0x54554C43; // "CLUT" little-endian
     private static final int HEADER_BYTES = 4 + 4 + 4 + 4 + 4; // magic, version, size, loStops, hiStops
+    // Display shader contract. Reject incompatible resources at load time instead of silently sampling
+    // them with shaders/pipelines/display/main.comp.slang's fixed shaper.
+    private static final float SHADER_SHAPER_LO_STOPS = -12.0f;
+    private static final float SHADER_SHAPER_HI_STOPS = 12.0f;
 
     private final VkDevice vk;
     private final long vma;
@@ -40,12 +44,10 @@ public final class RtToneLut {
     private final long view;
     private final long sampler;
     public final int size;
-    public final float shaperLoStops;
-    public final float shaperHiStops;
     private boolean destroyed;
 
     private RtToneLut(VkDevice vk, long vma, long image, long allocation, long view, long sampler,
-                       int size, float shaperLoStops, float shaperHiStops) {
+                       int size) {
         this.vk = vk;
         this.vma = vma;
         this.image = image;
@@ -53,8 +55,6 @@ public final class RtToneLut {
         this.view = view;
         this.sampler = sampler;
         this.size = size;
-        this.shaperLoStops = shaperLoStops;
-        this.shaperHiStops = shaperHiStops;
     }
 
     public long view() {
@@ -89,6 +89,14 @@ public final class RtToneLut {
             int size = data.getInt(8);
             float loStops = data.getFloat(12);
             float hiStops = data.getFloat(16);
+            if (size < 2) {
+                throw new IllegalStateException(path + ": invalid LUT size " + size);
+            }
+            if (loStops != SHADER_SHAPER_LO_STOPS || hiStops != SHADER_SHAPER_HI_STOPS) {
+                throw new IllegalStateException(path + ": LUT shaper " + loStops + ".." + hiStops
+                        + " does not match display shader " + SHADER_SHAPER_LO_STOPS + ".."
+                        + SHADER_SHAPER_HI_STOPS);
+            }
             long texelCount = (long) size * size * size;
             long expectedBytes = HEADER_BYTES + texelCount * 4L * 2L; // RGBA16F
             if (data.remaining() != expectedBytes) {
@@ -96,14 +104,13 @@ public final class RtToneLut {
                         + data.remaining() + " (size=" + size + ")");
             }
             ByteBuffer texels = data.slice(HEADER_BYTES, (int) (expectedBytes - HEADER_BYTES));
-            return upload(ctx, size, loStops, hiStops, texels, path);
+            return upload(ctx, size, texels, path);
         } finally {
             MemoryUtil.memFree(data);
         }
     }
 
-    private static RtToneLut upload(RtContext ctx, int size, float loStops, float hiStops,
-                                     ByteBuffer texels, String label) {
+    private static RtToneLut upload(RtContext ctx, int size, ByteBuffer texels, String label) {
         VkDevice vk = ctx.vk();
         long vma = ctx.vma();
         long createdImage = 0L;
@@ -216,7 +223,7 @@ public final class RtToneLut {
             if (staging != null) staging.destroy();
         }
         return new RtToneLut(vk, vma, createdImage, createdAllocation, createdView, createdSampler,
-                size, loStops, hiStops);
+                size);
     }
 
     public void destroy() {

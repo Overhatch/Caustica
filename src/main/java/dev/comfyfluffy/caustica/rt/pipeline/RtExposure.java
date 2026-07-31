@@ -5,6 +5,7 @@ import dev.comfyfluffy.caustica.CausticaConfig;
 import dev.comfyfluffy.caustica.CausticaMod;
 import dev.comfyfluffy.caustica.rt.RtContext;
 import dev.comfyfluffy.caustica.rt.RtDebugLabels;
+import dev.comfyfluffy.caustica.rt.RtGpuExecutor;
 import dev.comfyfluffy.caustica.rt.RtSceneUnits;
 import dev.comfyfluffy.caustica.rt.RtLookPackage;
 import dev.comfyfluffy.caustica.rt.accel.RtBuffer;
@@ -13,6 +14,8 @@ import dev.comfyfluffy.caustica.rt.gen.ExposureStateData;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.VK10;
+import org.lwjgl.vulkan.VkBufferCopy;
+import org.lwjgl.vulkan.VkBufferMemoryBarrier;
 import org.lwjgl.vulkan.VkClearColorValue;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkImageSubresourceRange;
@@ -26,6 +29,10 @@ public final class RtExposure {
     private RtImage image;
     private RtBuffer histogram;
     private RtBuffer state;
+    private ReadbackSlot[] stateReadbacks;
+    private int stateReadbackIndex = -1;
+    private ReadbackSlot pendingStateReadback;
+    private ExposureStateData completedState;
     private RtExposurePipeline pipeline;
     private boolean logged;
     private long lastFrameNanos;
@@ -36,10 +43,22 @@ public final class RtExposure {
     private ControllerConfig lastControllerConfig;
     private boolean resetRequested = true;
     private int resetSequence;
-    /** This frame's latched pre-exposure; see {@link #beginFrame(boolean)}. */
+    /** This frame's latched pre-exposure; see {@link #beginFrame(boolean, RtGpuExecutor.GraphicsUseWaiter)}. */
     private float framePreExposure = 1.0f;
 
     private static final long DIAG_LOG_INTERVAL_NANOS = 1_000_000_000L;
+    private static final int STATE_READBACK_RING = 6;
+
+    private static final class ReadbackSlot {
+        final RtBuffer buffer;
+        final RtGpuExecutor.TrackedGraphicsUse graphicsUse = new RtGpuExecutor.TrackedGraphicsUse();
+        boolean valid;
+        int resetSequence;
+
+        ReadbackSlot(RtBuffer buffer) {
+            this.buffer = buffer;
+        }
+    }
 
     public RtImage image() {
         return image;
@@ -97,11 +116,29 @@ public final class RtExposure {
         // The final debug pass always binds the state buffer, including in manual mode. Keep this tiny
         // resource permanently available; histogram/pipeline allocation remains auto-only.
         if (state == null) {
-            state = ctx.createBuffer(ExposureStateData.BYTE_SIZE, VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            state = ctx.createBuffer(ExposureStateData.BYTE_SIZE,
+                    VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK10.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                     true, "exposure state");
             resetAutoHistory();
         }
         if (mode() == Mode.AUTO) {
+            if (stateReadbacks == null) {
+                ReadbackSlot[] created = new ReadbackSlot[STATE_READBACK_RING];
+                try {
+                    for (int i = 0; i < created.length; i++) {
+                        created[i] = new ReadbackSlot(ctx.createReadbackBuffer(
+                                ExposureStateData.BYTE_SIZE, "exposure state readback " + i));
+                    }
+                } catch (Throwable t) {
+                    for (ReadbackSlot slot : created) {
+                        if (slot != null) {
+                            slot.buffer.destroy();
+                        }
+                    }
+                    throw t;
+                }
+                stateReadbacks = created;
+            }
             if (histogram == null) {
                 // Separate ordinary-surface/sky/emissive histograms let resolve enforce both
                 // population caps exactly without a second full-image dispatch.
@@ -150,6 +187,12 @@ public final class RtExposure {
             state.destroy();
             state = null;
         }
+        if (stateReadbacks != null) {
+            for (ReadbackSlot slot : stateReadbacks) {
+                slot.buffer.destroy();
+            }
+            stateReadbacks = null;
+        }
         if (image != null) {
             image.destroy();
             image = null;
@@ -158,6 +201,9 @@ public final class RtExposure {
         lastControllerConfig = null;
         resetRequested = true;
         resetSequence = 0;
+        stateReadbackIndex = -1;
+        pendingStateReadback = null;
+        completedState = null;
         framePreExposure = 1.0f;
     }
 
@@ -186,14 +232,49 @@ public final class RtExposure {
     }
 
     /**
+     * Copies the GPU-owned controller state into this frame's guarded host-readback slot. The slot is not
+     * consumed until its graphics timeline value completes, so the host never races the live storage buffer.
+     */
+    public void recordStateReadback(VkCommandBuffer cmd, MemoryStack stack) {
+        if (mode() != Mode.AUTO || pendingStateReadback == null) {
+            return;
+        }
+        VkBufferMemoryBarrier.Buffer toTransfer = VkBufferMemoryBarrier.calloc(1, stack);
+        toTransfer.get(0).sType$Default()
+                .srcAccessMask(VK10.VK_ACCESS_SHADER_WRITE_BIT)
+                .dstAccessMask(VK10.VK_ACCESS_TRANSFER_READ_BIT)
+                .srcQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
+                .dstQueueFamilyIndex(VK10.VK_QUEUE_FAMILY_IGNORED)
+                .buffer(state.handle)
+                .offset(0L)
+                .size(ExposureStateData.BYTE_SIZE);
+        VK10.vkCmdPipelineBarrier(cmd, VK10.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK10.VK_PIPELINE_STAGE_TRANSFER_BIT, 0, null, toTransfer, null);
+
+        VkBufferCopy.Buffer copy = VkBufferCopy.calloc(1, stack)
+                .srcOffset(0L).dstOffset(0L).size(ExposureStateData.BYTE_SIZE);
+        VK10.vkCmdCopyBuffer(cmd, state.handle, pendingStateReadback.buffer.handle, copy);
+    }
+
+    /** Attach the readback copy only after the command buffer has been accepted for frame submission. */
+    public void markStateReadbackUse(RtGpuExecutor.GraphicsUse graphicsUse) {
+        if (pendingStateReadback == null) {
+            return;
+        }
+        pendingStateReadback.resetSequence = resetSequence;
+        pendingStateReadback.valid = true;
+        pendingStateReadback.graphicsUse.mark(graphicsUse);
+        pendingStateReadback = null;
+    }
+
+    /**
      * S0 observability (docs/EXPOSURE_PLAN.md): throttled log of the controller's internal EVs, gated
      * behind the frame-stats toggle since that's the existing "I want renderer internals" switch.
-     * Reads {@code state.mapped} with no fence — the buffer is host-visible+coherent and this frame's
-     * GPU work hasn't executed yet when this runs, so it's last frame's value; fine for a debug log,
-     * per the plan's own tolerance for staleness here.
+     * Uses the latest completed timeline-guarded readback. It can be a few frames stale without racing
+     * the GPU, which is sufficient for diagnostics.
      */
     private void logDiagnosticsIfDue() {
-        if (!CausticaConfig.Rt.FrameStats.ENABLED.value() || state == null || state.mapped == 0L) {
+        if (!CausticaConfig.Rt.FrameStats.ENABLED.value() || completedState == null) {
             return;
         }
         long now = System.nanoTime();
@@ -201,7 +282,7 @@ public final class RtExposure {
             return;
         }
         lastDiagLogNanos = now;
-        ExposureStateData snapshot = readState();
+        ExposureStateData snapshot = completedState;
         float evScene = snapshot.evScene();
         float evTarget = snapshot.evTarget();
         float evApplied = snapshot.evApplied();
@@ -241,13 +322,16 @@ public final class RtExposure {
      * there is nothing meaningful to show yet (state buffer not created).
      */
     public String debugSummaryLine() {
-        if (state == null || state.mapped == 0L) {
+        if (state == null) {
             return null;
         }
         if (mode() != Mode.AUTO) {
             return String.format(java.util.Locale.ROOT, "RT exposure: manual %s EV", fmt(manualEv()));
         }
-        ExposureStateData snapshot = readState();
+        ExposureStateData snapshot = completedState;
+        if (snapshot == null) {
+            return null;
+        }
         float evScene = snapshot.evScene();
         float evTarget = snapshot.evTarget();
         float evApplied = snapshot.evApplied();
@@ -342,12 +426,10 @@ public final class RtExposure {
      *
      * <p>The raygen multiply and the resolve's divide have to use the <em>same</em> value or they
      * stop cancelling and the frame comes out mis-scaled. Both read {@link #preExposure()}, but at
-     * different points in CPU time, while the GPU is asynchronously writing {@code previous} with no
-     * synchronisation — so reading the mapped buffer at each use site could observe two different
-     * values within one frame. Latching once removes that race; the residual absorbs whatever the
-     * latched value failed to predict.
+     * different points in CPU time. The completed readback can be several frames old, so latching once
+     * ensures both consumers use one prediction; the residual absorbs whatever it failed to predict.
      */
-    public void beginFrame(boolean sceneDiscontinuity) {
+    public void beginFrame(boolean sceneDiscontinuity, RtGpuExecutor.GraphicsUseWaiter graphicsUseWaiter) {
         Mode currentMode = mode();
         ControllerConfig currentConfig = currentMode == Mode.AUTO ? controllerConfig() : null;
         boolean reset = currentMode == Mode.AUTO
@@ -356,10 +438,24 @@ public final class RtExposure {
         if (reset) {
             resetSequence++;
             lastFrameNanos = 0L;
+            completedState = null;
         }
         resetRequested = false;
         lastFrameMode = currentMode;
         lastControllerConfig = currentConfig;
+
+        pendingStateReadback = null;
+        if (currentMode == Mode.AUTO && stateReadbacks != null) {
+            stateReadbackIndex = (stateReadbackIndex + 1) % stateReadbacks.length;
+            ReadbackSlot slot = stateReadbacks[stateReadbackIndex];
+            graphicsUseWaiter.await(slot.graphicsUse);
+            if (slot.valid && slot.resetSequence == resetSequence) {
+                slot.buffer.invalidate();
+                completedState = ExposureStateData.read(MemoryUtil.memByteBuffer(
+                        slot.buffer.mapped, ExposureStateData.BYTE_SIZE).order(ByteOrder.nativeOrder()));
+            }
+            pendingStateReadback = slot;
+        }
 
         // On a reset frame the previous world's exposure is a poor storage-scale prediction. Unity is
         // neutral and the resolve removes it exactly; subsequent frames resume last-frame prediction.
@@ -394,14 +490,14 @@ public final class RtExposure {
         if (mode() != Mode.AUTO) {
             return manualExposureScale();
         }
-        if (state == null || state.mapped == 0L) {
+        if (completedState == null) {
             return 1.0f;
         }
         // Deliberately NOT Exposure.clampScale: its 1e-4 floor is a bound on the artistic exposure
         // multiplier, and physical units (U2) put noon at ~3e-5 absolute, which that floor would
         // truncate -- silently de-centring exactly the case pre-exposure exists to handle. The
         // controller's own minEv/maxEv already bound this value; here we only reject garbage.
-        float previous = readState().previous();
+        float previous = completedState.previous();
         return Float.isFinite(previous) && previous > 0.0f ? previous : 1.0f;
     }
 

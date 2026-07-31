@@ -33,8 +33,8 @@
 	"caustica.options.rt.hdr": "HDR Output",
 	"caustica.options.rt.hdr.tooltip": "Recreate the swapchain for HDR (ST.2084/PQ) or native SDR output. Applied at the next frame boundary.",
 
-	"caustica.options.rt.hdrPaperWhite": "HDR Paper White",
-	"caustica.options.rt.hdrPaperWhite.tooltip": "Absolute brightness (in nits) that SDR-equivalent scene brightness maps to on an HDR display.",
+	"caustica.options.rt.hdrUiBrightness": "HDR UI Brightness",
+	"caustica.options.rt.hdrUiBrightness.tooltip": "Absolute brightness (in nits) assigned to SDR-authored UI on an HDR display.",
 
 	"caustica.options.rt.hdrPeak": "HDR Peak Brightness",
 	"caustica.options.rt.hdrPeak.tooltip": "Absolute brightness (in nits) highlights roll off toward. Set to your display's peak HDR brightness.",
