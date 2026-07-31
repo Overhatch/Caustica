@@ -30,6 +30,7 @@ import dev.comfyfluffy.caustica.rt.accel.RtBuffer;
 import dev.comfyfluffy.caustica.rt.gen.DebugPresentPushData;
 
 import static dev.comfyfluffy.caustica.rt.RtContext.check;
+import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.*;
 
 /**
  * Computes and presents {@code debugView} content as a downstream inspection pass after
@@ -42,7 +43,7 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
  * without perturbing the exposure controller's history.
  */
 public final class RtDebugPresentPipeline {
-    private static final String SHADER_DIR = "/caustica/shaders/";
+    private static final String SHADER_DIR = "/caustica/shaders/pipelines/debug_present/";
     private static final int PUSH_BYTES = DebugPresentPushData.BYTE_SIZE;
 
     private final RtContext ctx;
@@ -77,12 +78,13 @@ public final class RtDebugPresentPipeline {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             // 0: output (SDR display target). 1..6: guide buffers. 7: post-RR scene image.
             // 8: same-frame display exposure. 9: exposure state (including S2's sky scale).
-            VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(10, stack);
-            for (int i = 0; i < 9; i++) {
+            VkDescriptorSetLayoutBinding.Buffer binds = VkDescriptorSetLayoutBinding.calloc(DEBUG_PRESENT_BINDING_COUNT, stack);
+            for (int i = DEBUG_PRESENT_OUTPUT; i < DEBUG_PRESENT_EXPOSURE_STATE; i++) {
                 binds.get(i).binding(i).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                         .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             }
-            binds.get(9).binding(9).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+            binds.get(DEBUG_PRESENT_EXPOSURE_STATE).binding(DEBUG_PRESENT_EXPOSURE_STATE)
+                    .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
                     .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
 
             VkDescriptorSetLayoutCreateInfo dslci = VkDescriptorSetLayoutCreateInfo.calloc(stack).sType$Default().pBindings(binds);
@@ -114,7 +116,7 @@ public final class RtDebugPresentPipeline {
             long layout = p.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_PIPELINE_LAYOUT, layout, "debug present pipeline layout");
 
-            long module = loadModule(vk, stack, "debug_present.comp.spv");
+            long module = loadModule(vk, stack, "main.comp.spv");
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SHADER_MODULE, module, "debug present shader module");
             VkPipelineShaderStageCreateInfo stage = VkPipelineShaderStageCreateInfo.calloc(stack).sType$Default()
                     .stage(VK10.VK_SHADER_STAGE_COMPUTE_BIT).module(module).pName(stack.UTF8("main"));
@@ -143,7 +145,7 @@ public final class RtDebugPresentPipeline {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             long[] views = {outputImageView, normalView, albedoView, depthView, motionView,
                     specAlbedoView, specMotionView, sceneView, exposureView};
-            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(10, stack);
+            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(DEBUG_PRESENT_BINDING_COUNT, stack);
             for (int i = 0; i < 9; i++) {
                 VkDescriptorImageInfo.Buffer info = VkDescriptorImageInfo.calloc(1, stack);
                 info.get(0).imageView(views[i]).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
@@ -152,7 +154,8 @@ public final class RtDebugPresentPipeline {
             }
             VkDescriptorBufferInfo.Buffer stateInfo = VkDescriptorBufferInfo.calloc(1, stack);
             stateInfo.get(0).buffer(exposureState.handle).offset(0).range(exposureState.size);
-            writes.get(9).sType$Default().dstSet(descriptorSet).dstBinding(9)
+            writes.get(DEBUG_PRESENT_EXPOSURE_STATE).sType$Default().dstSet(descriptorSet)
+                    .dstBinding(DEBUG_PRESENT_EXPOSURE_STATE)
                     .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).pBufferInfo(stateInfo);
             VK10.vkUpdateDescriptorSets(ctx.vk(), writes, null);
         }

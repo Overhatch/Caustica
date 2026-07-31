@@ -32,7 +32,7 @@ public final class RtExposure {
     /** This frame's latched pre-exposure; see {@link #beginFrame()}. */
     private float framePreExposure = 1.0f;
 
-    // ExposureState byte layout (std430, see exposure_resolve.comp.slang) -- must match field-for-
+    // ExposureState byte layout (std430, see pipelines/exposure_resolve/bindings.slang) -- must match field-for-
     // field. Population/curve diagnostics append after S4's already-reserved history fields so their
     // existing offsets remain stable.
     private static final int STATE_BYTES = 88;

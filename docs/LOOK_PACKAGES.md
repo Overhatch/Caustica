@@ -107,7 +107,7 @@ At the 15° default the steepest remaining gradient is ~0.2–0.5 EV/deg — com
 gradient just above the horizon, i.e. a haze falloff rather than an edge. Set it to `0` to restore
 the hard physical ground.
 
-See `shaders/world/sky.slang` for the atmosphere model (Hillaire 2020) and `RtSkyLut` for the three
+See `shaders/pipelines/world/sky.slang` for the atmosphere model (Hillaire 2020) and `RtSkyLut` for the three
 LUTs and the passes that bake them.
 
 ## Material emission overrides

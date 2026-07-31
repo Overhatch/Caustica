@@ -66,7 +66,7 @@ public final class RtWorldOverlay {
     private RtContext ctxRef;
     private RtImage overlayImage;
     private RtOverlayPipelines.Pipeline uiCompositePipeline;
-    private RtOverlayPipelines.StorageImageSet uiCompositeSet;
+    private RtOverlayPipelines.ReadOnlyImageSet uiCompositeSet;
 
     private RtWorldOverlay() {
     }
@@ -112,11 +112,11 @@ public final class RtWorldOverlay {
     private void ensureOverlayBuffer(RtContext ctx, int width, int height) {
         this.ctxRef = ctx;
         if (uiCompositePipeline == null) {
-            uiCompositeSet = RtOverlayPipelines.storageImageSet(ctx, 1, VK10.VK_SHADER_STAGE_FRAGMENT_BIT, "world overlay UI composite");
+            uiCompositeSet = RtOverlayPipelines.readOnlyImageSet(ctx, VK10.VK_SHADER_STAGE_FRAGMENT_BIT, "world overlay UI composite");
             // PREMULTIPLIED_ALPHA, not ALPHA: overlayImage ends up holding premultiplied content once more
             // than one feature has drawn into it (see Blend.ALPHA's doc) — blending it into the shared UI
             // image with the straight-alpha recipe would double-multiply by alpha.
-            uiCompositePipeline = new RtOverlayPipelines.Spec("overlay_fullscreen_triangle.vert.spv", "overlay_passthrough_composite.frag.spv")
+            uiCompositePipeline = new RtOverlayPipelines.Spec("overlay_composite/vertex.vert.spv", "overlay_composite/passthrough.frag.spv")
                     .blend(RtOverlayPipelines.Blend.PREMULTIPLIED_ALPHA)
                     .attachment(TARGET_FORMAT)
                     .descriptorSetLayout(uiCompositeSet.layout)
@@ -129,7 +129,7 @@ public final class RtWorldOverlay {
             overlayImage = ctx.createStorageImage(width, height, TARGET_FORMAT,
                     "world overlay " + width + "x" + height, VK10.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
         }
-        uiCompositeSet.bind(ctx, 0, overlayImage.view);
+        uiCompositeSet.bind(ctx, overlayImage.view);
     }
 
     private void record(RtContext ctx, List<RtOverlayFeature> ready, long targetView, int width, int height) {

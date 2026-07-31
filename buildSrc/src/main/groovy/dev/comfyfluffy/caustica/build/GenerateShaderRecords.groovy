@@ -20,14 +20,7 @@ import javax.inject.Inject
 abstract class GenerateShaderRecords extends DefaultTask {
     @InputDirectory
     @PathSensitive(PathSensitivity.RELATIVE)
-    abstract DirectoryProperty getWorldSourceDir()
-
-    // Only needed so the probe file (shaders/world/world_layout_probe.slang) can `import
-    // display_common;` across directories -- Slang's default module search is the importing file's
-    // own directory, which does not cover shaders/display/. Passed to slangc as an extra -I.
-    @InputDirectory
-    @PathSensitive(PathSensitivity.RELATIVE)
-    abstract DirectoryProperty getDisplaySourceDir()
+    abstract DirectoryProperty getShaderRoot()
 
     @InputFile
     @PathSensitive(PathSensitivity.RELATIVE)
@@ -240,12 +233,15 @@ abstract class GenerateShaderRecords extends DefaultTask {
     void generate() {
         def reflectionFile = new File(temporaryDir, "shader-records-reflection.json")
         def probeSpv = new File(temporaryDir, "shader-layout-probe.spv")
+        def includeArgs = shaderRoot.get().asFileTree.matching { include "**/*.slang" }.files
+                .collect { it.parentFile }.unique().sort { it.absolutePath }
+                .collectMany { ["-I", it.absolutePath] }
         execOps.exec {
-            commandLine slangc.get(), probeSource.get().asFile.absolutePath,
-                    "-I", displaySourceDir.get().asFile.absolutePath,
+            commandLine([slangc.get(), probeSource.get().asFile.absolutePath] + includeArgs +
+                    [
                     "-target", "spirv", "-profile", "spirv_1_5", "-matrix-layout-column-major",
                     "-warnings-as-errors", "all", "-warnings-disable", "41012",
-                    "-reflection-json", reflectionFile.absolutePath, "-o", probeSpv.absolutePath
+                    "-reflection-json", reflectionFile.absolutePath, "-o", probeSpv.absolutePath])
         }
         execOps.exec {
             commandLine spirvVal.get(), "--target-env", "vulkan1.2", probeSpv.absolutePath

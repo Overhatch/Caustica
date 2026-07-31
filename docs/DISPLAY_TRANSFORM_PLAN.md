@@ -13,16 +13,16 @@ change §S0–S5 of the exposure plan, only shrinks its old §S6.
 ## 0. What exists today
 
 Two unrelated tonemappers, chosen by `hdrEnabled`, both fed the same exposure scalar
-([display.comp:131](../shaders/display/display.comp)):
+([display/main.comp.slang:131](../shaders/pipelines/display/main.comp.slang)):
 
 | | SDR path | HDR path |
 |---|---|---|
 | Gamut step | `gamutMapBt2020ToBt709` — luminance-preserving desaturate into BT.709 | none, stays BT.2020 |
-| Operator | AgX: inset matrix → log2 remap over a **fixed 16.5 EV window** (`AGX_MIN_EV`/`AGX_MAX_EV`, [display.comp:41-42](../shaders/display/display.comp)) → degree-6 polynomial sigmoid → outset matrix | per-channel `hi / (headroom-1 + hi)` rolloff above 1.0 ([display.comp:112-121](../shaders/display/display.comp)) |
+| Operator | AgX: inset matrix → log2 remap over a **fixed 16.5 EV window** (`AGX_MIN_EV`/`AGX_MAX_EV`, [display/main.comp.slang:41-42](../shaders/pipelines/display/main.comp.slang)) → degree-6 polynomial sigmoid → outset matrix | per-channel `hi / (headroom-1 + hi)` rolloff above 1.0 ([display/main.comp.slang:112-121](../shaders/pipelines/display/main.comp.slang)) |
 | Output | BT.709 [0,1], written to `rgba8` → MC's existing gamma-encoded presentation | BT.2020 nits → `pqEncode` → PQ swapchain |
 
-Both are implemented in [display.comp](../shaders/display/display.comp); the UI composite
-([hdr_ui_composite.comp](../shaders/display/hdr_ui_composite.comp)) and `sdr_present.comp`
+Both are implemented in [display/main.comp.slang](../shaders/pipelines/display/main.comp.slang); the UI composite
+([hdr_composite/main.comp.slang](../shaders/pipelines/hdr_composite/main.comp.slang)) and `sdr_present/main.comp.slang`
 independently place sRGB-authored UI at `paperWhiteNits` in the same BT.2020/PQ target.
 
 ## 1. Diagnosis
@@ -74,7 +74,7 @@ its inputs — the textbook case for a LUT.
 target peak-nits value.
 
 - **Shaper**: log2, scene-linear ACEScg → [0,1] over the working range (align with the exposure
-  histogram's ±12 EV, [exposure_hist.comp](../shaders/display/exposure_hist.comp), so the same
+  histogram's ±12 EV, [exposure_hist/main.comp.slang](../shaders/pipelines/exposure_hist/main.comp.slang), so the same
   scalar means the same thing in both places).
 - **LUT size**: 65³ (film-standard, normally visually lossless) as the starting point. The risk
   case here is unusual — near-primary saturated emitters (glowstone, lava, nether portals) at
@@ -84,14 +84,14 @@ target peak-nits value.
 - **SDR LUT** outputs BT.709 display code values, feeding the existing `rgba8` target and MC's
   gamma-encoded presentation unchanged.
 - **HDR LUT** outputs PQ code values directly — the PQ encode is absorbed into the bake, so
-  `pqEncode` in [display.comp](../shaders/display/display.comp) goes away.
+  `pqEncode` in [display/main.comp.slang](../shaders/pipelines/display/main.comp.slang) goes away.
 - Peak nits (`Hdr.PEAK_NITS`) changes effectively never at runtime (display capability, not a
   per-frame quantity): load the LUT matching the configured value at startup/resize, no runtime
   interpolation between LUTs needed.
 
 ## 3. What this deletes / changes
 
-From [display.comp](../shaders/display/display.comp): the AgX inset/sigmoid/outset and its
+From [display/main.comp.slang](../shaders/pipelines/display/main.comp.slang): the AgX inset/sigmoid/outset and its
 constants, `gamutMapBt2020ToBt709` (ACES 2.0 gamut-compresses toward the *target* display gamut
 internally — the hand-rolled BT.2020→BT.709 prepass becomes redundant at best, double-compressing
 at worst per D3), `pqEncode`, the HDR per-channel rolloff and `headroom`-based `tonemapHdr`, and
@@ -105,7 +105,7 @@ once implemented, same as the exposure plan's own cost note.
 `paperWhiteNits` **changes meaning**: under ACES 2.0 the peak-luminance parameter (not a
 user-set nit level) determines where scene diffuse white lands in the tonemap. The setting has to
 survive, but only as the UI-placement value it's independently used for in
-[hdr_ui_composite.comp:66](../shaders/display/hdr_ui_composite.comp) and `sdr_present.comp`
+[hdr_composite/main.comp.slang:66](../shaders/pipelines/hdr_composite/main.comp.slang) and `sdr_present/main.comp.slang`
 (where to put sRGB-authored UI in nits) — it should be renamed/re-scoped in config to make that
 clear, and `Hdr.headroom()` goes away since the LUT bake already encodes the peak-nits relationship.
 
@@ -181,7 +181,7 @@ curve. Two follow-ups this implies:
   on the bright/milky side; ACES's 0.349 is the film convention. Tune the desired placement through
   the [EXPOSURE_PLAN.md](EXPOSURE_PLAN.md) §S3 compensation curve.
 - The AgX baseline being compared against is **base AgX with no look** (`applyLook` is commented out
-  at [display.comp](../shaders/display/display.comp)), i.e. the flattest AgX available — flatter than
+  at [display/main.comp.slang](../shaders/pipelines/display/main.comp.slang)), i.e. the flattest AgX available — flatter than
   Blender's, which ships a base-contrast look. Some of the perceived gap is that, not the operators.
 
 ## 5b. Known hue drift on extreme-brightness saturated red/orange (found 2026-07-27)
@@ -196,7 +196,7 @@ fixing 1.x's "reds skew toward yellow"); the salmon cast on saturated red/orange
 brightness is documented as a residual trade-off of that same fix, not something this
 implementation introduced.
 
-Checked whether AgX has a comparable failure mode: reconstructed [display.comp](../shaders/display/display.comp)'s
+Checked whether AgX has a comparable failure mode: reconstructed [display/main.comp.slang](../shaders/pipelines/display/main.comp.slang)'s
 exact AgX math in Python and ran a saturated lava-orange swatch to EV+13. AgX shows no comparable
 hue-toward-magenta drift — it desaturates straight to near-white instead (`AGX_INSET` exists
 specifically to pull extreme values toward achromatic *before* the tone curve runs). That's the
@@ -303,11 +303,11 @@ absolute luminance when that content must be embedded into an active PQ swapchai
    lost `MODE`/`acesLut()`. `RtDisplayPipeline.dispatch`'s push constants no longer carry
    `paperWhiteNits`/`headroom`, which were only ever consumed by the deleted rolloff.
 
-   **Also migrated `display.comp` → `display.comp.slang`** (Slang, matching `shaders/world/*`,
+   **Also migrated `display.comp` → `display.comp.slang`** (Slang, now under `shaders/pipelines/display/`,
    rather than GLSL) while rewriting it — build.gradle already globs `**/*.comp.slang` and strips
    the suffix for the output name, so this needed no build changes; `RtDisplayPipeline`'s loader
    still asks for `display.comp.spv` unmodified. Scoped to this one file for now — the other
-   `shaders/display/*.comp` files (`exposure_hist`, `exposure_resolve`, `hdr_ui_composite`,
+   former `shaders/display/*.comp` files (`exposure_hist`, `exposure_resolve`, `hdr_ui_composite`,
    `sdr_present`) are still GLSL; `exposure_hist`/`exposure_resolve` migrate as part of
    [EXPOSURE_PLAN.md](EXPOSURE_PLAN.md)'s work, not here.
 5. Land exposure plan §S3 (compensation curve) tuning against the new operator, not before.

@@ -21,9 +21,9 @@ plan's original §S6.
 |---|---|---|
 | Owner / mode switch / config | [RtExposure.java](../src/main/java/dev/comfyfluffy/caustica/rt/pipeline/RtExposure.java) | 1x1 `R32_SFLOAT` image, separate 256-bin ordinary/sky/emissive histograms, 88-byte host-visible state buffer |
 | Pipelines | [RtExposurePipeline.java](../src/main/java/dev/comfyfluffy/caustica/rt/pipeline/RtExposurePipeline.java) | two compute pipelines (hist, resolve) |
-| Metering | [exposure_hist.comp.slang](../shaders/display/exposure_hist.comp.slang) | full-res log2-luminance histogram, shared-memory atomics, one bin per thread |
-| Controller | [exposure_resolve.comp.slang](../shaders/display/exposure_resolve.comp.slang) | 1 invocation: percentile trim → key → clamp → exponential smoothing |
-| Consumer | [display.comp:131](../shaders/display/display.comp) | one scalar multiply feeding both the SDR AgX path and the PQ HDR path |
+| Metering | [exposure_hist/main.comp.slang](../shaders/pipelines/exposure_hist/main.comp.slang) | full-res log2-luminance histogram, shared-memory atomics, one bin per thread |
+| Controller | [exposure_resolve/main.comp.slang](../shaders/pipelines/exposure_resolve/main.comp.slang) | 1 invocation: percentile trim → key → clamp → exponential smoothing |
+| Consumer | [display/main.comp.slang:131](../shaders/pipelines/display/main.comp.slang) | one scalar multiply feeding both the SDR AgX path and the PQ HDR path |
 | Frame placement | [RtComposite.java:990-1003](../src/main/java/dev/comfyfluffy/caustica/rt/RtComposite.java) | after DLSS-RR, before display mapping |
 
 The current model, stated as math. With `L` = ACEScg/AP1 luminance of the post-RR image and
@@ -57,7 +57,7 @@ work, and a clamp that is regularly saturated is a controller that is being over
 the root cause; D2–D4 are refinements that only matter once this is fixed.
 
 **D2 — no spatial weighting.** Every pixel votes equally
-([exposure_hist.comp.slang](../shaders/display/exposure_hist.comp.slang)). Sky is 2–4 EV above any lit
+([exposure_hist/main.comp.slang](../shaders/pipelines/exposure_hist/main.comp.slang)). Sky is 2–4 EV above any lit
 surface, so tilting the camera up past the horizon moves well over half the frame into the top
 of the histogram; the 50th–95th percentile window then samples almost nothing but sky and the
 terrain crushes. The inverse happens looking down in a cave. The exposure changing because of
@@ -71,7 +71,7 @@ render res) is already produced for RR — demodulating by it meters *illuminanc
 is the quantity a light meter actually measures.
 
 **D4 — smoothing happens in linear exposure space.** `mix(prev, target, alpha)` on the multiplier
-([exposure_resolve.comp:62](../shaders/display/exposure_resolve.comp)) makes the perceived rate of
+([exposure_resolve/main.comp.slang:62](../shaders/pipelines/exposure_resolve/main.comp.slang)) makes the perceived rate of
 adaptation depend on absolute level: the same `tau` is a slow crawl at high exposure and a snap at
 low exposure. Eye adaptation is logarithmic; the filter should run on EV. The `adaptUp`/`adaptDown`
 names are also ambiguous — they refer to the exposure *multiplier* rising, i.e. the scene getting
@@ -86,7 +86,7 @@ completely unrelated exposure — the one case where an instant jump is correct.
 
 **D6 — one exposure value, two display transforms with different anchors.** SDR wants scene
 mid-grey at AgX's 0.18; HDR wants `1.0` = paper white with `headroom` above it
-([display.comp:112-121](../shaders/display/display.comp)). Sharing one multiplier means an HDR
+([display/main.comp.slang:112-121](../shaders/pipelines/display/main.comp.slang)). Sharing one multiplier means an HDR
 display is handed the same fully-normalized image as SDR and its headroom is spent on nothing —
 the whole point of HDR is that a bright scene is *allowed* to be brighter, i.e. HDR wants *less*
 adaptation, not the same amount.
@@ -162,7 +162,7 @@ mostly bookkeeping.
   entry-list UI, no config flag of ours involved. **Done.**
 - Two new `debugView` modes (the plumbing exists —
   [CausticaConfig.java:534](../src/main/java/dev/comfyfluffy/caustica/CausticaConfig.java),
-  `writeDebugView` in [guides.slang](../shaders/world/guides.slang)): **false-colour exposure**
+  `writeDebugView` in [guides.slang](../shaders/pipelines/world/guides.slang)): **false-colour exposure**
   (EV relative to mid-grey, stops-banded) and **metering weight map** (S2's weights as greyscale).
 - Optional but cheap: dump the per-frame `evScene/evTarget/evApplied` triple to CSV behind a flag,
   and script a fixed camera path (surface → cave → surface, noon → night, horizon pan). That turns
@@ -251,7 +251,7 @@ Weighted histogram: `atomicAdd` a fixed-point weight (`uint(w * 256)`) instead o
 - **Centre weight** — Gaussian on normalized screen distance, σ ≈ 0.35, floor 0.15 so the periphery
   still contributes. Classic centre-weighted metering; directly addresses D2.
 - **Sky cap** — sky is `gDepth ≈ 0` (reversed-Z far, see
-  [guides.slang:271](../shaders/world/guides.slang)). Do not exclude it — a bright sky *should*
+  [guides.slang:271](../shaders/pipelines/world/guides.slang)). Do not exclude it — a bright sky *should*
   stop the ground down somewhat — but cap its total contribution to a configurable fraction
   (default ~0.25).
 - **Validity** — skip pixels with zero weight from the total (already handled by S1's bin sum).

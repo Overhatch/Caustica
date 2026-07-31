@@ -198,9 +198,9 @@ public final class RtDeviceBringup {
             RAY_QUERY_FEATURE);
 
     private enum SerBackend {
-        NONE("none", null, "world_primary.rgen.spv", "world.rgen.spv"),
+        NONE("none", null, "primary.rgen.spv", "indirect.rgen.spv"),
         EXT("EXT", VK_EXT_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME,
-                "world_primary.rgen.spv", "world_ser.rgen.spv");
+                "primary.rgen.spv", "indirect_ser.rgen.spv");
 
         final String label;
         final String extensionName;

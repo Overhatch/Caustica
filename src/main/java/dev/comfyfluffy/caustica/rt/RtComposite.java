@@ -103,7 +103,6 @@ public final class RtComposite {
     // Hot addresses/frameIndex avoid unnecessary global-memory dereferences; WorldPushConstantsData is
     // generated from the same Slang module and owns this second ABI as well. debugView is no longer
     // part of it -- no world shader reads it anymore; debug views are a downstream compute pass.
-    private static final int GUIDE_COUNT = 6; // RR guide buffers bound at world-pipeline bindings 3..8
     private static final long PATH_RECORD_BYTES = 48L;
     private static int debugView() {
         return CausticaConfig.Rt.Composite.DEBUG_VIEW.value();
@@ -730,9 +729,9 @@ public final class RtComposite {
             worldPipeline = RtPipeline.create(ctx, new String[]{
                             RtDeviceBringup.worldPrimaryRaygenShader(),
                             RtDeviceBringup.worldRaygenShader()},
-                    new String[]{"world.rmiss.spv", "world_guide.rmiss.spv"},
-                    "world.rchit.spv", "world.rahit.spv",
-                    WorldPushConstantsData.BYTE_SIZE, true, GUIDE_COUNT, bindlessTextureCapacity, true);
+                    new String[]{"sky.rmiss.spv", "guide.rmiss.spv"},
+                    "closest_hit.rchit.spv", "any_hit.rahit.spv",
+                    WorldPushConstantsData.BYTE_SIZE, bindlessTextureCapacity);
             // Per-frame world data lives in this BDA ring; the pipeline pushes its address and hot fields.
             if (pushRing == null) {
                 pushRing = new PushSlot[PUSH_RING];

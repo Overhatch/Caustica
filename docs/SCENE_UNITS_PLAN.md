@@ -33,7 +33,7 @@ within 0.25 EV; U3's emissive baseline did not and has been re-anchored. Written
 > (`-2.0`), clamped to a tiny epsilon, and `exposure / epsilon` blew every frame to white. Fixed two
 > ways: (1) all four display-chain push-constant structs (`ExposureHistPush`, `ExposureResolvePush`,
 > `DisplayPush`, `DebugPresentPush` — renamed from the generic `Push` every one of these files used)
-> moved to a shared `shaders/display/display_common.slang` module and are now reflected by
+> moved to a shared `shaders/common/display_common.slang` module and are now reflected by
 > `generateShaderRecords` exactly like `WorldPush`/`WorldPushConstants`, so Java never hand-computes
 > an offset again; (2) the resolve shader treats a non-finite/non-positive `preExposure` as 1.0
 > (degrades to the pre-U1 pipeline) rather than clamping toward epsilon, so a future layout mismatch
@@ -361,7 +361,7 @@ produced.)* The reference scenes of §1 plus the glowstone/lava scene
 2. **Does the sun-disc clamp interact with MIS?** *(mostly resolved by Correction 2, one part still
    open.)* Clamping cannot perturb the NEE estimator: the visible disc and the NEE light are
    decoupled, and the `showCelestial` gate hides the disc from diffuse continuations
-   ([world.rgen.slang:65](../shaders/world/world.rgen.slang)). What Correction 2 surfaced is a
+   ([indirect.rgen.slang:65](../shaders/pipelines/world/indirect.rgen.slang)). What Correction 2 surfaced is a
    different, pre-existing issue in the same machinery: the gate is per-lobe, not per-roughness, so a
    *glossy* continuation both takes the sun through NEE and sees the disc — a genuine double-count,
    today harmless only because the disc is far dimmer than the NEE light. Deriving disc radiance from

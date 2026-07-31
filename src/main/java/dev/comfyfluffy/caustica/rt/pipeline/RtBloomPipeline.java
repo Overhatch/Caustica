@@ -30,10 +30,11 @@ import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
 
 import static dev.comfyfluffy.caustica.rt.RtContext.check;
+import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.*;
 
 /**
  * Scene-referred bloom as a downsample/upsample mip pyramid (Jimenez, SIGGRAPH 2014); see
- * {@code shaders/display/bloom.comp.slang} for why the pyramid replaced the previous single wide
+ * {@code shaders/pipelines/bloom/main.comp.slang} for why the pyramid replaced the previous single wide
  * Gaussian (comb-spaced taps drew a lattice of replicas, and one fixed width clipped bright sources into
  * a flat slab).
  *
@@ -47,7 +48,7 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
  * consumes the finished pyramid, whose level 0 accumulates every band.
  */
 public final class RtBloomPipeline {
-    private static final String SHADER = "/caustica/shaders/bloom.comp.spv";
+    private static final String SHADER = "/caustica/shaders/pipelines/bloom/main.comp.spv";
     /** Pyramid depth ceiling. Level 7 of a 4K pyramid is already 15x8 texels — nothing wider is useful. */
     public static final int MAX_LEVELS = 8;
     private static final int MODE_PREFILTER = 0;
@@ -84,16 +85,16 @@ public final class RtBloomPipeline {
         VkDevice vk = ctx.vk();
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkDescriptorSetLayoutBinding.Buffer bindings =
-                    VkDescriptorSetLayoutBinding.calloc(3, stack);
-            bindings.get(0).binding(0)
+                    VkDescriptorSetLayoutBinding.calloc(BLOOM_BINDING_COUNT, stack);
+            bindings.get(BLOOM_OUTPUT).binding(BLOOM_OUTPUT)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1)
                     .stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
-            bindings.get(1).binding(1)
+            bindings.get(BLOOM_SOURCE).binding(BLOOM_SOURCE)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                     .descriptorCount(1)
                     .stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
-            bindings.get(2).binding(2)
+            bindings.get(BLOOM_EXPOSURE).binding(BLOOM_EXPOSURE)
                     .descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                     .descriptorCount(1)
                     .stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
@@ -266,18 +267,18 @@ public final class RtBloomPipeline {
                          VkWriteDescriptorSet.Buffer writes, int index, long set,
                          long dstView, long srcView, long exposureView) {
         images.get(index).imageView(dstView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-        writes.get(index).sType$Default().dstSet(set).dstBinding(0)
+        writes.get(index).sType$Default().dstSet(set).dstBinding(BLOOM_OUTPUT)
                 .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                 .pImageInfo(VkDescriptorImageInfo.create(images.address(index), 1));
         index++;
         images.get(index).imageView(srcView).sampler(sampler)
                 .imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-        writes.get(index).sType$Default().dstSet(set).dstBinding(1)
+        writes.get(index).sType$Default().dstSet(set).dstBinding(BLOOM_SOURCE)
                 .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                 .pImageInfo(VkDescriptorImageInfo.create(images.address(index), 1));
         index++;
         images.get(index).imageView(exposureView).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-        writes.get(index).sType$Default().dstSet(set).dstBinding(2)
+        writes.get(index).sType$Default().dstSet(set).dstBinding(BLOOM_EXPOSURE)
                 .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                 .pImageInfo(VkDescriptorImageInfo.create(images.address(index), 1));
         return index + 1;

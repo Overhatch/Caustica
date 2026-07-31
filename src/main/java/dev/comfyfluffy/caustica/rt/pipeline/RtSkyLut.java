@@ -30,10 +30,11 @@ import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
 
 import static dev.comfyfluffy.caustica.rt.RtContext.check;
+import static dev.comfyfluffy.caustica.rt.pipeline.RtBindings.*;
 
 /**
  * The sky's three LUTs (Hillaire 2020) and the compute passes that bake them. See
- * {@code shaders/world/sky.slang} for the physics and for why this replaced the previous per-ray
+ * {@code shaders/pipelines/world/sky.slang} for the physics and for why this replaced the previous per-ray
  * single-scattering march.
  *
  * <ul>
@@ -56,8 +57,8 @@ import static dev.comfyfluffy.caustica.rt.RtContext.check;
  * single-buffered.
  */
 public final class RtSkyLut {
-    private static final String SHADER_DIR = "/caustica/shaders/";
-    // Keep in lock-step with the same-named constants in shaders/world/sky.slang.
+    private static final String SHADER_DIR = "/caustica/shaders/pipelines/sky_lut/";
+    // Keep in lock-step with the same-named constants in shaders/pipelines/world/sky.slang.
     public static final int TRANSMITTANCE_WIDTH = 256;
     public static final int TRANSMITTANCE_HEIGHT = 64;
     public static final int MULTISCATTER_WIDTH = 32;
@@ -125,12 +126,12 @@ public final class RtSkyLut {
             long sampler = handle.get(0);
             RtDebugLabels.name(ctx, VK10.VK_OBJECT_TYPE_SAMPLER, sampler, "sky LUT sampler");
 
-            VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(5, stack);
-            for (int i = 0; i < 3; i++) {
+            VkDescriptorSetLayoutBinding.Buffer bindings = VkDescriptorSetLayoutBinding.calloc(SKY_LUT_BINDING_COUNT, stack);
+            for (int i = SKY_LUT_TRANSMITTANCE_IMAGE; i <= SKY_LUT_SKY_VIEW_IMAGE; i++) {
                 bindings.get(i).binding(i).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                         .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             }
-            for (int i = 3; i < 5; i++) {
+            for (int i = SKY_LUT_TRANSMITTANCE_SAMPLER; i < SKY_LUT_BINDING_COUNT; i++) {
                 bindings.get(i).binding(i).descriptorType(VK10.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                         .descriptorCount(1).stageFlags(VK10.VK_SHADER_STAGE_COMPUTE_BIT);
             }
@@ -178,24 +179,28 @@ public final class RtSkyLut {
                     pipelineLayout, "sky LUT pipeline layout");
 
             long transmittancePipeline = createComputePipeline(ctx, stack, pipelineLayout,
-                    "sky_transmittance.comp.spv", "sky transmittance pipeline");
+                    "transmittance.comp.spv", "sky transmittance pipeline");
             long multiScatterPipeline = createComputePipeline(ctx, stack, pipelineLayout,
-                    "sky_multiscatter.comp.spv", "sky multiple-scattering pipeline");
+                    "multiscatter.comp.spv", "sky multiple-scattering pipeline");
             long skyViewPipeline = createComputePipeline(ctx, stack, pipelineLayout,
-                    "sky_view.comp.spv", "sky view pipeline");
+                    "view.comp.spv", "sky view pipeline");
 
-            VkDescriptorImageInfo.Buffer images = VkDescriptorImageInfo.calloc(5, stack);
-            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(5, stack);
+            VkDescriptorImageInfo.Buffer images = VkDescriptorImageInfo.calloc(SKY_LUT_BINDING_COUNT, stack);
+            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(SKY_LUT_BINDING_COUNT, stack);
             long[] storageViews = {transmittance.view, multiScatter.view, skyView.view};
+            int[] storageBindings = {SKY_LUT_TRANSMITTANCE_IMAGE, SKY_LUT_MULTISCATTER_IMAGE,
+                    SKY_LUT_SKY_VIEW_IMAGE};
             for (int i = 0; i < storageViews.length; i++) {
-                images.get(i).imageView(storageViews[i]).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
-                writes.get(i).sType$Default().dstSet(descriptorSet).dstBinding(i)
+                int binding = storageBindings[i];
+                images.get(binding).imageView(storageViews[i]).imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
+                writes.get(binding).sType$Default().dstSet(descriptorSet).dstBinding(binding)
                         .descriptorCount(1).descriptorType(VK10.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
-                        .pImageInfo(VkDescriptorImageInfo.create(images.address(i), 1));
+                        .pImageInfo(VkDescriptorImageInfo.create(images.address(binding), 1));
             }
             long[] sampledViews = {transmittance.view, multiScatter.view};
+            int[] sampledBindings = {SKY_LUT_TRANSMITTANCE_SAMPLER, SKY_LUT_MULTISCATTER_SAMPLER};
             for (int i = 0; i < sampledViews.length; i++) {
-                int binding = 3 + i;
+                int binding = sampledBindings[i];
                 images.get(binding).imageView(sampledViews[i]).sampler(sampler)
                         .imageLayout(VK10.VK_IMAGE_LAYOUT_GENERAL);
                 writes.get(binding).sType$Default().dstSet(descriptorSet).dstBinding(binding)
