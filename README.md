@@ -22,7 +22,6 @@ changes while the renderer is being built.
 - DLSS Ray Reconstruction support
 - DLSS Frame Generation support (experimental)
 - HDR output
-- Paired PNG + residual-exposed ACEScg OpenEXR screenshots
 - Dynamic entity rendering in the ray-traced scene
 - LabPBR-style material support
 - OMM (Opacity Micro-Map) + SER (Shader Execution Reordering) optimizations

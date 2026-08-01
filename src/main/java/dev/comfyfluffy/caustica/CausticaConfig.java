@@ -655,7 +655,14 @@ public final class CausticaConfig {
         public static final class DlssRr {
             public static final BooleanSetting ENABLED = bool("caustica.rt.dlssRr", "dlss-rr.enabled", true);
             public static final IntSetting PRESET = intValue("caustica.rt.dlssRr.preset", "dlss-rr.preset", 0);
-            public static final IntSetting QUALITY = intValue("caustica.rt.dlssRr.quality", "dlss-rr.quality", 0);
+
+            // NVSDK_NGX_PerfQuality_Value. Per NVIDIA's DLSS-RR programming guide, Ray Reconstruction only
+            // supports Performance(0), Balanced(1), Quality(2), Ultra-Performance(3), and DLAA(5) —
+            // Ultra Quality(4) is not a valid PerfQualityValue for RR (its optimal-settings query returns a
+            // zeroed render size for it) and is deliberately excluded here.
+            public static final List<Integer> QUALITY_STEPS = List.of(3, 0, 1, 2, 5);
+            public static final IntSetting QUALITY =
+                    intChoice("caustica.rt.dlssRr.quality", "dlss-rr.quality", 0, QUALITY_STEPS);
 
             private DlssRr() {
             }
@@ -858,7 +865,7 @@ public final class CausticaConfig {
             // ACES HDR LUTs are available only for these mastering targets.
             public static final List<Integer> PEAK_NITS_STEPS = List.of(500, 1000, 2000, 4000);
             public static final IntSetting PEAK_NITS =
-                    intValue("caustica.rt.hdr.peakNits", "hdr.peak-nits", 1000);
+                    intChoice("caustica.rt.hdr.peakNits", "hdr.peak-nits", 1000, PEAK_NITS_STEPS);
 
             // Surface capability and current swapchain state are separate: HDR controls remain available
             // while the swapchain is native SDR, so enabling HDR can recreate it in PQ.
@@ -931,6 +938,10 @@ public final class CausticaConfig {
 
     private static IntSetting intAtLeast(String key, String tomlPath, int fallback, int min) {
         return new IntSetting(key, tomlPath, fallback, v -> Math.max(min, v));
+    }
+
+    private static IntSetting intChoice(String key, String tomlPath, int fallback, List<Integer> choices) {
+        return new IntSetting(key, tomlPath, fallback, v -> choices.contains(v) ? v : fallback);
     }
 
     private static IntSetting clampedInt(String key, String tomlPath, int fallback, int min, int max) {

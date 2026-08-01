@@ -135,24 +135,19 @@ public final class RtVideoOptions {
         return bool("caustica.options.rt.waterWaves", CausticaConfig.Rt.Composite.WATER_WAVES);
     }
 
-    // NVSDK_NGX_PerfQuality_Value, ordered performance -> quality for the slider. Per NVIDIA's DLSS-RR
-    // programming guide, Ray Reconstruction only supports Performance(0), Balanced(1), Quality(2),
-    // Ultra-Performance(3), and DLAA(5) — Ultra Quality(4) is not a valid PerfQualityValue for RR (its
-    // optimal-settings query returns a zeroed render size for it) and is deliberately excluded here.
-    private static final List<Integer> DLSS_QUALITY_ORDER = List.of(3, 0, 1, 2, 5);
-
     private static OptionInstance<Integer> dlssQuality() {
         IntSetting setting = CausticaConfig.Rt.DlssRr.QUALITY;
-        int initialQuality = DLSS_QUALITY_ORDER.contains(setting.value()) ? setting.value() : 0;
-        int initialPosition = DLSS_QUALITY_ORDER.indexOf(initialQuality);
+        List<Integer> steps = CausticaConfig.Rt.DlssRr.QUALITY_STEPS;
+        int initialQuality = steps.contains(setting.value()) ? setting.value() : 0;
+        int initialPosition = steps.indexOf(initialQuality);
         return new OptionInstance<>(
             "caustica.options.rt.dlssQuality",
             OptionInstance.cachedConstantTooltip(Component.translatable("caustica.options.rt.dlssQuality.tooltip")),
             (caption, position) -> Options.genericValueLabel(caption,
-                    Component.translatable("caustica.options.rt.dlssQuality." + DLSS_QUALITY_ORDER.get(position))),
-            new OptionInstance.IntRange(0, DLSS_QUALITY_ORDER.size() - 1),
+                    Component.translatable("caustica.options.rt.dlssQuality." + steps.get(position))),
+            new OptionInstance.IntRange(0, steps.size() - 1),
             initialPosition,
-            position -> setting.set(DLSS_QUALITY_ORDER.get(position)));
+            position -> setting.set(steps.get(position)));
     }
 
     private static OptionInstance<Boolean> hdrEnabled() {
