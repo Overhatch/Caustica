@@ -39,11 +39,9 @@ public final class RtExposure {
     private long lastDiagLogNanos;
     private String cachedCurveSpec;
     private ExposureCurve cachedCurve;
-    private Mode lastFrameMode;
-    private ControllerConfig lastControllerConfig;
     private boolean resetRequested = true;
     private int resetSequence;
-    /** This frame's latched pre-exposure; see {@link #beginFrame(boolean, RtGpuExecutor.GraphicsUseWaiter)}. */
+    /** This frame's latched pre-exposure; see {@link #beginFrame(RtGpuExecutor.GraphicsUseWaiter)}. */
     private float framePreExposure = 1.0f;
 
     private static final long DIAG_LOG_INTERVAL_NANOS = 1_000_000_000L;
@@ -197,8 +195,6 @@ public final class RtExposure {
             image.destroy();
             image = null;
         }
-        lastFrameMode = null;
-        lastControllerConfig = null;
         resetRequested = true;
         resetSequence = 0;
         stateReadbackIndex = -1;
@@ -326,7 +322,7 @@ public final class RtExposure {
             return null;
         }
         if (mode() != Mode.AUTO) {
-            return String.format(java.util.Locale.ROOT, "RT exposure: manual %s EV", fmt(manualEv()));
+            return String.format(java.util.Locale.ROOT, "Exposure: manual %s EV", fmt(manualEv()));
         }
         ExposureStateData snapshot = completedState;
         if (snapshot == null) {
@@ -338,7 +334,7 @@ public final class RtExposure {
         AutoConfig cfg = autoConfig();
         String clamp = evTarget <= cfg.minEv() + 0.01f ? " (min clamp)"
                 : evTarget >= cfg.maxEv() - 0.01f ? " (max clamp)" : "";
-        return String.format(java.util.Locale.ROOT, "RT exposure: EV100 %s, applied %s EV%s",
+        return String.format(java.util.Locale.ROOT, "Exposure: EV100 %s, applied %s EV%s",
                 fmt(evScene), fmt(evApplied), clamp);
     }
 
@@ -429,20 +425,15 @@ public final class RtExposure {
      * different points in CPU time. The completed readback can be several frames old, so latching once
      * ensures both consumers use one prediction; the residual absorbs whatever it failed to predict.
      */
-    public void beginFrame(boolean sceneDiscontinuity, RtGpuExecutor.GraphicsUseWaiter graphicsUseWaiter) {
+    public void beginFrame(RtGpuExecutor.GraphicsUseWaiter graphicsUseWaiter) {
         Mode currentMode = mode();
-        ControllerConfig currentConfig = currentMode == Mode.AUTO ? controllerConfig() : null;
-        boolean reset = currentMode == Mode.AUTO
-                && (resetRequested || sceneDiscontinuity || lastFrameMode != Mode.AUTO
-                || !Objects.equals(lastControllerConfig, currentConfig));
+        boolean reset = currentMode == Mode.AUTO && resetRequested;
         if (reset) {
             resetSequence++;
             lastFrameNanos = 0L;
             completedState = null;
+            resetRequested = false;
         }
-        resetRequested = false;
-        lastFrameMode = currentMode;
-        lastControllerConfig = currentConfig;
 
         pendingStateReadback = null;
         if (currentMode == Mode.AUTO && stateReadbacks != null) {
@@ -523,33 +514,6 @@ public final class RtExposure {
         float evOffset() {
             return RtSceneUnits.EV100_OFFSET - (float) (Math.log(Math.max(preExposure, 1.0e-12f)) / Math.log(2.0));
         }
-    }
-
-    private ControllerConfig controllerConfig() {
-        return new ControllerConfig(
-                CausticaConfig.Rt.Exposure.KEY.value(),
-                CausticaConfig.Rt.Exposure.minEv(),
-                CausticaConfig.Rt.Exposure.maxEv(),
-                CausticaConfig.Rt.Exposure.ADAPT_DARKEN.value(),
-                CausticaConfig.Rt.Exposure.ADAPT_BRIGHTEN.value(),
-                manualEv(),
-                CausticaConfig.Rt.Exposure.LOW_PERCENTILE.value(),
-                CausticaConfig.Rt.Exposure.HIGH_PERCENTILE.value(),
-                CausticaConfig.Rt.Exposure.STRIDE.value(),
-                CausticaConfig.Rt.Exposure.CENTER_WEIGHT_SIGMA.value(),
-                CausticaConfig.Rt.Exposure.CENTER_WEIGHT_FLOOR.value(),
-                CausticaConfig.Rt.Exposure.SKY_WEIGHT_CAP.value(),
-                CausticaConfig.Rt.Exposure.EMISSIVE_WEIGHT_CAP.value(),
-                curveConfig(),
-                CausticaConfig.Rt.Exposure.PRE_EXPOSURE.value());
-    }
-
-    private record ControllerConfig(
-            float key, float minEv, float maxEv, float adaptDarken, float adaptBrighten,
-            float evBias,
-            float lowPercentile, float highPercentile, int stride,
-            float centerWeightSigma, float centerWeightFloor, float skyWeightCap,
-            float emissiveWeightCap, ExposureCurve curve, boolean preExposureEnabled) {
     }
 
     private ExposureCurve curveConfig() {

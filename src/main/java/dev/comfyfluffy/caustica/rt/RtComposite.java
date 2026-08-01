@@ -122,7 +122,6 @@ public final class RtComposite {
     }
 
     private static final int WATER_ANCHOR_MASK = 4095;
-    private static final double EXPOSURE_TELEPORT_RESET_DISTANCE = 16.0;
     // The versioned look package owns every photometric anchor and the sky geometry. Its sun illuminance is the
     // photometric solar constant at the top of the atmosphere; the shader's transmittance LUT brings that
     // to ~117,000 lux under a zenith sun and reddens/dims it through sunset, and because world.rmiss tints
@@ -287,13 +286,6 @@ public final class RtComposite {
     private double camY;
     private double camZ;
     private boolean frameCaptured;
-    private Object exposureWorldIdentity;
-    private Object exposureDimensionKey;
-    private Object exposureCameraType;
-    private double exposureLastCamX;
-    private double exposureLastCamY;
-    private double exposureLastCamZ;
-    private boolean exposureContinuityValid;
     private long celestialUvAtlasHandle;
     private int celestialUvMoonPhase = -1;
     private float sunU0;
@@ -511,33 +503,7 @@ public final class RtComposite {
 
     /** Reset exposure filtering after an explicit render-state invalidation such as F3+A. */
     public void resetExposureHistory() {
-        exposureContinuityValid = false;
         exposure.requestReset();
-    }
-
-    private boolean exposureDiscontinuity() {
-        Minecraft mc = Minecraft.getInstance();
-        Object world = mc.level;
-        Object dimension = mc.level != null ? mc.level.dimension() : null;
-        Object cameraType = mc.options.getCameraType();
-        double dx = camX - exposureLastCamX;
-        double dy = camY - exposureLastCamY;
-        double dz = camZ - exposureLastCamZ;
-        double teleportDistanceSq = EXPOSURE_TELEPORT_RESET_DISTANCE * EXPOSURE_TELEPORT_RESET_DISTANCE;
-        boolean reset = !exposureContinuityValid
-                || exposureWorldIdentity != world
-                || !Objects.equals(exposureDimensionKey, dimension)
-                || !Objects.equals(exposureCameraType, cameraType)
-                || dx * dx + dy * dy + dz * dz > teleportDistanceSq;
-
-        exposureWorldIdentity = world;
-        exposureDimensionKey = dimension;
-        exposureCameraType = cameraType;
-        exposureLastCamX = camX;
-        exposureLastCamY = camY;
-        exposureLastCamZ = camZ;
-        exposureContinuityValid = true;
-        return reset;
     }
 
     /**
@@ -1065,7 +1031,7 @@ public final class RtComposite {
         RtGpuExecutor.GraphicsUseWaiter graphicsUseWaiter = gpuExecutor.graphicsUseWaiter();
         // Reuse a completed readback slot, then latch one pre-exposure value for both raygen and resolve.
         // This belongs after the timeline snapshot and before any world push data is written.
-        exposure.beginFrame(exposureDiscontinuity(), graphicsUseWaiter);
+        exposure.beginFrame(graphicsUseWaiter);
         pendingGraphicsUse = graphicsUse;
         RtEntities.FrameEntities frameEntities = null;
         VkCommandBuffer cmd = encoder.allocateAndBeginTransientCommandBuffer();
@@ -1498,7 +1464,6 @@ public final class RtComposite {
         // Teardown runs after the device is idle (CLIENT_STOPPING waits), so the TLAS ring's slots are no
         // longer in flight and can be freed immediately.
         tlasRing.destroy();
-        exposureContinuityValid = false;
         if (RtDlssRr.enabled()) {
             RtDlssRr.INSTANCE.destroy();
         }
