@@ -11,7 +11,6 @@ import bindings;
 static const float LOG_MIN = -12.0;
 static const float LOG_MAX = 12.0;
 static const float LOG_STEP = (LOG_MAX - LOG_MIN) / 256.0;
-static const float DEADBAND_EV = 0.05;
 
 float binCenter(uint bin) {
     return LOG_MIN + (float(bin) + 0.5) * LOG_STEP;
@@ -158,13 +157,11 @@ void main() {
     // only thing that sets the asymmetry, and they can express the real one: light adaptation is quick,
     // dark adaptation is slow.
     float exposureEv = prevEv;
-    float deltaEv = targetEv - prevEv;
-    if (!reset && abs(deltaEv) >= DEADBAND_EV) {
+    if (!reset) {
+        float deltaEv = targetEv - prevEv;
         float rate = deltaEv > 0.0 ? pc.adaptDarken : pc.adaptBrighten;
         float alpha = 1.0 - exp(-pc.frameTimeSeconds / max(rate, 1.0e-4));
         exposureEv = prevEv + deltaEv * clamp(alpha, 0.0, 1.0);
-    } else if (reset) {
-        exposureEv = targetEv;
     }
     float exposure = exp2(exposureEv);
 
