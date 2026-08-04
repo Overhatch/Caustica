@@ -616,6 +616,8 @@ public final class CausticaConfig {
                     intAtLeast("caustica.rt.beBuildsPerFrame", "entities.block-entities.builds-per-frame", 64, 0);
             public static final BooleanSetting REFIT_ENABLED =
                     bool("caustica.rt.entityRefit", "entities.refit.enabled", true);
+            public static final BooleanSetting FIRST_PERSON_COMPAT_ENABLED =
+                    bool("caustica.rt.firstPersonCompat", "entities.first-person-compat.enabled", false);
 
             private Entities() {
             }

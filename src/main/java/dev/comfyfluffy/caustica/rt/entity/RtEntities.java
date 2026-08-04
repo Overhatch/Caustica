@@ -15,6 +15,7 @@ import net.minecraft.client.renderer.blockentity.BlockEntityRenderDispatcher;
 import net.minecraft.client.renderer.blockentity.state.BlockEntityRenderState;
 import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
+import net.minecraft.client.renderer.entity.state.AvatarRenderState;
 import net.minecraft.client.renderer.entity.state.EntityRenderState;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
 import net.minecraft.client.renderer.state.level.QuadParticleRenderState;
@@ -182,6 +183,9 @@ public final class RtEntities {
     // Reusable capture pipeline (single-threaded on the render thread).
     private final RtEntityCollector collector = new RtEntityCollector();
     private final RtEntityCapture capture = new RtEntityCapture();
+    // The first-person body is meshed before the ordinary capture and only replaces it once its geometry
+    // is known to be non-empty, so a failed attempt must leave the ordinary buffer untouched.
+    private final RtEntityCapture fpCapture = new RtEntityCapture();
     private final PoseStack entityPoseStack = new PoseStack();
     private final PoseStack blockEntityPoseStack = new PoseStack();
     private CameraRenderState cameraState;
@@ -222,6 +226,8 @@ public final class RtEntities {
     // entities keep their float[] backing to avoid steady-state allocation churn.
     private Int2ObjectOpenHashMap<EntityPrev> prevVerts = new Int2ObjectOpenHashMap<>(entityMapCapacity());
     private Int2ObjectOpenHashMap<EntityPrev> curVerts = new Int2ObjectOpenHashMap<>(entityMapCapacity());
+
+    private String lastFirstPersonProviderId = null;
 
     // This frame's glowing entities (see GlowEntity) + the camera-relative offset (camera pos - rebase
     // origin) their positions are captured against, for RtGlowOutlineFeature's raster pass. Rebuilt every frame.
@@ -380,6 +386,10 @@ public final class RtEntities {
     }
 
     private record Motion(long dispAddr, float rigidX, float rigidY, float rigidZ) {
+    }
+
+    /** A first-person body already meshed into {@link #fpCapture}, awaiting publication. */
+    private record FirstPersonCapture(String providerId, int motionId, float x, float y, float z) {
     }
 
     private static final class MotionSlice {
@@ -702,6 +712,21 @@ public final class RtEntities {
             float iz;
             int id = entity.getId();
             EntityPrev prev = prevVerts.get(id);
+
+            // First-person compatibility: a provider-supplied first-person body replaces the ordinary
+            // capture for that frame rather than joining it. One instance, fully visible: it fills the
+            // camera view AND casts the shadows/GI the ordinary body would have. Keeping both would put
+            // the ordinary body's head — which the provider hides — around the camera, sealing the visible
+            // first-person surfaces off from every light.
+            if (firstPersonSelf && CausticaConfig.Rt.Entities.FIRST_PERSON_COMPAT_ENABLED.value()) {
+                FirstPersonCapture fpReady = captureFirstPerson(build, dispatcher, entity, partial, id);
+                if (fpReady != null) {
+                    publishFirstPerson(ctx, build, fpReady, rbx, rby, rbz);
+                    RtFrameStats.FRAME.count("entitiesCaptured", 1);
+                    capturedThisFrame++;
+                    continue;
+                }
+            }
             capture.reset(prev != null ? prev.size / 3 : 0);
             try {
                 EntityRenderState state;
@@ -808,6 +833,94 @@ public final class RtEntities {
             placed[i + 2] = src[i + 2] + tz;
         }
         return placed;
+    }
+
+    /**
+     * Mesh the camera entity's first-person body, sourced from the selected provider's state rather than
+     * Caustica's own extraction, into {@link #fpCapture}. Returns {@code null} when no instance can be
+     * produced this frame, in which case the caller falls back to the ordinary capture; any provider throw
+     * trips the session-scoped circuit breaker and falls back to baseline.
+     *
+     * <p>Capture and publication are split so that a failure at any step leaves no persistent trace: the
+     * ordinary capture that then runs must be byte-for-byte what it would have been.
+     */
+    private FirstPersonCapture captureFirstPerson(FrameBuild build, EntityRenderDispatcher dispatcher,
+                                                  Entity entity, float partial, int entityId) {
+        if (entityId < 0) {
+            return null;
+        }
+        int fpMotionId = -(entityId + 1);
+
+        FirstPersonStateRegistry registry = FirstPersonStateRegistry.instance();
+        FirstPersonStateRegistry.SelectedProvider selected = registry.selectProvider();
+        if (selected == null) {
+            return null;
+        }
+
+        EntityRenderState fpState;
+        boolean cameraSafe;
+        try {
+            fpState = selected.provider.provideState(entity, partial);
+            if (fpState == null) {
+                return null;
+            }
+            cameraSafe = selected.safety.isCameraSafe(entity, fpState, partial);
+        } catch (Throwable t) {
+            registry.circuitBreak(selected.id, t);
+            return null;
+        }
+        if (!cameraSafe) {
+            return null;
+        }
+        // Only the vanilla identity field is read; no mod-specific state is interpreted here.
+        if (fpState instanceof AvatarRenderState avatar && avatar.id != entityId) {
+            registry.warnOwnershipMismatch(selected.id, entityId, avatar.id);
+            return null;
+        }
+
+        EntityPrev fpHistory = prevVerts.get(fpMotionId);
+        fpCapture.reset(fpHistory != null ? fpHistory.size / 3 : 0);
+        try {
+            collector.begin(fpCapture, true);
+            resetPoseStack(entityPoseStack);
+            dispatcher.submit(fpState, cameraState, 0.0, 0.0, 0.0, entityPoseStack, collector);
+        } catch (Throwable t) {
+            registry.circuitBreak(selected.id, t);
+            return null;
+        } finally {
+            collector.begin(null, false);
+            resetPoseStack(entityPoseStack);
+        }
+        if (fpCapture.isEmpty()) {
+            return null;
+        }
+        // The provider's state carries the mod's own positional offset, so this anchor is the mod's, not
+        // the player's real world position — Caustica reuses it without interpreting it.
+        return new FirstPersonCapture(selected.id, fpMotionId,
+                (float) fpState.x, (float) fpState.y, (float) fpState.z);
+    }
+
+    /**
+     * Publish the mesh {@link #captureFirstPerson} left in {@link #fpCapture} as this frame's only instance
+     * for the camera entity, visible to every ray. Motion history lives in a disjoint negative key space
+     * ({@code -(entityId + 1)}); entity ids are assigned positive by vanilla, so a frame that falls back to
+     * the ordinary capture cannot diff against first-person history, or the other way round.
+     */
+    private void publishFirstPerson(RtContext ctx, FrameBuild build, FirstPersonCapture ready,
+                                    int rbx, int rby, int rbz) {
+        EntityPrev fpHistory = prevVerts.get(ready.motionId());
+        // A provider swap must not diff this frame's mesh against the previous provider's history, but the
+        // float[] backing is still worth reusing — drop the baseline, keep the buffer.
+        EntityPrev fpBaseline = ready.providerId().equals(lastFirstPersonProviderId) ? fpHistory : null;
+        Motion motion = uploadVertexMotion(ctx, build, fpCapture.verts, fpBaseline,
+                ready.x(), ready.y(), ready.z());
+        curVerts.put(ready.motionId(),
+                storeEntityPrev(fpHistory, fpCapture.verts, ready.x(), ready.y(), ready.z()));
+        appendTransientCapture(ctx, build, fpCapture, motion, ENTITY_BIT, MASK_ALL,
+                translationTransform(ready.x() - rbx, ready.y() - rby, ready.z() - rbz));
+        lastFirstPersonProviderId = ready.providerId();
+        build.logicalCount++;
+        RtFrameStats.FRAME.count("firstPersonInstances", 1);
     }
 
     /**
@@ -1540,22 +1653,33 @@ public final class RtEntities {
             appendPackedEntity(ctx, build, motion, entityId, instanceBit, mask, instanceTransform);
             return;
         }
+        appendTransientCapture(ctx, build, capture, motion, instanceBit, mask, instanceTransform);
+    }
+
+    /**
+     * Transient one-shot path: upload {@code source} as a per-frame mesh + freshly built BLAS. Unlike
+     * {@link #appendPackedEntity} it owns no persistent slot, so the geometry it reads is an explicit
+     * parameter — the first-person instance submits into its own capture buffer (see {@link #fpCapture}).
+     */
+    private void appendTransientCapture(RtContext ctx, FrameBuild build, RtEntityCapture source, Motion motion,
+                                        int instanceBit, int mask, float[] instanceTransform) {
+        beginBuildIfNeeded(ctx, build);
         int asInput = org.lwjgl.vulkan.KHRAccelerationStructure.VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
         int storage = org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        int vertCount = capture.verts.size() / 3;
-        RtEntityCapture.PackedGeometry packed = capture.packGeometry();
+        int vertCount = source.verts.size() / 3;
+        RtEntityCapture.PackedGeometry packed = source.packGeometry();
         int idxCount = packed.indices().size();
-        EntityGeometryLayout layout = EntityGeometryLayout.create(capture.verts.size(), idxCount,
-                capture.uvList.size(), packed.primitives().size());
+        EntityGeometryLayout layout = EntityGeometryLayout.create(source.verts.size(), idxCount,
+                source.uvList.size(), packed.primitives().size());
         long required = Math.addExact(layout.totalBytes, EntityGeometryLayout.REGION_ALIGNMENT - 1L);
         RtBuffer geometry = allocBuffer(ctx, required, asInput | storage, true, "particle geometry");
         layout = layout.shifted((-geometry.deviceAddress) & (EntityGeometryLayout.REGION_ALIGNMENT - 1L));
-        MemoryUtil.memFloatBuffer(geometry.mapped + layout.positionOffset, capture.verts.size())
-                .put(capture.verts.elements(), 0, capture.verts.size());
+        MemoryUtil.memFloatBuffer(geometry.mapped + layout.positionOffset, source.verts.size())
+                .put(source.verts.elements(), 0, source.verts.size());
         MemoryUtil.memIntBuffer(geometry.mapped + layout.indexOffset, idxCount)
                 .put(packed.indices().elements(), 0, idxCount);
-        MemoryUtil.memFloatBuffer(geometry.mapped + layout.uvOffset, capture.uvList.size())
-                .put(capture.uvList.elements(), 0, capture.uvList.size());
+        MemoryUtil.memFloatBuffer(geometry.mapped + layout.uvOffset, source.uvList.size())
+                .put(source.uvList.elements(), 0, source.uvList.size());
         MemoryUtil.memFloatBuffer(geometry.mapped + layout.primOffset, packed.primitives().size())
                 .put(packed.primitives().elements(), 0, packed.primitives().size());
         geometry.flush(layout.positionOffset, layout.totalBytes - layout.positionOffset);

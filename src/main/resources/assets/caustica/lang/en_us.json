@@ -27,6 +27,9 @@
 	"caustica.options.rt.glow": "Entity Glow Outline",
 	"caustica.options.rt.glow.tooltip": "Draw the vanilla Glowing-effect outline (through walls) around glowing entities.",
 
+	"caustica.options.rt.firstPersonCompat": "First-Person Body Compatibility",
+	"caustica.options.rt.firstPersonCompat.tooltip": "Enable compatibility with first-person body mods. Renders the first-person body separately from the player entity for correct visibility.",
+
 	"caustica.options.rt.waterWaves": "Animated Water",
 	"caustica.options.rt.waterWaves.tooltip": "Animate water-surface normals for moving wave highlights.",
 

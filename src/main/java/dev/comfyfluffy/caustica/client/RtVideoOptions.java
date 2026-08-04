@@ -48,6 +48,7 @@ public final class RtVideoOptions {
             maxBounces(),
             entities(),
             particles(),
+            firstPersonCompat(),
             waterWaves(),
             dlssQuality()
         ));
@@ -129,6 +130,11 @@ public final class RtVideoOptions {
 
     private static OptionInstance<Boolean> particles() {
         return bool("caustica.options.rt.particles", CausticaConfig.Rt.Entities.PARTICLES_ENABLED);
+    }
+
+    private static OptionInstance<Boolean> firstPersonCompat() {
+        return bool("caustica.options.rt.firstPersonCompat",
+                CausticaConfig.Rt.Entities.FIRST_PERSON_COMPAT_ENABLED);
     }
 
     private static OptionInstance<Boolean> waterWaves() {
