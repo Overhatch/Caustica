@@ -2,6 +2,7 @@ package dev.comfyfluffy.caustica.rt.entity;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import dev.comfyfluffy.caustica.CausticaConfig;
+import dev.comfyfluffy.caustica.CausticaMod;
 import dev.comfyfluffy.caustica.mixin.ParticleEngineAccessor;
 import dev.comfyfluffy.caustica.mixin.ParticleGroupAccessor;
 import net.minecraft.client.Camera;
@@ -232,6 +233,8 @@ public final class RtEntities {
     private Int2ObjectOpenHashMap<EntityPrev> curVerts = new Int2ObjectOpenHashMap<>(entityMapCapacity());
 
     private String lastFirstPersonProviderId = null;
+    /** Session-scoped so the per-frame budget warning is logged once rather than every frame. */
+    private boolean warnedLocalViewBudget = false;
 
     // This frame's glowing entities (see GlowEntity) + the camera-relative offset (camera pos - rebase
     // origin) their positions are captured against, for RtGlowOutlineFeature's raster pass. Rebuilt every frame.
@@ -727,12 +730,15 @@ public final class RtEntities {
             // entries. The table is sized exactly maxEntities() and writeTableEntry indexes it by
             // build.count, so entering here with only one slot left would write one entry past the end.
             // Short budget therefore degrades to the stand-in alone rather than publishing half a player.
-            if (firstPersonSelf && CausticaConfig.Rt.Entities.FIRST_PERSON_COMPAT_ENABLED.value()
-                    && maxEntities() - build.logicalCount >= 2) {
+            boolean localViewEligible = firstPersonSelf
+                    && CausticaConfig.Rt.Entities.FIRST_PERSON_COMPAT_ENABLED.value();
+            if (localViewEligible && admitsLocalView(maxEntities(), build.logicalCount)) {
                 FirstPersonCapture fpReady = captureFirstPerson(build, dispatcher, entity, partial, id);
                 if (fpReady != null) {
                     publishFirstPerson(ctx, build, fpReady, rbx, rby, rbz);
                 }
+            } else if (localViewEligible) {
+                warnLocalViewBudgetExhausted();
             }
             capture.reset(prev != null ? prev.size / 3 : 0);
             try {
@@ -817,6 +823,12 @@ public final class RtEntities {
             }
             build.logicalCount++;
             RtFrameStats.FRAME.count("entitiesCaptured", 1);
+            if (localViewEligible) {
+                // Counted where the instance actually lands, so this stays 0 on any path that captures
+                // nothing for the camera entity. Gated on eligibility too: with the toggle off there is no
+                // local view to stand in for, and the frame stats must match the baseline exactly.
+                RtFrameStats.FRAME.count("worldStandInInstances", 1);
+            }
             capturedThisFrame++;
         }
         Int2ObjectOpenHashMap<EntityPrev> oldPrev = prevVerts;
@@ -908,6 +920,31 @@ public final class RtEntities {
     }
 
     /**
+     * Whether the camera entity may still publish BOTH representations. One iteration emits two geometry-table
+     * entries, and the table is sized exactly {@code capacity}, so admitting the pair with a single free slot
+     * would write one entry past the end. Package-private so the bounds test exercises this exact predicate
+     * instead of a copy of it.
+     */
+    static boolean admitsLocalView(int capacity, int logicalCount) {
+        return capacity - logicalCount >= 2;
+    }
+
+    /**
+     * Report the entity budget denying the local-view representation. Warned at most once per session, like
+     * the provider circuit-breaker: the condition recurs every frame, so an unsuppressed warning would flood
+     * the log. Without it the player simply sees their hands vanish with nothing explaining why.
+     */
+    private void warnLocalViewBudgetExhausted() {
+        if (warnedLocalViewBudget) {
+            return;
+        }
+        warnedLocalViewBudget = true;
+        CausticaMod.LOGGER.warn("Entity budget left fewer than 2 free geometry-table slots; the camera "
+                + "entity falls back to its world stand-in alone and the first-person body is not drawn. "
+                + "Raise the RT entity limit to restore it.");
+    }
+
+    /**
      * Publish the mesh {@link #captureFirstPerson} left in {@link #fpCapture} as the camera entity's
      * local-view representation: visible to the primary camera ray and to secondary rays leaving a
      * local-view surface, invisible to world secondary rays. Motion history lives in a disjoint negative key space
@@ -931,6 +968,7 @@ public final class RtEntities {
         lastFirstPersonProviderId = ready.providerId();
         build.logicalCount++;
         RtFrameStats.FRAME.count("firstPersonInstances", 1);
+        RtFrameStats.FRAME.count("localViewInstances", 1);
     }
 
     /**

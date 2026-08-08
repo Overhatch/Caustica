@@ -90,7 +90,7 @@ public final class RtFrameStats {
                     "entityFrameListsWaits", "entityTableWaits", "entitySlotWaits",
                     "entityGraphicsWaitNanos", "entityMotionFlushes", "entityTableFlushes",
                     "entityBlockEntityRetirements", "entitySlotRetirements", "entityTableRetirements",
-                    "firstPersonInstances"},
+                    "firstPersonInstances", "localViewInstances", "worldStandInInstances"},
             true);
 
     private static final List<GarbageCollectorMXBean> GC_BEANS = ManagementFactory.getGarbageCollectorMXBeans();
