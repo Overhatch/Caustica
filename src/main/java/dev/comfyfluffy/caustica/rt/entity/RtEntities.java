@@ -717,18 +717,21 @@ public final class RtEntities {
             int id = entity.getId();
             EntityPrev prev = prevVerts.get(id);
 
-            // First-person compatibility: a provider-supplied first-person body replaces the ordinary
-            // capture for that frame rather than joining it. One instance, fully visible: it fills the
-            // camera view AND casts the shadows/GI the ordinary body would have. Keeping both would put
-            // the ordinary body's head — which the provider hides — around the camera, sealing the visible
-            // first-person surfaces off from every light.
-            if (firstPersonSelf && CausticaConfig.Rt.Entities.FIRST_PERSON_COMPAT_ENABLED.value()) {
+            // First-person compatibility: a provider-supplied camera-safe body is the camera entity's
+            // local-view representation, and the ordinary capture below stays its world-space stand-in for
+            // shadows, GI and reflections. The two occupy disjoint secondary domains, so the stand-in's head
+            // can no longer seal off the visible first-person surfaces the way a single fully-visible
+            // instance did.
+            //
+            // The precheck runs BEFORE the provider is queried, because one iteration now emits two table
+            // entries. The table is sized exactly maxEntities() and writeTableEntry indexes it by
+            // build.count, so entering here with only one slot left would write one entry past the end.
+            // Short budget therefore degrades to the stand-in alone rather than publishing half a player.
+            if (firstPersonSelf && CausticaConfig.Rt.Entities.FIRST_PERSON_COMPAT_ENABLED.value()
+                    && maxEntities() - build.logicalCount >= 2) {
                 FirstPersonCapture fpReady = captureFirstPerson(build, dispatcher, entity, partial, id);
                 if (fpReady != null) {
                     publishFirstPerson(ctx, build, fpReady, rbx, rby, rbz);
-                    RtFrameStats.FRAME.count("entitiesCaptured", 1);
-                    capturedThisFrame++;
-                    continue;
                 }
             }
             capture.reset(prev != null ? prev.size / 3 : 0);
