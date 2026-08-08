@@ -40,9 +40,10 @@ public PathSegment tracePrimary(PathSegment seg,
 
     {
         int bounce = seg.bounce;
+        // Replayed by Pass B as the camera ray, so its domain field is normalized rather than derived.
         PathSegment terminal = makePathSegment(ro, rd, throughput, medium,
                                                rayConeWidth, rayConeSpread, seed, bounce,
-                                               showCelestial);
+                                               showCelestial, false);
         traceRadiance(CULL_PRIMARY, ro, 0.0, rd, 10000.0,
                       showCelestial, rayConeWidth, rayConeSpread);
 
@@ -88,8 +89,11 @@ public PathSegment tracePrimary(PathSegment seg,
                     float3 v = -rd;
                     gv_albedo = diffAlb;
                     gv_rough = rough;
-                    gv_spec = makeSpecSurface(gv_hitCamRel, n, float3(payload.motionPrev), rough,
-                                              rrSpecularAlbedo(payload.f0, rough, dot(n, v)));
+                    // An opaque/cutout local-view surface reflects in its own domain, so this cannot take
+                    // the world-domain convenience overload. Particles above always belong to the world.
+                    gv_spec = makeSpecSurface(gv_hitCamRel, n, n, n, float3(payload.motionPrev), rough,
+                                              rrSpecularAlbedo(payload.f0, rough, dot(n, v)),
+                                              secondaryMaskForSurface(payload.flags));
                 }
             }
 
@@ -134,6 +138,10 @@ public PathSegment tracePrimary(PathSegment seg,
         float F = fresnelDielectric(clamp(dot(-rd, n), 0.0, 1.0), etaI, etaT);
         float3 transmittedDir = refract(rd, n, etaI / etaT);
         float transmitBias = isWater ? SURF_BIAS : INSET_TRANSMIT_BIAS;
+        // This interface's domain, read once here — before any guide probe below overwrites the global
+        // payload. Every continuation and guide mask in this branch derives from these two.
+        bool interfaceLocalView = payloadSurfaceLocalView();
+        uint interfaceSecondaryMask = secondaryMaskForSurface(payload.flags);
 
         if (bounce == 0) {
             gv_normal = n;
@@ -145,7 +153,7 @@ public PathSegment tracePrimary(PathSegment seg,
             gv_motionObjDisp = isWater ? float3(0.0, 0.0, 0.0) : payload.motionPrev;
             gv_spec = makeSpecSurface(gv_hitCamRel, n, previousNormal, geometricNormal,
                                       isWater ? float3(0.0, 0.0, 0.0) : float3(payload.motionPrev),
-                                      gv_rough, float3(F, F, F));
+                                      gv_rough, float3(F, F, F), interfaceSecondaryMask);
             if (dot(transmittedDir, transmittedDir) > 0.0) {
                 MediumStack guideMedium = medium;
                 if (entering) {
@@ -153,7 +161,10 @@ public PathSegment tracePrimary(PathSegment seg,
                 } else {
                     mediumPop(guideMedium);
                 }
-                resolveTransmissionGuide(hitPos, transmittedDir, geometricNormal,
+                // Guide-only: keeps the baseline's deliberate particle visibility (CULL_PRIMARY) while
+                // also reaching the player geometry the matching radiance path sees.
+                resolveTransmissionGuide(CULL_PRIMARY | interfaceSecondaryMask,
+                        hitPos, transmittedDir, geometricNormal,
                         guideMedium, transmitBias, rayConeWidth, rayConeSpread,
                         !isWater && entering
                                 ? payloadAlbedo() : float3(1.0, 1.0, 1.0));
@@ -176,7 +187,7 @@ public PathSegment tracePrimary(PathSegment seg,
                     offsetSurfaceOrigin(hitPos, geometricNormal, deferredDir, transmitBias),
                     deferredDir, throughput * (1.0 - F), transmittedMedium,
                     rayConeWidth, rayConeSpread, seed, bounce + 1,
-                    true);
+                    true, interfaceLocalView);
             queue[splitRecord] = packPathSegment(deferred, PATH_NO_NEXT);
             nextRecord = splitRecord;
             float3 reflectedDir = reflect(rd, n);
@@ -184,7 +195,7 @@ public PathSegment tracePrimary(PathSegment seg,
                     offsetSurfaceOrigin(hitPos, geometricNormal, reflectedDir, SURF_BIAS),
                     reflectedDir, throughput * F, medium,
                     rayConeWidth, rayConeSpread, seed ^ 0xa511e9b3u, bounce + 1,
-                    true);
+                    true, interfaceLocalView);
             return reflected;
         }
 
@@ -196,7 +207,7 @@ public PathSegment tracePrimary(PathSegment seg,
                     offsetSurfaceOrigin(hitPos, geometricNormal, reflectedDir, SURF_BIAS),
                     reflectedDir, throughput * F, medium,
                     rayConeWidth, rayConeSpread, seed, bounce + 1,
-                    true);
+                    true, interfaceLocalView);
         } else {
             float3 deferredDir = normalize(transmittedDir);
             if (entering) {
@@ -208,7 +219,7 @@ public PathSegment tracePrimary(PathSegment seg,
                     offsetSurfaceOrigin(hitPos, geometricNormal, deferredDir, transmitBias),
                     deferredDir, throughput * (1.0 - F), medium,
                     rayConeWidth, rayConeSpread, seed, bounce + 1,
-                    true);
+                    true, interfaceLocalView);
         }
         return continuation;
     }
@@ -242,7 +253,7 @@ void main() {
 
     seed = pcg(seed);
     PathSegment current = makePathSegment(origin, dir, float3(1.0, 1.0, 1.0),
-            cameraMedium, 0.0, rayConeSpread, seed, 0, true);
+            cameraMedium, 0.0, rayConeSpread, seed, 0, true, false);
     uint nextRecord;
     PathSegment terminal = tracePrimary(
             current, queue, splitRecord, nextRecord);

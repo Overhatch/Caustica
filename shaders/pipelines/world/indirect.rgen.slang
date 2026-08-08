@@ -73,19 +73,24 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
     // remains active with its full configured candidate count at every hit. Pass A's primary/interface
     // prefix is outside this SSS quality budget.
     int indirectDepth = 0;
+    // The domain the next secondary ray belongs to. Re-derived from each hit below, so it tracks the
+    // surface a ray leaves rather than sticking to the path.
+    uint nextMask = seg.localViewSecondary ? CULL_LOCAL_VIEW_SECONDARY : CULL_SECONDARY;
     for (int bounce = seg.bounce; bounce <= maxBounces; bounce++) {
         // Radiance SBT records run any-hit only for true alpha cutout. Translucent/water go straight to
         // closest-hit for dielectric handling. Geometry is double-sided; the chit flips the normal.
-        // Primary (bounce 0) is the camera ray (CULL_PRIMARY): sees particles but not the first-person
-        // player. Bounce rays are secondary (CULL_SECONDARY): exclude particles, include the player.
+        // Primary (bounce 0) is the camera ray (CULL_PRIMARY): sees particles but not the world stand-in.
+        // Every later ray takes the secondary domain of the surface it leaves — CULL_SECONDARY for world
+        // surfaces (excludes particles, includes the stand-in) or CULL_LOCAL_VIEW_SECONDARY for the
+        // local-view representation (which the world stand-in is invisible to, and vice versa).
 #ifdef CAUSTICA_ENABLE_EXT_SER
         // SER lifetime phase: keep paths that are not roulette-eligible, paths that may terminate via
         // roulette, and paths guaranteed to end at the bounce cap in separate coherence groups.
         uint pathPhaseHint = bounce >= maxBounces ? 2u : (bounce >= rrStart ? 1u : 0u);
-        traceRadianceReordered(bounce == 0 ? CULL_PRIMARY : CULL_SECONDARY, ro, 0.0, rd, 10000.0,
+        traceRadianceReordered(bounce == 0 ? CULL_PRIMARY : nextMask, ro, 0.0, rd, 10000.0,
                                showCelestial, rayConeWidth, rayConeSpread, pathPhaseHint);
 #else
-        traceRadiance(bounce == 0 ? CULL_PRIMARY : CULL_SECONDARY, ro, 0.0, rd, 10000.0,
+        traceRadiance(bounce == 0 ? CULL_PRIMARY : nextMask, ro, 0.0, rd, 10000.0,
                       showCelestial, rayConeWidth, rayConeSpread);
 #endif
 
@@ -104,6 +109,13 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             L += throughput * sky; // escaped to sky
             break;
         }
+
+        // Latch this hit's outgoing domain before anything can overwrite the global payload, and carry it
+        // to the next iteration HERE — the single assignment point in the loop. Every shadow/reservoir ray
+        // cast from this vertex uses surfaceMask. Assigning nextMask per-branch instead would leave a new
+        // upstream continuation path silently inheriting the wrong domain without a rebase conflict.
+        uint surfaceMask = secondaryMaskForSurface(payload.flags);
+        nextMask = surfaceMask;
 
         // Beer–Lambert: attenuate along the segment just travelled by the medium it lay inside. Applies
         // to every hit reached while inside a volume dielectric (its own exit face, or whatever content
@@ -211,7 +223,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             float ndl = abs(signedNdl);
             if (ndl > 0.0) {
                 float3 shadowOrigin = hitPos + (signedNdl >= 0.0 ? n : -n) * SURF_BIAS;
-                float3 vis = visibility(shadowOrigin, lightDir, 10000.0).transmittance;
+                float3 vis = visibility(surfaceMask, shadowOrigin, lightDir, 10000.0).transmittance;
                 if (max(vis.r, max(vis.g, vis.b)) > 0.0) {
                     L += throughput * albedo * INV_PI * celestialLight.illuminance * ndl * vis;
                 }
@@ -224,8 +236,8 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 float3 v = -rd;
                 Reservoir r = risInitial(hitPos, n, v, rd, albedo, float3(0.0, 0.0, 0.0), 1.0,
                                          true, 0.0, seed, proposalSeed);
-                L += throughput * shadeReservoir(r, hitPos, n, v, rd, albedo, float3(0.0, 0.0, 0.0), 1.0,
-                                                 true, 0.0);
+                L += throughput * shadeReservoir(surfaceMask, r, hitPos, n, v, rd, albedo,
+                                                 float3(0.0, 0.0, 0.0), 1.0, true, 0.0);
             }
 
             if (bounce >= maxBounces) {
@@ -286,7 +298,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         }
         float ndl = max(0.0, dot(n, lightDir));
         if (ndl > 0.0) {
-            VisibilityResult shadow = visibility(p, lightDir, 10000.0);
+            VisibilityResult shadow = visibility(surfaceMask, p, lightDir, 10000.0);
             float3 vis = shadow.transmittance;
             // Underwater receiver whose shadow ray crossed a water surface: scale the direct light by
             // the wave-refraction caustic at the exit point. Focusing scales the incident irradiance,
@@ -317,8 +329,8 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             float activeSss = hitDepth <= MAX_SSS_INDIRECT_DEPTH ? sss : 0.0;
             Reservoir r = risInitial(hitPos, n, v, rd, diffAlb, F0, rough, false, activeSss,
                                      seed, proposalSeed);
-            L += throughput * shadeReservoir(r, hitPos, n, v, rd, diffAlb, F0, rough, false,
-                                             activeSss);
+            L += throughput * shadeReservoir(surfaceMask, r, hitPos, n, v, rd, diffAlb, F0, rough,
+                                             false, activeSss);
         }
 
         // Thin-surface SSS transmission. Light entering from the back face scatters through toward the
@@ -329,7 +341,8 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         if (sss > 0.0 && hitDepth <= MAX_SSS_INDIRECT_DEPTH) {
             float backNdl = max(0.0, dot(-n, lightDir));
             if (backNdl > 0.0) {
-                VisibilityResult shadowBack = visibility(hitPos - n * SURF_BIAS, lightDir, 10000.0);
+                VisibilityResult shadowBack = visibility(surfaceMask, hitPos - n * SURF_BIAS,
+                                                         lightDir, 10000.0);
                 float3 visB = shadowBack.transmittance;
                 // Same caustic as the front-face NEE — underwater kelp/seagrass transmission should
                 // flicker with the same light bands as the floor around it.

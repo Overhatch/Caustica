@@ -7,14 +7,25 @@ import world_common;
 import world_core;
 import bindings;
 
+// Ray inclusion masks, not cull classes: each is ANDed against an instance's TLAS visibility mask and
+// the instance is visible when the result is non-zero. The CULL_ prefix is historical.
 public static const uint CULL_SECONDARY = 0x01u;
 public static const uint CULL_PRIMARY = 0x02u;
+public static const uint CULL_LOCAL_VIEW_SECONDARY = 0x04u;
 public static const uint TERRAIN_BUCKETS = 4u;
 public static const uint SBT_RADIANCE = 0u;
 public static const uint SBT_SHADOW = TERRAIN_BUCKETS;
 public static const uint SBT_STRIDE_BUCKET = 1u;
 public static const uint MISS_RADIANCE = 0u;
 public static const uint MISS_GUIDE = 1u;
+
+// The domain a secondary ray inherits from the surface it leaves. The flags word is an explicit
+// parameter rather than a read of the global payload: the global is overwritten by the next trace, so a
+// caller must name WHICH hit it derives from.
+public uint secondaryMaskForSurface(uint payloadFlags) {
+    return (payloadFlags & PAYLOAD_SURFACE_LOCAL_VIEW) != 0u
+            ? CULL_LOCAL_VIEW_SECONDARY : CULL_SECONDARY;
+}
 
 public RayDesc makeRay(float3 origin, float tmin, float3 dir, float tmax) {
     RayDesc r;
@@ -96,7 +107,7 @@ public Payload makeShadowPayload() {
     return shadowPayload;
 }
 
-public VisibilityResult visibility(float3 origin, float3 dir, float tmax) {
+public VisibilityResult visibility(uint rayMask, float3 origin, float3 dir, float tmax) {
     // Vulkan requires an identical payload structure for every stage reachable by this trace. The shadow
     // path uses only the albedo view as accumulated transmittance and hitT as the nearest-water crossing.
     Payload shadowPayload = makeShadowPayload();
@@ -106,7 +117,7 @@ public VisibilityResult visibility(float3 origin, float3 dir, float tmax) {
     // needs only ordinary TraceRay and no invocation-reorder capability.
     TraceRay(topLevelAS,
             RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER,
-            CULL_SECONDARY, SBT_SHADOW, SBT_STRIDE_BUCKET, MISS_GUIDE,
+            rayMask, SBT_SHADOW, SBT_STRIDE_BUCKET, MISS_GUIDE,
             makeRay(origin, RAY_TMIN, dir, tmax), shadowPayload);
     VisibilityResult result;
     result.transmittance = shadowPayload.flags == 0u

@@ -323,6 +323,10 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
                 emission, sss, header.params.z, header.params.w,
                 materialEmissionSource(header, emission));
         payloadSetDielectric(payload, material, entering);
+        // After payloadSetPacked, which ASSIGNS flags rather than OR-ing into it.
+        if ((g.reserved.x & ENTITY_GEOM_LOCAL_VIEW) != 0u) {
+            payload.flags |= PAYLOAD_SURFACE_LOCAL_VIEW;
+        }
         return;
     }
 

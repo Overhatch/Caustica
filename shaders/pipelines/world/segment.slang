@@ -25,11 +25,14 @@ public struct PathSegment {
     public uint seed;
     public int bounce;          // interfaces already consumed, so RR start and the bounce cap stay global
     public bool showCelestial;
+    // Which secondary domain Pass B must resume this continuation in. Meaningless at bounce 0, which is
+    // always traced as the camera ray; normalized to false there so the packed round-trip is an equality.
+    public bool localViewSecondary;
 };
 
 public PathSegment makePathSegment(float3 ro, float3 rd, float3 throughput, MediumStack medium,
                             float rayConeWidth, float rayConeSpread, uint seed,
-                            int bounce, bool showCelestial) {
+                            int bounce, bool showCelestial, bool localViewSecondary) {
     PathSegment s;
     s.ro = ro;
     s.rd = rd;
@@ -40,6 +43,7 @@ public PathSegment makePathSegment(float3 ro, float3 rd, float3 throughput, Medi
     s.seed = seed;
     s.bounce = bounce;
     s.showCelestial = showCelestial;
+    s.localViewSecondary = localViewSecondary;
     return s;
 }
 // field is a uint, so Std430DataLayout gives this an exact 48-byte stride.
@@ -57,6 +61,9 @@ public struct PackedPathSegment {
 };
 
 public static const uint PATH_NO_NEXT = 0xffffffffu;
+// pathFlags bit 11. Occupied so far: bits 0..3 bounce, 8 showCelestial, 9/10 water. The 48-byte stride
+// is unchanged and bits 4..7 and 12..31 stay free.
+public static const uint PATH_LOCAL_VIEW_SECONDARY = 1u << 11;
 
 public float2 octEncode(float3 direction) {
     float3 n = direction / max(abs(direction.x) + abs(direction.y) + abs(direction.z), 1.0e-20);
@@ -119,7 +126,8 @@ public PackedPathSegment packPathSegment(PathSegment seg, uint nextRecord) {
     p.pathFlags = (uint(seg.bounce) & 15u)
             | (seg.showCelestial ? 1u << 8u : 0u)
             | (seg.medium.current.water ? 1u << 9u : 0u)
-            | (seg.medium.outer.water ? 1u << 10u : 0u);
+            | (seg.medium.outer.water ? 1u << 10u : 0u)
+            | (seg.localViewSecondary ? PATH_LOCAL_VIEW_SECONDARY : 0u);
     p.nextRecord = nextRecord;
     return p;
 }
@@ -140,7 +148,8 @@ public PathSegment unpackPathSegment(PackedPathSegment p) {
     float2 cone = unpackHalf2(p.rayCone);
     return makePathSegment(p.ro, octDecode(unpackUnorm16x2(p.rd)),
             unpackRgb9e5(p.throughput), medium, cone.x, cone.y, p.seed,
-            int(p.pathFlags & 15u), (p.pathFlags & (1u << 8u)) != 0u);
+            int(p.pathFlags & 15u), (p.pathFlags & (1u << 8u)) != 0u,
+            (p.pathFlags & PATH_LOCAL_VIEW_SECONDARY) != 0u);
 }
 
 // Walk only the visually-primary dielectric chain. The terminal non-dielectric/miss trace is repeated

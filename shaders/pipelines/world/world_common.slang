@@ -168,7 +168,7 @@ public struct Payload {
     public float  hitT;        // >= 0 on hit, < 0 on miss.
     public half3  motionPrev;  // per-vertex world displacement since last frame.
     public half3  f0;          // specular F0.
-    public uint   flags;       // bits 0..1 material, bit 2 celestial, bit 3 water-entering, bits 4..6 emission source.
+    public uint   flags;       // bits 0..1 material, bit 2 celestial, bit 3 water-entering, bits 4..6 emission source, bit 7 emitter-in-list, bit 8 local-view surface.
     public uint   roughMetal;  // packHalf2x16(roughness, metalness)
     public uint   emissionSss; // packHalf2x16(emission, sss)
     public uint   iorTransmission; // packHalf2x16(IOR, transmission factor)
@@ -179,6 +179,10 @@ public static const uint PAYLOAD_SHOW_CELESTIAL = 4u;
 // Set by world.rchit on a terrain hit whose prim carries TERRAIN_PRIM_IN_LIGHT_BUFFER: this emitter is
 // RIS-sampled, so raygen gates its direct-hit emission on diffuse continuation rays (no double count).
 public static const uint PAYLOAD_EMITTER_IN_LIST = 128u;
+// Set by world.rchit on an entity hit whose EntityGeom carries ENTITY_GEOM_LOCAL_VIEW: the hit surface
+// belongs to the local-view representation. Bits 0..7 were full, so this takes the first free high bit —
+// the payload does not grow and the cross-stage ABI is unchanged.
+public static const uint PAYLOAD_SURFACE_LOCAL_VIEW = 1u << 8;
 // Set by world.rchit on any dielectric hit (water or glass/ice): true when the incoming ray travels
 // against the prim's outward face normal (entering the volume), false when it exits. Derived from face
 // orientation rather than toggled, so a stray or missing face cannot corrupt the medium for the rest of
@@ -279,6 +283,9 @@ public struct EntityGeom {
 public static const uint ENTITY_BIT = 0x800000u;
 public static const uint PARTICLE_BIT = 0x400000u; // particles share the entity cutout path
 public static const uint IDX_MASK = 0x3FFFFFu;     // low 22 bits = geom-table index
+// EntityGeom.reserved low word: per-instance semantic flags. InstanceCustomIndex has no free bit left
+// (23/22 are taken and 0..21 are the index), so instance semantics ride in the geometry record instead.
+public static const uint ENTITY_GEOM_LOCAL_VIEW = 1u << 0;
 public static const uint BUCKET_CUTOUT = 1u;
 public static const uint BUCKET_TRANSLUCENT = 2u;
 public static const uint BUCKET_WATER = 3u;
