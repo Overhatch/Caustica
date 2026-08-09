@@ -174,38 +174,48 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             }
 
             // The medium this face opens into, and the one it returns to on the way out — which is what
-            // the stack remembers.
-            Medium entered = makeDielectricMedium(isWater ? MEDIUM_ID_WATER : MEDIUM_ID_GENERIC_DIELECTRIC,
-                                                  max(payloadIor(), 1.0), tint, transmission);
-            float etaI = medium.current.ior;
-            float etaT = entering ? entered.ior : medium.parent1.ior;
-
-            float cosI = clamp(dot(-rd, n), 0.0, 1.0);
-            float F = fresnelDielectric(cosI, etaI, etaT);
-            float3 transmittedDir = refract(rd, n, etaI / etaT);
+            // the stack remembers. Identity resolution decides whether the face is an optical event:
+            // entering and current-layer exits run Fresnel; a deeper or unmatched exit passes straight
+            // through, at most dropping the matched layer (see medium.slang).
+            Medium entered = makeDielectricMedium(payloadMediumId(), max(payloadIor(), 1.0),
+                                                  tint, transmission);
+            uint exitMatch = entering ? MEDIUM_EXIT_NO_MATCH : mediumResolveExit(medium, entered.mediumId);
+            bool opticalEvent = entering || exitMatch == MEDIUM_EXIT_CURRENT;
             // The translucent terrain layer is recessed by TRANSLUCENT_INSET (RtTerrainMesher), so a
             // glass/ice face touching a slab or stair sits a hair behind that neighbour's surface. A full
             // SURF_BIAS would restart the transmitted ray past the neighbour and see through it. Water
             // comes from the fluid mesher, which applies no inset, so it takes the ordinary bias.
             float transmitBias = isWater ? SURF_BIAS : INSET_TRANSMIT_BIAS;
 
-            bool chooseReflection = rndf(seed) < F;
-            if (chooseReflection) {
-                rd = reflect(rd, n);
-                ro = offsetSurfaceOrigin(hitPos, geometricNormal, rd, SURF_BIAS);
-            } else {
-                if (dot(transmittedDir, transmittedDir) <= 0.0) break; // TIR with F < 1 cannot happen
-                rd = normalize(transmittedDir);
+            if (!opticalEvent) {
+                if (mediumExitIsDeep(exitMatch)) {
+                    mediumCommitExit(medium, exitMatch);
+                }
                 ro = offsetSurfaceOrigin(hitPos, geometricNormal, rd, transmitBias);
-                // Crossing into or out of the volume. Absorption is the medium's job from here, so the
-                // tint is NOT also multiplied into the throughput — that would double-count it.
-                if (entering) {
-                    mediumPush(medium, entered);
+            } else {
+                float etaI = medium.current.ior;
+                float etaT = entering ? entered.ior : medium.parent1.ior;
+                float cosI = clamp(dot(-rd, n), 0.0, 1.0);
+                float F = fresnelDielectric(cosI, etaI, etaT);
+                float3 transmittedDir = refract(rd, n, etaI / etaT);
+                bool chooseReflection = rndf(seed) < F;
+                reflectionClassLobe = chooseReflection;
+                if (chooseReflection) {
+                    rd = reflect(rd, n);
+                    ro = offsetSurfaceOrigin(hitPos, geometricNormal, rd, SURF_BIAS);
                 } else {
-                    mediumPop(medium);
+                    if (dot(transmittedDir, transmittedDir) <= 0.0) break; // TIR with F < 1 cannot happen
+                    rd = normalize(transmittedDir);
+                    ro = offsetSurfaceOrigin(hitPos, geometricNormal, rd, transmitBias);
+                    // Crossing into or out of the volume. Absorption is the medium's job from here, so the
+                    // tint is NOT also multiplied into the throughput — that would double-count it.
+                    if (entering) {
+                        if (!mediumPush(medium, entered)) break;
+                    } else {
+                        mediumCommitExit(medium, exitMatch);
+                    }
                 }
             }
-            reflectionClassLobe = chooseReflection;
             showCelestial = true; // specular interface: the continuation ray may see the sun/moon disc
             if (bounce >= rrStart) {
                 float q = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.02, 1.0);

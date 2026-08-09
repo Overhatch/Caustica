@@ -215,24 +215,35 @@ public void resolveTransmissionGuide(uint rayMask, float3 surfacePos, float3 tra
         }
 
         float transmission = clamp(payloadTransmission(), 0.0, 1.0);
-        Medium entered = makeDielectricMedium(isWater ? MEDIUM_ID_WATER : MEDIUM_ID_GENERIC_DIELECTRIC,
-                                              max(payloadIor(), 1.0), payloadAlbedo(), transmission);
-        float etaT = entering ? entered.ior : medium.parent1.ior;
-        float3 nextDirection = refract(direction, interfaceNormal, medium.current.ior / etaT);
-        if (dot(nextDirection, nextDirection) <= 0.0) {
-            // Never let a TIR reflection become ordinary diffuse/depth.
-            setTransmissionGuide(interfacePos - worldPush.camOffset,
-                    isWater ? float3(0.0, 0.0, 0.0) : float3(payload.motionPrev),
-                    interfaceNormal, 0.0, float3(0.0, 0.0, 0.0), false);
-            return;
-        }
-        if (!isWater && entering) {
-            guideFilter *= payloadAlbedo();
-        }
-        if (entering) {
-            mediumPush(medium, entered);
-        } else {
-            mediumPop(medium);
+        Medium entered = makeDielectricMedium(payloadMediumId(), max(payloadIor(), 1.0),
+                                              payloadAlbedo(), transmission);
+        uint exitMatch = entering ? MEDIUM_EXIT_NO_MATCH : mediumResolveExit(medium, entered.mediumId);
+        bool opticalEvent = entering || exitMatch == MEDIUM_EXIT_CURRENT;
+        float3 nextDirection = direction;
+        if (opticalEvent) {
+            float etaT = entering ? entered.ior : medium.parent1.ior;
+            nextDirection = refract(direction, interfaceNormal, medium.current.ior / etaT);
+            if (dot(nextDirection, nextDirection) <= 0.0) {
+                // Never let a TIR reflection become ordinary diffuse/depth.
+                setTransmissionGuide(interfacePos - worldPush.camOffset,
+                        isWater ? float3(0.0, 0.0, 0.0) : float3(payload.motionPrev),
+                        interfaceNormal, 0.0, float3(0.0, 0.0, 0.0), false);
+                return;
+            }
+            if (!isWater && entering) {
+                guideFilter *= payloadAlbedo();
+            }
+            if (entering) {
+                // A full stack ends the deterministic chain; the tuple keeps its last endpoint, the
+                // same fail-closed shape as exhausting the crossing budget.
+                if (!mediumPush(medium, entered)) {
+                    return;
+                }
+            } else {
+                mediumCommitExit(medium, exitMatch);
+            }
+        } else if (mediumExitIsDeep(exitMatch)) {
+            mediumCommitExit(medium, exitMatch);
         }
         // Re-derive from THIS crossing, or a chain that leaves the local-view representation and enters
         // world glass would keep probing in the local-view domain.

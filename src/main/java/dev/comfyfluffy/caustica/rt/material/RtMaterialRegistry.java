@@ -46,6 +46,9 @@ public final class RtMaterialRegistry {
     public static final int FEATURE_NORMAL = 2;
     public static final int FEATURE_HEURISTIC_EMISSION = 4;
     public static final int FEATURE_STOCHASTIC_ALPHA = 16;
+    // Largest header count whose every slot still packs as a 16-bit GPU medium identity: a dielectric's
+    // identity is materialId + 2 (closest_hit.rchit.slang), with 0 and 1 reserved for air and water.
+    private static final int MAX_MEDIUM_IDENTITY_RECORDS = 65533;
     // HDR radiance of a full (level-15-equivalent) emitter, modulated by albedo. Baked into every
     // emissive RtMaterialDesc.emissionStrength at compile time (compileDesc/compileEntityDesc), times
     // any resource-pack absolute emission.strength_cd_m2 override; see header() and RtMaterialOverrides.
@@ -258,6 +261,10 @@ public final class RtMaterialRegistry {
         int dynamicReserve = Math.max(64, Math.addExact(sprites.size(),
                 Math.multiplyExact(entityResources.size(), 3)));
         int recordCapacity = Math.addExact(headers.size(), dynamicReserve);
+        if (recordCapacity > MAX_MEDIUM_IDENTITY_RECORDS) {
+            throw new IllegalStateException("RT material table exceeds the medium identity space: "
+                    + recordCapacity + " records > " + MAX_MEDIUM_IDENTITY_RECORDS);
+        }
         long byteSize = Math.multiplyExact((long) recordCapacity, MaterialHeaderData.BYTE_SIZE);
         if (byteSize > Integer.MAX_VALUE) {
             throw new IllegalStateException("RT material table exceeds mapped-buffer limit: " + byteSize);

@@ -133,13 +133,31 @@ public PathSegment tracePrimary(PathSegment seg,
         }
 
         float transmission = clamp(payloadTransmission(), 0.0, 1.0);
-        Medium entered = makeDielectricMedium(isWater ? MEDIUM_ID_WATER : MEDIUM_ID_GENERIC_DIELECTRIC,
-                                              max(payloadIor(), 1.0), payloadAlbedo(), transmission);
-        float etaI = medium.current.ior;
-        float etaT = entering ? entered.ior : medium.parent1.ior;
-        float F = fresnelDielectric(clamp(dot(-rd, n), 0.0, 1.0), etaI, etaT);
-        float3 transmittedDir = refract(rd, n, etaI / etaT);
+        Medium entered = makeDielectricMedium(payloadMediumId(), max(payloadIor(), 1.0),
+                                              payloadAlbedo(), transmission);
         float transmitBias = isWater ? SURF_BIAS : INSET_TRANSMIT_BIAS;
+        // Identity resolution decides whether this face is an optical event at all: entering and
+        // current-layer exits run Fresnel and refraction; a deeper or unmatched exit lets the ray pass
+        // straight through, at most dropping the matched layer (see medium.slang).
+        uint exitMatch = entering ? MEDIUM_EXIT_NO_MATCH : mediumResolveExit(medium, entered.mediumId);
+        bool opticalEvent = entering || exitMatch == MEDIUM_EXIT_CURRENT;
+        MediumStack transmittedMedium = medium;
+        bool transmissionAvailable = true;
+        float F = 0.0;
+        float3 transmittedDir = rd;
+        if (opticalEvent) {
+            float etaI = medium.current.ior;
+            float etaT = entering ? entered.ior : medium.parent1.ior;
+            F = fresnelDielectric(clamp(dot(-rd, n), 0.0, 1.0), etaI, etaT);
+            transmittedDir = refract(rd, n, etaI / etaT);
+            if (entering) {
+                transmissionAvailable = mediumPush(transmittedMedium, entered);
+            } else {
+                mediumCommitExit(transmittedMedium, exitMatch);
+            }
+        } else if (mediumExitIsDeep(exitMatch)) {
+            mediumCommitExit(transmittedMedium, exitMatch);
+        }
         // This interface's domains, read once here — before any guide probe below overwrites the global
         // payload. Every continuation domain and guide mask in this branch derives from these: the
         // transmission side keeps the interface's own secondary domain, the reflection side takes the
@@ -162,18 +180,12 @@ public PathSegment tracePrimary(PathSegment seg,
                                       isWater ? float3(0.0, 0.0, 0.0) : float3(payload.motionPrev),
                                       gv_rough, float3(F, F, F),
                                       secondaryMaskForDomain(interfaceReflectionDomain));
-            if (dot(transmittedDir, transmittedDir) > 0.0) {
-                MediumStack guideMedium = medium;
-                if (entering) {
-                    mediumPush(guideMedium, entered);
-                } else {
-                    mediumPop(guideMedium);
-                }
+            if (dot(transmittedDir, transmittedDir) > 0.0 && transmissionAvailable) {
                 // Guide-only: keeps the baseline's deliberate particle visibility (CULL_PRIMARY) while
                 // also reaching the player geometry the matching radiance path sees.
                 resolveTransmissionGuide(CULL_PRIMARY | interfaceSecondaryMask,
                         hitPos, transmittedDir, geometricNormal,
-                        guideMedium, transmitBias, rayConeWidth, rayConeSpread,
+                        transmittedMedium, transmitBias, rayConeWidth, rayConeSpread,
                         !isWater && entering
                                 ? payloadAlbedo() : float3(1.0, 1.0, 1.0));
             }
@@ -181,15 +193,18 @@ public PathSegment tracePrimary(PathSegment seg,
 
         // Split once, write both post-interface continuations, and stop Pass A radiance traversal.
         // Pass B owns every radiance trace after this point.
-        bool splitEligible = dot(transmittedDir, transmittedDir) > 0.0
+        bool splitEligible = opticalEvent && dot(transmittedDir, transmittedDir) > 0.0
                 && F > 0.0 && F < 1.0;
+        if (splitEligible && !transmissionAvailable) {
+            // The transmission branch fails closed on a full stack; only the reflection survives.
+            float3 reflectedDir = reflect(rd, n);
+            return makePathSegment(
+                    offsetSurfaceOrigin(hitPos, geometricNormal, reflectedDir, SURF_BIAS),
+                    reflectedDir, throughput * F, medium,
+                    rayConeWidth, rayConeSpread, seed, bounce + 1,
+                    true, interfaceReflectionDomain, false);
+        }
         if (splitEligible) {
-            MediumStack transmittedMedium = medium;
-            if (entering) {
-                mediumPush(transmittedMedium, entered);
-            } else {
-                mediumPop(transmittedMedium);
-            }
             float3 deferredDir = normalize(transmittedDir);
             PathSegment deferred = makePathSegment(
                     offsetSurfaceOrigin(hitPos, geometricNormal, deferredDir, transmitBias),
@@ -207,6 +222,16 @@ public PathSegment tracePrimary(PathSegment seg,
             return reflected;
         }
 
+        if (!opticalEvent) {
+            // A deep or unmatched exit is optically inert: continue straight with unchanged direction
+            // and weight, carrying at most the deep removal.
+            return makePathSegment(
+                    offsetSurfaceOrigin(hitPos, geometricNormal, rd, transmitBias),
+                    rd, throughput, transmittedMedium,
+                    rayConeWidth, rayConeSpread, seed, bounce + 1,
+                    true, interfaceSecondaryDomain, false);
+        }
+
         bool hasTransmission = dot(transmittedDir, transmittedDir) > 0.0;
         PathSegment continuation;
         if (!hasTransmission || F >= 1.0) {
@@ -218,14 +243,17 @@ public PathSegment tracePrimary(PathSegment seg,
                     true, interfaceReflectionDomain, false);
         } else {
             float3 deferredDir = normalize(transmittedDir);
-            if (entering) {
-                mediumPush(medium, entered);
-            } else {
-                mediumPop(medium);
+            if (!transmissionAvailable) {
+                // Pure transmission with a full stack cannot proceed; fail closed with zero weight.
+                return makePathSegment(
+                        offsetSurfaceOrigin(hitPos, geometricNormal, deferredDir, transmitBias),
+                        deferredDir, float3(0.0, 0.0, 0.0), medium,
+                        rayConeWidth, rayConeSpread, seed, bounce + 1,
+                        true, interfaceSecondaryDomain, false);
             }
             continuation = makePathSegment(
                     offsetSurfaceOrigin(hitPos, geometricNormal, deferredDir, transmitBias),
-                    deferredDir, throughput * (1.0 - F), medium,
+                    deferredDir, throughput * (1.0 - F), transmittedMedium,
                     rayConeWidth, rayConeSpread, seed, bounce + 1,
                     true, interfaceSecondaryDomain, false);
         }

@@ -168,7 +168,7 @@ public struct Payload {
     public float  hitT;        // >= 0 on hit, < 0 on miss.
     public half3  motionPrev;  // per-vertex world displacement since last frame.
     public half3  f0;          // specular F0.
-    public uint   flags;       // bits 0..1 material, bit 2 celestial, bit 3 water-entering, bits 4..6 emission source, bit 7 emitter-in-list, bit 8 local-view surface.
+    public uint   flags;       // bits 0..1 material, bit 2 celestial, bit 3 water-entering, bits 4..6 emission source, bit 7 emitter-in-list, bit 8 local-view surface, bits 9..24 medium identity, bit 25 ice surface.
     public uint   roughMetal;  // packHalf2x16(roughness, metalness)
     public uint   emissionSss; // packHalf2x16(emission, sss)
     public uint   iorTransmission; // packHalf2x16(IOR, transmission factor)
@@ -183,6 +183,13 @@ public static const uint PAYLOAD_EMITTER_IN_LIST = 128u;
 // belongs to the local-view representation. Bits 0..7 were full, so this takes the first free high bit —
 // the payload does not grow and the cross-stage ABI is unchanged.
 public static const uint PAYLOAD_SURFACE_LOCAL_VIEW = 1u << 8;
+// Set by world.rchit on a dielectric hit: the 16-bit canonical identity of the medium behind the face
+// (MEDIUM_ID_WATER for water, materialId + MEDIUM_ID_DIELECTRIC_BASE otherwise), consumed by the
+// raygen medium stack. Zero — air — on every non-dielectric hit.
+public static const uint PAYLOAD_MEDIUM_ID_SHIFT = 9u;
+public static const uint PAYLOAD_MEDIUM_ID_MASK = 0xffffu << PAYLOAD_MEDIUM_ID_SHIFT;
+// Set by world.rchit when the hit material carries MATERIAL_FEATURE_ICE.
+public static const uint PAYLOAD_SURFACE_ICE = 1u << 25;
 // Set by world.rchit on any dielectric hit (water or glass/ice): true when the incoming ray travels
 // against the prim's outward face normal (entering the volume), false when it exits. Derived from face
 // orientation rather than toggled, so a stray or missing face cannot corrupt the medium for the rest of
@@ -207,6 +214,15 @@ public static const uint MATERIAL_OPAQUE = 0u;
 public static const uint MATERIAL_WATER = 1u;
 public static const uint MATERIAL_PARTICLE = 2u;
 public static const uint MATERIAL_DIELECTRIC = 3u;
+
+// Canonical participating-medium identities, carried per hit in Payload.flags (PAYLOAD_MEDIUM_ID_*)
+// and per stack layer in the packed path record. Air and water are reserved; every other dielectric
+// derives materialId + MEDIUM_ID_DIELECTRIC_BASE, so identity comparisons are integer-only and optical
+// parameters never decide what a medium is. RtMaterialRegistry rejects tables too large to fit the
+// 16-bit identity space.
+public static const uint MEDIUM_ID_AIR = 0u;
+public static const uint MEDIUM_ID_WATER = 1u;
+public static const uint MEDIUM_ID_DIELECTRIC_BASE = 2u;
 
 // Entity per-triangle record (48 B). The final lane mirrors TerrainPrim's integer material metadata.
 public struct Prim {
@@ -247,6 +263,8 @@ public static const uint MATERIAL_FEATURE_SPEC = 1u;
 public static const uint MATERIAL_FEATURE_NORMAL = 2u;
 public static const uint MATERIAL_FEATURE_HEURISTIC_EMISSION = 4u;
 public static const uint MATERIAL_FEATURE_STOCHASTIC_ALPHA = 16u;
+// Ice-family terrain materials; mirrored into PAYLOAD_SURFACE_ICE by the closest hit.
+public static const uint MATERIAL_FEATURE_ICE = 8u;
 // Final HDR emitting-surface luminance (look-package baseline or absolute JSON cd/m² override), baked in Java
 // at material-compile time (RtMaterialRegistry) and packed here as a 16-bit fraction of the max — every
 // emissive material carries a value (0 for non-emissive), not just resource-pack-overridden ones, so the

@@ -36,6 +36,9 @@ public bool payloadEmitterInList() { return (payload.flags & PAYLOAD_EMITTER_IN_
 // Set by world.rchit on an entity hit whose EntityGeom carries ENTITY_GEOM_LOCAL_VIEW — the hit surface
 // belongs to the local-view representation, so rays leaving it take the local-view secondary domain.
 public bool payloadSurfaceLocalView() { return (payload.flags & PAYLOAD_SURFACE_LOCAL_VIEW) != 0u; }
+// The 16-bit canonical identity of the medium behind the current hit's dielectric face (see
+// PAYLOAD_MEDIUM_ID_SHIFT); MEDIUM_ID_AIR on non-dielectric hits.
+public uint payloadMediumId() { return (payload.flags & PAYLOAD_MEDIUM_ID_MASK) >> PAYLOAD_MEDIUM_ID_SHIFT; }
 // LINEAR roughness, i.e. GGX alpha directly — NOT perceptual roughness. This is the one convention used
 // end to end: LabPBR defines roughness = (1 - perceptualSmoothness)^2 and RtLabPbr.decode stores exactly
 // that, RtMaterials.Profile carries the same units, and DLSS-RR wants linear roughness in its guide. So
