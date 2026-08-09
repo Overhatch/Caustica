@@ -86,8 +86,9 @@ public final class RtEntities {
     public static final int ENTITY_BIT = 0x800000;
     /** Custom-index flag (bit 22) marking a particle billboard instance (shares the entity geom table). */
     public static final int PARTICLE_BIT = 0x400000;
-    /** {@code EntityGeom.reserved} low-word flag; must stay in lock-step with {@code world_common.slang}. */
+    /** {@code EntityGeom.reserved} low-word flags; must stay in lock-step with {@code world_common.slang}. */
     private static final int ENTITY_GEOM_LOCAL_VIEW = 1;
+    private static final int ENTITY_GEOM_WORLD_STAND_IN = 1 << 1;
     // TLAS visibility-mask bits, ANDed against the per-ray cull mask in world.rgen. Bit 0 = secondary rays
     // leaving a world surface (shadows / GI / reflections, CULL_SECONDARY); bit 1 = the primary camera ray
     // (CULL_PRIMARY); bit 2 = secondary rays leaving a local-view surface (CULL_LOCAL_VIEW_SECONDARY).
@@ -714,6 +715,9 @@ public final class RtEntities {
             }
             boolean firstPersonSelf = entity == cameraEntity && firstPerson;
             int mask = firstPersonSelf ? MASK_SECONDARY : MASK_ALL;
+            // The stand-in flag rides the geometry record and forces the TLAS instance non-opaque, so
+            // any_hit can apply the exactly-once shadow semi-transmittance to the first-person body.
+            int entityGeomFlags = firstPersonSelf ? ENTITY_GEOM_WORLD_STAND_IN : 0;
             float ix;
             float iy;
             float iz;
@@ -813,13 +817,14 @@ public final class RtEntities {
             boolean reused;
             long reuseStart = RtFrameStats.FRAME.startStage();
             try {
-                reused = appendRigidReuse(ctx, build, motion, id, mask, ix - rbx, iy - rby, iz - rbz);
+                reused = appendRigidReuse(ctx, build, motion, id, mask, entityGeomFlags,
+                        ix - rbx, iy - rby, iz - rbz);
             } finally {
                 RtFrameStats.FRAME.endStage("entity.capture.rigidReuse", reuseStart);
             }
             if (!reused) {
                 appendCapture(ctx, build, motion, id, ENTITY_BIT, mask,
-                        translationTransform(ix - rbx, iy - rby, iz - rbz), 0);
+                        translationTransform(ix - rbx, iy - rby, iz - rbz), entityGeomFlags);
             }
             build.logicalCount++;
             RtFrameStats.FRAME.count("entitiesCaptured", 1);
@@ -1528,7 +1533,7 @@ public final class RtEntities {
      * pose is non-rigid (animation), or the shading data changed under identical topology.
      */
     private boolean appendRigidReuse(RtContext ctx, FrameBuild build, Motion motion, int entityId, int mask,
-                                     float placeX, float placeY, float placeZ) {
+                                     int entityGeomFlags, float placeX, float placeY, float placeZ) {
         EntityAccel ea = entityAccels.get(entityId);
         if (ea == null || ea.refAccel == null
                 || ea.refVertCount != capture.verts.size() / 3 || ea.refIdxCount != capture.idx.size()) {
@@ -1578,10 +1583,12 @@ public final class RtEntities {
         }
         build.lists.usedEntitySlots.add(ea.refSlot);
         writeTableEntry(build, ea.refPrimAddr, ea.refIndexAddr, ea.refUvAddr,
-                motion.dispAddr, motion.rigidX, motion.rigidY, motion.rigidZ, ea.refBucketTris, 0);
+                motion.dispAddr, motion.rigidX, motion.rigidY, motion.rigidZ, ea.refBucketTris,
+                entityGeomFlags);
         build.instances.add(new RtAccel.Instance(placeTransform(localTransform, placeX, placeY, placeZ),
                 ea.refAccel.deviceAddress,
-                ENTITY_BIT | (build.count & 0x3FFFFF), mask, RtAccel.SBT_ENTITY_OFFSET));
+                ENTITY_BIT | (build.count & 0x3FFFFF), mask, RtAccel.SBT_ENTITY_OFFSET,
+                instanceGeometryFlags(entityGeomFlags)));
         build.count++;
         RtFrameStats.FRAME.count("entityReuse", 1);
         return true;
@@ -1748,7 +1755,8 @@ public final class RtEntities {
                 motion.rigidX, motion.rigidY, motion.rigidZ, packed.bucketTris(), entityGeomFlags);
 
         build.instances.add(new RtAccel.Instance(instanceTransform, blas.accel.deviceAddress,
-                instanceBit | (build.count & 0x3FFFFF), mask, RtAccel.SBT_ENTITY_OFFSET));
+                instanceBit | (build.count & 0x3FFFFF), mask, RtAccel.SBT_ENTITY_OFFSET,
+                instanceGeometryFlags(entityGeomFlags)));
         build.buffers.add(geometry);
         build.count++;
     }
@@ -1826,7 +1834,8 @@ public final class RtEntities {
         writeTableEntry(build, primAddr, indexAddr, uvAddr, motion.dispAddr,
                 motion.rigidX, motion.rigidY, motion.rigidZ, packed.bucketTris(), entityGeomFlags);
         build.instances.add(new RtAccel.Instance(instanceTransform, accel.deviceAddress,
-                instanceBit | (build.count & 0x3FFFFF), mask, RtAccel.SBT_ENTITY_OFFSET));
+                instanceBit | (build.count & 0x3FFFFF), mask, RtAccel.SBT_ENTITY_OFFSET,
+                instanceGeometryFlags(entityGeomFlags)));
 
         EntityAccel ea = slot.owner;
         clearRefGeometry(ea);
@@ -1910,6 +1919,13 @@ public final class RtEntities {
         MemoryUtil.memPutInt(entry + 52, bucketTris[RtAccel.ENTITY_BUCKET_OPAQUE]);
         MemoryUtil.memPutInt(entry + 56, entityGeomFlags);
         MemoryUtil.memPutInt(entry + 60, 0);
+    }
+
+    /** The world stand-in's TLAS instance runs any-hit for every geometry so its shadow policy applies. */
+    private static int instanceGeometryFlags(int entityGeomFlags) {
+        return (entityGeomFlags & ENTITY_GEOM_WORLD_STAND_IN) != 0
+                ? org.lwjgl.vulkan.KHRAccelerationStructure.VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR
+                : 0;
     }
 
     /** Select the next per-entity slot, waiting on its exact last graphics use before mutable reuse. */

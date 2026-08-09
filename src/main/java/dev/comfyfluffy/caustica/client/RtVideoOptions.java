@@ -49,6 +49,7 @@ public final class RtVideoOptions {
             entities(),
             particles(),
             firstPersonCompat(),
+            firstPersonShadowTransmittance(),
             waterWaves(),
             dlssQuality()
         ));
@@ -135,6 +136,18 @@ public final class RtVideoOptions {
     private static OptionInstance<Boolean> firstPersonCompat() {
         return bool("caustica.options.rt.firstPersonCompat",
                 CausticaConfig.Rt.Entities.FIRST_PERSON_COMPAT_ENABLED);
+    }
+
+    private static OptionInstance<Integer> firstPersonShadowTransmittance() {
+        FloatSetting setting = CausticaConfig.Rt.Entities.FIRST_PERSON_SHADOW_TRANSMITTANCE;
+        return new OptionInstance<>(
+            "caustica.options.rt.firstPersonShadowTransmittance",
+            OptionInstance.cachedConstantTooltip(
+                    Component.translatable("caustica.options.rt.firstPersonShadowTransmittance.tooltip")),
+            (caption, percent) -> Options.genericValueLabel(caption, Component.literal(percent + "%")),
+            new OptionInstance.IntRange(0, 100),
+            Math.clamp(Math.round(setting.value() * 100.0f), 0, 100),
+            percent -> setting.set(percent / 100.0f));
     }
 
     private static OptionInstance<Boolean> waterWaves() {

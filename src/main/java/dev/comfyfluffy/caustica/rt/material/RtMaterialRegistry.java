@@ -45,7 +45,18 @@ public final class RtMaterialRegistry {
     public static final int FEATURE_SPEC = 1;
     public static final int FEATURE_NORMAL = 2;
     public static final int FEATURE_HEURISTIC_EMISSION = 4;
+    public static final int FEATURE_ICE = 8;
     public static final int FEATURE_STOCHASTIC_ALPHA = 16;
+    // The ice family gets its dedicated shadow policy and guide cutoff from this sprite list — never
+    // from optical parameters, so a resource pack changing IORs cannot reclassify materials.
+    private static final Set<Identifier> ICE_SPRITES = Set.of(
+            Identifier.withDefaultNamespace("block/ice"),
+            Identifier.withDefaultNamespace("block/frosted_ice_0"),
+            Identifier.withDefaultNamespace("block/frosted_ice_1"),
+            Identifier.withDefaultNamespace("block/frosted_ice_2"),
+            Identifier.withDefaultNamespace("block/frosted_ice_3"),
+            Identifier.withDefaultNamespace("block/packed_ice"),
+            Identifier.withDefaultNamespace("block/blue_ice"));
     // Largest header count whose every slot still packs as a 16-bit GPU medium identity: a dielectric's
     // identity is materialId + 2 (closest_hit.rchit.slang), with 0 and 1 reserved for air and water.
     private static final int MAX_MEDIUM_IDENTITY_RECORDS = 65533;
@@ -180,6 +191,9 @@ public final class RtMaterialRegistry {
             RtBlockMaterials.Entry entry = entriesBySprite.get(sprite);
             int baseFeatures = entry.features()
                     & (FEATURE_SPEC | FEATURE_NORMAL | FEATURE_HEURISTIC_EMISSION);
+            if (ICE_SPRITES.contains(sprite.contents().name())) {
+                baseFeatures |= FEATURE_ICE;
+            }
             SpriteStats stats = spriteStats.getOrDefault(sprite, SpriteStats.NEUTRAL);
 
             // The first sprite-wide (block == null) rule owns this sprite for every state, so its variants

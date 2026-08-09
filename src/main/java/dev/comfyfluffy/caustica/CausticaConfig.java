@@ -618,6 +618,9 @@ public final class CausticaConfig {
                     bool("caustica.rt.entityRefit", "entities.refit.enabled", true);
             public static final BooleanSetting FIRST_PERSON_COMPAT_ENABLED =
                     bool("caustica.rt.firstPersonCompat", "entities.first-person-compat.enabled", false);
+            public static final FloatSetting FIRST_PERSON_SHADOW_TRANSMITTANCE =
+                    clampedFloat("caustica.rt.firstPersonShadowTransmittance",
+                            "entities.first-person-shadow-transmittance", 0.35f, 0.0f, 1.0f);
 
             private Entities() {
             }

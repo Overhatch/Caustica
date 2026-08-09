@@ -88,6 +88,9 @@ public struct WorldPush {
     // near mid-grey at any scene brightness; the display pass divides it back out, so the two cancel
     // exactly and this cannot change the image. 1.0 disables it.
     public float    preExposure;
+    // Per-ray shadow behaviour knobs. x = first-person world-stand-in shadow transmittance (any_hit's
+    // exactly-once neutral multiply); yzw reserved and zero.
+    public float4   shadowPolicy;
 };
 
 // 32-byte hot area-light record. Linear ACEScg radiance uses packed R11G11B10; the
@@ -302,8 +305,11 @@ public static const uint ENTITY_BIT = 0x800000u;
 public static const uint PARTICLE_BIT = 0x400000u; // particles share the entity cutout path
 public static const uint IDX_MASK = 0x3FFFFFu;     // low 22 bits = geom-table index
 // EntityGeom.reserved low word: per-instance semantic flags. InstanceCustomIndex has no free bit left
-// (23/22 are taken and 0..21 are the index), so instance semantics ride in the geometry record instead.
+// (23/22 are taken and 0..21 are the index), so instance semantics ride in the geometry record instead:
+// bit 0 marks the local-view representation, bit 1 the first-person world stand-in (whose TLAS instance
+// is force-no-opaque so its shadow semi-transmittance any-hit runs).
 public static const uint ENTITY_GEOM_LOCAL_VIEW = 1u << 0;
+public static const uint ENTITY_GEOM_WORLD_STAND_IN = 1u << 1;
 public static const uint BUCKET_CUTOUT = 1u;
 public static const uint BUCKET_TRANSLUCENT = 2u;
 public static const uint BUCKET_WATER = 3u;
