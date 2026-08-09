@@ -12,6 +12,18 @@ import bindings;
 public static const uint CULL_SECONDARY = 0x01u;
 public static const uint CULL_PRIMARY = 0x02u;
 public static const uint CULL_LOCAL_VIEW_SECONDARY = 0x04u;
+// Reflection domain: continuation rays and specular probes leaving a local-view surface through a
+// reflection-class lobe (interface Fresnel reflection, delta specular, glossy VNDF). Scene geometry's
+// 0xFF instance mask contains this bit while neither player representation's mask does, so a local-view
+// reflection can never contain the player.
+public static const uint CULL_REFLECTION = 0x08u;
+
+// The three legal values of a path record's packed secondary-domain field; the fourth two-bit encoding
+// is never packed. WORLD doubles as the normalization target for camera-replayed records.
+public static const uint SECONDARY_DOMAIN_WORLD = 0u;
+public static const uint SECONDARY_DOMAIN_LOCAL_VIEW = 1u;
+public static const uint SECONDARY_DOMAIN_REFLECTION = 2u;
+
 public static const uint TERRAIN_BUCKETS = 4u;
 public static const uint SBT_RADIANCE = 0u;
 public static const uint SBT_SHADOW = TERRAIN_BUCKETS;
@@ -19,12 +31,38 @@ public static const uint SBT_STRIDE_BUCKET = 1u;
 public static const uint MISS_RADIANCE = 0u;
 public static const uint MISS_GUIDE = 1u;
 
-// The domain a secondary ray inherits from the surface it leaves. The flags word is an explicit
+public uint normalizeSecondaryDomain(uint domain) {
+    return domain == SECONDARY_DOMAIN_LOCAL_VIEW || domain == SECONDARY_DOMAIN_REFLECTION
+            ? domain : SECONDARY_DOMAIN_WORLD;
+}
+
+public uint secondaryMaskForDomain(uint domain) {
+    uint normalized = normalizeSecondaryDomain(domain);
+    if (normalized == SECONDARY_DOMAIN_LOCAL_VIEW) return CULL_LOCAL_VIEW_SECONDARY;
+    if (normalized == SECONDARY_DOMAIN_REFLECTION) return CULL_REFLECTION;
+    return CULL_SECONDARY;
+}
+
+// A continuation ray's domain, decided once per hit after the scatter lobe is chosen: world surfaces
+// keep the world domain for every lobe, while a local-view surface sends reflection-class lobes into
+// the reflection domain and every other lobe into its own local-view domain.
+public uint continuationDomainForLobe(uint baseSurfaceDomain, bool reflectionClass) {
+    if (baseSurfaceDomain == SECONDARY_DOMAIN_LOCAL_VIEW) {
+        return reflectionClass ? SECONDARY_DOMAIN_REFLECTION : SECONDARY_DOMAIN_LOCAL_VIEW;
+    }
+    return SECONDARY_DOMAIN_WORLD;
+}
+
+// The base domain a secondary ray inherits from the surface it leaves. The flags word is an explicit
 // parameter rather than a read of the global payload: the global is overwritten by the next trace, so a
 // caller must name WHICH hit it derives from.
-public uint secondaryMaskForSurface(uint payloadFlags) {
+public uint secondaryDomainForSurface(uint payloadFlags) {
     return (payloadFlags & PAYLOAD_SURFACE_LOCAL_VIEW) != 0u
-            ? CULL_LOCAL_VIEW_SECONDARY : CULL_SECONDARY;
+            ? SECONDARY_DOMAIN_LOCAL_VIEW : SECONDARY_DOMAIN_WORLD;
+}
+
+public uint secondaryMaskForSurface(uint payloadFlags) {
+    return secondaryMaskForDomain(secondaryDomainForSurface(payloadFlags));
 }
 
 public RayDesc makeRay(float3 origin, float tmin, float3 dir, float tmax) {

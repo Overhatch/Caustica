@@ -17,6 +17,7 @@ final class RtVisibilityDomainTest {
     private static final int CULL_SECONDARY = 0x01;
     private static final int CULL_PRIMARY = 0x02;
     private static final int CULL_LOCAL_VIEW_SECONDARY = 0x04;
+    private static final int CULL_REFLECTION = 0x08;
 
     private static int mask(String name) throws ReflectiveOperationException {
         Field field = RtEntities.class.getDeclaredField(name);
@@ -30,7 +31,7 @@ final class RtVisibilityDomainTest {
         assertEquals(CULL_PRIMARY, mask("MASK_PRIMARY"));
         assertEquals(CULL_LOCAL_VIEW_SECONDARY, mask("MASK_LOCAL_VIEW_SECONDARY"));
         assertEquals(0xFF, mask("MASK_ALL"));
-        // The particle mask is primary-only; a third domain must not have widened it.
+        // The particle mask is primary-only; a new domain must not have widened it.
         assertEquals(CULL_PRIMARY, mask("PARTICLE_MASK"));
     }
 
@@ -41,11 +42,13 @@ final class RtVisibilityDomainTest {
         int worldStandIn = mask("MASK_SECONDARY");
         int localView = mask("MASK_PRIMARY") | mask("MASK_LOCAL_VIEW_SECONDARY");
 
-        // Rows follow design D1's self-consistency table: camera, world surface, local-view surface.
+        // One row per ray domain: camera, world secondary, local-view secondary, reflection.
         assertVisibility(CULL_PRIMARY, terrain, true, particle, true, worldStandIn, false, localView, true);
         assertVisibility(CULL_SECONDARY, terrain, true, particle, false, worldStandIn, true, localView, false);
         assertVisibility(CULL_LOCAL_VIEW_SECONDARY,
                 terrain, true, particle, false, worldStandIn, false, localView, true);
+        assertVisibility(CULL_REFLECTION,
+                terrain, true, particle, false, worldStandIn, false, localView, false);
     }
 
     /**
@@ -61,6 +64,22 @@ final class RtVisibilityDomainTest {
         assertEquals(0, localView & CULL_SECONDARY, "local view must not answer world secondary rays");
         assertTrue((worldStandIn & CULL_SECONDARY) != 0, "the stand-in owns the world secondary domain");
         assertTrue((localView & CULL_LOCAL_VIEW_SECONDARY) != 0, "local view owns its own secondary domain");
+    }
+
+    /**
+     * A reflection leaving a local-view surface must contain only scene geometry. Neither player
+     * representation nor particles may answer a reflection-domain ray — that purity is the reason the
+     * domain exists.
+     */
+    @Test
+    void reflectionDomainSeesNoPlayerRepresentation() throws ReflectiveOperationException {
+        int worldStandIn = mask("MASK_SECONDARY");
+        int localView = mask("MASK_PRIMARY") | mask("MASK_LOCAL_VIEW_SECONDARY");
+
+        assertEquals(0, worldStandIn & CULL_REFLECTION, "stand-in must not answer reflection rays");
+        assertEquals(0, localView & CULL_REFLECTION, "local view must not answer reflection rays");
+        assertEquals(0, mask("PARTICLE_MASK") & CULL_REFLECTION, "particles must not answer reflection rays");
+        assertTrue((mask("MASK_ALL") & CULL_REFLECTION) != 0, "scene geometry answers reflection rays");
     }
 
     private static void assertVisibility(int domain, int mask0, boolean expected0, int mask1, boolean expected1,

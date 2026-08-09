@@ -73,24 +73,34 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
     // remains active with its full configured candidate count at every hit. Pass A's primary/interface
     // prefix is outside this SSS quality budget.
     int indirectDepth = 0;
-    // The domain the next secondary ray belongs to. Re-derived from each hit below, so it tracks the
-    // surface a ray leaves rather than sticking to the path.
-    uint nextMask = seg.localViewSecondary ? CULL_LOCAL_VIEW_SECONDARY : CULL_SECONDARY;
+    // Domain of the next continuation ray. The first trace resumes the record's domain; every later
+    // iteration re-selects it below, at the loop's single continuation-domain assignment point.
+    uint nextDomain = normalizeSecondaryDomain(seg.secondaryDomain);
+    uint baseSurfaceDomain = SECONDARY_DOMAIN_WORLD;
+    bool reflectionClassLobe = false;
     for (int bounce = seg.bounce; bounce <= maxBounces; bounce++) {
+        // The single continuation-domain assignment point, live once a prior hit has selected a lobe.
+        // Assigning per-branch instead would let a new upstream continuation path silently inherit the
+        // wrong domain without a rebase conflict.
+        if (bounce > seg.bounce) {
+            nextDomain = continuationDomainForLobe(baseSurfaceDomain, reflectionClassLobe);
+        }
         // Radiance SBT records run any-hit only for true alpha cutout. Translucent/water go straight to
         // closest-hit for dielectric handling. Geometry is double-sided; the chit flips the normal.
         // Primary (bounce 0) is the camera ray (CULL_PRIMARY): sees particles but not the world stand-in.
-        // Every later ray takes the secondary domain of the surface it leaves — CULL_SECONDARY for world
-        // surfaces (excludes particles, includes the stand-in) or CULL_LOCAL_VIEW_SECONDARY for the
-        // local-view representation (which the world stand-in is invisible to, and vice versa).
+        // Every later ray takes its continuation domain — world surfaces keep CULL_SECONDARY for every
+        // lobe; a local-view surface's reflection-class lobes take CULL_REFLECTION, its other lobes
+        // CULL_LOCAL_VIEW_SECONDARY.
 #ifdef CAUSTICA_ENABLE_EXT_SER
         // SER lifetime phase: keep paths that are not roulette-eligible, paths that may terminate via
         // roulette, and paths guaranteed to end at the bounce cap in separate coherence groups.
         uint pathPhaseHint = bounce >= maxBounces ? 2u : (bounce >= rrStart ? 1u : 0u);
-        traceRadianceReordered(bounce == 0 ? CULL_PRIMARY : nextMask, ro, 0.0, rd, 10000.0,
+        traceRadianceReordered(bounce == 0 ? CULL_PRIMARY : secondaryMaskForDomain(nextDomain),
+                               ro, 0.0, rd, 10000.0,
                                showCelestial, rayConeWidth, rayConeSpread, pathPhaseHint);
 #else
-        traceRadiance(bounce == 0 ? CULL_PRIMARY : nextMask, ro, 0.0, rd, 10000.0,
+        traceRadiance(bounce == 0 ? CULL_PRIMARY : secondaryMaskForDomain(nextDomain),
+                      ro, 0.0, rd, 10000.0,
                       showCelestial, rayConeWidth, rayConeSpread);
 #endif
 
@@ -98,7 +108,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             // A ray still in water should leave through a water interface. A miss instead means the
             // streamed/open volume has no known exit; do not reinterpret that unknown region as air
             // and reveal sky.
-            if (medium.current.water) {
+            if (mediumIsWater(medium.current)) {
                 break;
             }
 
@@ -110,12 +120,12 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             break;
         }
 
-        // Latch this hit's outgoing domain before anything can overwrite the global payload, and carry it
-        // to the next iteration HERE — the single assignment point in the loop. Every shadow/reservoir ray
-        // cast from this vertex uses surfaceMask. Assigning nextMask per-branch instead would leave a new
-        // upstream continuation path silently inheriting the wrong domain without a rebase conflict.
-        uint surfaceMask = secondaryMaskForSurface(payload.flags);
-        nextMask = surfaceMask;
+        // Latch this hit's base domain before anything can overwrite the global payload. Every
+        // shadow/NEE/RIS/SSS ray cast from this vertex consumes baseSurfaceMask; the continuation's
+        // domain is selected separately, at the top of the next iteration, once the lobe is known.
+        baseSurfaceDomain = secondaryDomainForSurface(payload.flags);
+        uint baseSurfaceMask = secondaryMaskForDomain(baseSurfaceDomain);
+        reflectionClassLobe = false;
 
         // Beer–Lambert: attenuate along the segment just travelled by the medium it lay inside. Applies
         // to every hit reached while inside a volume dielectric (its own exit face, or whatever content
@@ -165,9 +175,10 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
 
             // The medium this face opens into, and the one it returns to on the way out — which is what
             // the stack remembers.
-            Medium entered = makeDielectricMedium(isWater, max(payloadIor(), 1.0), tint, transmission);
+            Medium entered = makeDielectricMedium(isWater ? MEDIUM_ID_WATER : MEDIUM_ID_GENERIC_DIELECTRIC,
+                                                  max(payloadIor(), 1.0), tint, transmission);
             float etaI = medium.current.ior;
-            float etaT = entering ? entered.ior : medium.outer.ior;
+            float etaT = entering ? entered.ior : medium.parent1.ior;
 
             float cosI = clamp(dot(-rd, n), 0.0, 1.0);
             float F = fresnelDielectric(cosI, etaI, etaT);
@@ -194,6 +205,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                     mediumPop(medium);
                 }
             }
+            reflectionClassLobe = chooseReflection;
             showCelestial = true; // specular interface: the continuation ray may see the sun/moon disc
             if (bounce >= rrStart) {
                 float q = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.02, 1.0);
@@ -223,7 +235,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             float ndl = abs(signedNdl);
             if (ndl > 0.0) {
                 float3 shadowOrigin = hitPos + (signedNdl >= 0.0 ? n : -n) * SURF_BIAS;
-                float3 vis = visibility(surfaceMask, shadowOrigin, lightDir, 10000.0).transmittance;
+                float3 vis = visibility(baseSurfaceMask, shadowOrigin, lightDir, 10000.0).transmittance;
                 if (max(vis.r, max(vis.g, vis.b)) > 0.0) {
                     L += throughput * albedo * INV_PI * celestialLight.illuminance * ndl * vis;
                 }
@@ -236,7 +248,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 float3 v = -rd;
                 Reservoir r = risInitial(hitPos, n, v, rd, albedo, float3(0.0, 0.0, 0.0), 1.0,
                                          true, 0.0, seed, proposalSeed);
-                L += throughput * shadeReservoir(surfaceMask, r, hitPos, n, v, rd, albedo,
+                L += throughput * shadeReservoir(baseSurfaceMask, r, hitPos, n, v, rd, albedo,
                                                  float3(0.0, 0.0, 0.0), 1.0, true, 0.0);
             }
 
@@ -298,12 +310,12 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         }
         float ndl = max(0.0, dot(n, lightDir));
         if (ndl > 0.0) {
-            VisibilityResult shadow = visibility(surfaceMask, p, lightDir, 10000.0);
+            VisibilityResult shadow = visibility(baseSurfaceMask, p, lightDir, 10000.0);
             float3 vis = shadow.transmittance;
             // Underwater receiver whose shadow ray crossed a water surface: scale the direct light by
             // the wave-refraction caustic at the exit point. Focusing scales the incident irradiance,
             // so it applies to the whole NEE term (diffuse + specular).
-            if (medium.current.water && waterWaves && shadow.waterHitT > 0.0) {
+            if (mediumIsWater(medium.current) && waterWaves && shadow.waterHitT > 0.0) {
                 vis *= waterCaustic(p + lightDir * shadow.waterHitT, lightDir, shadow.waterHitT);
             }
             if (max(vis.r, max(vis.g, vis.b)) > 0.0) {
@@ -329,7 +341,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             float activeSss = hitDepth <= MAX_SSS_INDIRECT_DEPTH ? sss : 0.0;
             Reservoir r = risInitial(hitPos, n, v, rd, diffAlb, F0, rough, false, activeSss,
                                      seed, proposalSeed);
-            L += throughput * shadeReservoir(surfaceMask, r, hitPos, n, v, rd, diffAlb, F0, rough,
+            L += throughput * shadeReservoir(baseSurfaceMask, r, hitPos, n, v, rd, diffAlb, F0, rough,
                                              false, activeSss);
         }
 
@@ -341,12 +353,12 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         if (sss > 0.0 && hitDepth <= MAX_SSS_INDIRECT_DEPTH) {
             float backNdl = max(0.0, dot(-n, lightDir));
             if (backNdl > 0.0) {
-                VisibilityResult shadowBack = visibility(surfaceMask, hitPos - n * SURF_BIAS,
+                VisibilityResult shadowBack = visibility(baseSurfaceMask, hitPos - n * SURF_BIAS,
                                                          lightDir, 10000.0);
                 float3 visB = shadowBack.transmittance;
                 // Same caustic as the front-face NEE — underwater kelp/seagrass transmission should
                 // flicker with the same light bands as the floor around it.
-                if (medium.current.water && waterWaves && shadowBack.waterHitT > 0.0) {
+                if (mediumIsWater(medium.current) && waterWaves && shadowBack.waterHitT > 0.0) {
                     visB *= waterCaustic(hitPos + lightDir * shadowBack.waterHitT,
                                          lightDir, shadowBack.waterHitT);
                 }
@@ -369,6 +381,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                        ? 1.0
                        : clamp(luminance(F0) / (luminance(F0) + luminance(diffAlb) + 1.0e-4), 0.1, 0.9);
         if (rndf(seed) < ps) {
+            reflectionClassLobe = true;
             float3 l;
             if (exactSpecular) {
                 // Authored zero is a delta distribution, not a narrow finite GGX lobe. This avoids the

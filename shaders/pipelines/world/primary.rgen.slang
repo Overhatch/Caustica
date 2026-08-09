@@ -43,7 +43,7 @@ public PathSegment tracePrimary(PathSegment seg,
         // Replayed by Pass B as the camera ray, so its domain field is normalized rather than derived.
         PathSegment terminal = makePathSegment(ro, rd, throughput, medium,
                                                rayConeWidth, rayConeSpread, seed, bounce,
-                                               showCelestial, false);
+                                               showCelestial, SECONDARY_DOMAIN_WORLD, false);
         traceRadiance(CULL_PRIMARY, ro, 0.0, rd, 10000.0,
                       showCelestial, rayConeWidth, rayConeSpread);
 
@@ -89,11 +89,13 @@ public PathSegment tracePrimary(PathSegment seg,
                     float3 v = -rd;
                     gv_albedo = diffAlb;
                     gv_rough = rough;
-                    // An opaque/cutout local-view surface reflects in its own domain, so this cannot take
-                    // the world-domain convenience overload. Particles above always belong to the world.
+                    // A local-view surface's reflection probe belongs to the reflection domain — never
+                    // its own domain, so the probe cannot see either player representation. World
+                    // surfaces keep the world secondary domain; particles above always belong to it.
                     gv_spec = makeSpecSurface(gv_hitCamRel, n, n, n, float3(payload.motionPrev), rough,
                                               rrSpecularAlbedo(payload.f0, rough, dot(n, v)),
-                                              secondaryMaskForSurface(payload.flags));
+                                              payloadSurfaceLocalView()
+                                                      ? CULL_REFLECTION : CULL_SECONDARY);
                 }
             }
 
@@ -131,17 +133,22 @@ public PathSegment tracePrimary(PathSegment seg,
         }
 
         float transmission = clamp(payloadTransmission(), 0.0, 1.0);
-        Medium entered = makeDielectricMedium(isWater, max(payloadIor(), 1.0),
-                                              payloadAlbedo(), transmission);
+        Medium entered = makeDielectricMedium(isWater ? MEDIUM_ID_WATER : MEDIUM_ID_GENERIC_DIELECTRIC,
+                                              max(payloadIor(), 1.0), payloadAlbedo(), transmission);
         float etaI = medium.current.ior;
-        float etaT = entering ? entered.ior : medium.outer.ior;
+        float etaT = entering ? entered.ior : medium.parent1.ior;
         float F = fresnelDielectric(clamp(dot(-rd, n), 0.0, 1.0), etaI, etaT);
         float3 transmittedDir = refract(rd, n, etaI / etaT);
         float transmitBias = isWater ? SURF_BIAS : INSET_TRANSMIT_BIAS;
-        // This interface's domain, read once here — before any guide probe below overwrites the global
-        // payload. Every continuation and guide mask in this branch derives from these two.
+        // This interface's domains, read once here — before any guide probe below overwrites the global
+        // payload. Every continuation domain and guide mask in this branch derives from these: the
+        // transmission side keeps the interface's own secondary domain, the reflection side takes the
+        // reflection domain when the interface is local view.
         bool interfaceLocalView = payloadSurfaceLocalView();
-        uint interfaceSecondaryMask = secondaryMaskForSurface(payload.flags);
+        uint interfaceSecondaryDomain = secondaryDomainForSurface(payload.flags);
+        uint interfaceSecondaryMask = secondaryMaskForDomain(interfaceSecondaryDomain);
+        uint interfaceReflectionDomain = interfaceLocalView
+                ? SECONDARY_DOMAIN_REFLECTION : SECONDARY_DOMAIN_WORLD;
 
         if (bounce == 0) {
             gv_normal = n;
@@ -153,7 +160,8 @@ public PathSegment tracePrimary(PathSegment seg,
             gv_motionObjDisp = isWater ? float3(0.0, 0.0, 0.0) : payload.motionPrev;
             gv_spec = makeSpecSurface(gv_hitCamRel, n, previousNormal, geometricNormal,
                                       isWater ? float3(0.0, 0.0, 0.0) : float3(payload.motionPrev),
-                                      gv_rough, float3(F, F, F), interfaceSecondaryMask);
+                                      gv_rough, float3(F, F, F),
+                                      secondaryMaskForDomain(interfaceReflectionDomain));
             if (dot(transmittedDir, transmittedDir) > 0.0) {
                 MediumStack guideMedium = medium;
                 if (entering) {
@@ -187,7 +195,7 @@ public PathSegment tracePrimary(PathSegment seg,
                     offsetSurfaceOrigin(hitPos, geometricNormal, deferredDir, transmitBias),
                     deferredDir, throughput * (1.0 - F), transmittedMedium,
                     rayConeWidth, rayConeSpread, seed, bounce + 1,
-                    true, interfaceLocalView);
+                    true, interfaceSecondaryDomain, false);
             queue[splitRecord] = packPathSegment(deferred, PATH_NO_NEXT);
             nextRecord = splitRecord;
             float3 reflectedDir = reflect(rd, n);
@@ -195,7 +203,7 @@ public PathSegment tracePrimary(PathSegment seg,
                     offsetSurfaceOrigin(hitPos, geometricNormal, reflectedDir, SURF_BIAS),
                     reflectedDir, throughput * F, medium,
                     rayConeWidth, rayConeSpread, seed ^ 0xa511e9b3u, bounce + 1,
-                    true, interfaceLocalView);
+                    true, interfaceReflectionDomain, false);
             return reflected;
         }
 
@@ -207,7 +215,7 @@ public PathSegment tracePrimary(PathSegment seg,
                     offsetSurfaceOrigin(hitPos, geometricNormal, reflectedDir, SURF_BIAS),
                     reflectedDir, throughput * F, medium,
                     rayConeWidth, rayConeSpread, seed, bounce + 1,
-                    true, interfaceLocalView);
+                    true, interfaceReflectionDomain, false);
         } else {
             float3 deferredDir = normalize(transmittedDir);
             if (entering) {
@@ -219,7 +227,7 @@ public PathSegment tracePrimary(PathSegment seg,
                     offsetSurfaceOrigin(hitPos, geometricNormal, deferredDir, transmitBias),
                     deferredDir, throughput * (1.0 - F), medium,
                     rayConeWidth, rayConeSpread, seed, bounce + 1,
-                    true, interfaceLocalView);
+                    true, interfaceSecondaryDomain, false);
         }
         return continuation;
     }
@@ -244,7 +252,7 @@ void main() {
     uint seed = (dispatchIndex.x * 1973u + dispatchIndex.y * 9277u + 26699u)
             ^ (worldPush.frameIndex * 2654435761u);
     MediumStack cameraMedium = makeMediumStack((worldPush.flags & 1u) != 0u
-            ? makeDielectricMedium(true, WATER_IOR, worldPush.waterParams.xyz, 1.0)
+            ? makeDielectricMedium(MEDIUM_ID_WATER, WATER_IOR, worldPush.waterParams.xyz, 1.0)
             : airMedium());
     uint pixelIndex = dispatchIndex.y * dimensions.x + dispatchIndex.x;
     uint baseRecordCount = dimensions.x * dimensions.y;
@@ -253,7 +261,7 @@ void main() {
 
     seed = pcg(seed);
     PathSegment current = makePathSegment(origin, dir, float3(1.0, 1.0, 1.0),
-            cameraMedium, 0.0, rayConeSpread, seed, 0, true, false);
+            cameraMedium, 0.0, rayConeSpread, seed, 0, true, SECONDARY_DOMAIN_WORLD, false);
     uint nextRecord;
     PathSegment terminal = tracePrimary(
             current, queue, splitRecord, nextRecord);

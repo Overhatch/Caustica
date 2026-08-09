@@ -215,9 +215,9 @@ public void resolveTransmissionGuide(uint rayMask, float3 surfacePos, float3 tra
         }
 
         float transmission = clamp(payloadTransmission(), 0.0, 1.0);
-        Medium entered = makeDielectricMedium(isWater, max(payloadIor(), 1.0),
-                                              payloadAlbedo(), transmission);
-        float etaT = entering ? entered.ior : medium.outer.ior;
+        Medium entered = makeDielectricMedium(isWater ? MEDIUM_ID_WATER : MEDIUM_ID_GENERIC_DIELECTRIC,
+                                              max(payloadIor(), 1.0), payloadAlbedo(), transmission);
+        float etaT = entering ? entered.ior : medium.parent1.ior;
         float3 nextDirection = refract(direction, interfaceNormal, medium.current.ior / etaT);
         if (dot(nextDirection, nextDirection) <= 0.0) {
             // Never let a TIR reflection become ordinary diffuse/depth.

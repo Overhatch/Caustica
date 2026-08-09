@@ -104,7 +104,9 @@ public final class RtComposite {
     // Hot addresses/frameIndex avoid unnecessary global-memory dereferences; WorldPushConstantsData is
     // generated from the same Slang module and owns this second ABI as well. debugView is no longer
     // part of it -- no world shader reads it anymore; debug views are a downstream compute pass.
-    private static final long PATH_RECORD_BYTES = 48L;
+    // Stride of segment.slang's PackedPathSegment (std430: float3 + 13 uints). The continuation queue
+    // below is allocated from it, so the two must move together.
+    private static final long PATH_RECORD_BYTES = 64L;
     private static int debugView() {
         return CausticaConfig.Rt.Composite.DEBUG_VIEW.value();
     }
