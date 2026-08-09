@@ -364,9 +364,14 @@ public final class RtEntities {
         long retryYawFitAfter;
     }
 
-    /** This frame's terrain and dynamic instance segments, entity BLAS builds, and geometry-table address. */
+    /**
+     * This frame's terrain and dynamic instance segments, entity BLAS builds, geometry-table address,
+     * and whether the camera entity's local-view representation was successfully published into the
+     * geometry table this frame.
+     */
     public record FrameEntities(List<RtAccel.Instance> baseInstances, List<RtAccel.Instance> dynamicInstances,
-                                List<RtAccel.PreparedBlas> blas, long geomTableAddr, FrameUse use) {
+                                List<RtAccel.PreparedBlas> blas, long geomTableAddr,
+                                boolean localViewPublished, FrameUse use) {
     }
 
     private record FrameUse(FrameLists lists, TableSlot table) {
@@ -603,6 +608,7 @@ public final class RtEntities {
         TableSlot table;
         int count;        // geometry-table entries / TLAS instances
         int logicalCount; // ordinary entities + block entities + individual particles
+        boolean localViewPublished;
 
         final GraphicsUseWaiter graphicsUseWaiter;
 
@@ -626,12 +632,12 @@ public final class RtEntities {
     public FrameEntities beginFrame(RtContext ctx, List<RtAccel.Instance> base, int rbx, int rby, int rbz,
                                     double camX, double camY, double camZ, Matrix4f projection, Matrix4f viewRotation) {
         if (!enabled()) {
-            return new FrameEntities(base, List.of(), List.of(), 0L, null);
+            return new FrameEntities(base, List.of(), List.of(), 0L, false, null);
         }
         Minecraft mc = Minecraft.getInstance();
         ClientLevel level = mc.level;
         if (level == null) {
-            return new FrameEntities(base, List.of(), List.of(), 0L, null);
+            return new FrameEntities(base, List.of(), List.of(), 0L, false, null);
         }
         float partial = mc.getDeltaTracker().getGameTimeDeltaPartialTick(false);
         setCamera(camX, camY, camZ, projection, viewRotation);
@@ -659,7 +665,7 @@ public final class RtEntities {
         RtFrameStats.FRAME.count("entityRetainedGeometryBytes", retainedGeometryBytes);
 
         if (build.instances == null) {
-            return new FrameEntities(base, List.of(), List.of(), 0L, null);
+            return new FrameEntities(base, List.of(), List.of(), 0L, false, null);
         }
         try (RtFrameStats.Scope ignored = RtFrameStats.FRAME.stage("entity.uploadFlush")) {
             build.motion.flushWrites();
@@ -669,7 +675,7 @@ public final class RtEntities {
             }
         }
         return new FrameEntities(base, build.instances, build.blas, build.geomTableAddr,
-                new FrameUse(build.lists, build.table));
+                build.localViewPublished, new FrameUse(build.lists, build.table));
     }
 
     /** Associate every resource returned for a successfully enqueued frame with its graphics completion. */
@@ -736,10 +742,13 @@ public final class RtEntities {
             // Short budget therefore degrades to the stand-in alone rather than publishing half a player.
             boolean localViewEligible = firstPersonSelf
                     && CausticaConfig.Rt.Entities.FIRST_PERSON_COMPAT_ENABLED.value();
-            if (localViewEligible && admitsLocalView(maxEntities(), build.logicalCount)) {
+            boolean localViewAdmitted = localViewEligible
+                    && admitsLocalView(maxEntities(), build.logicalCount);
+            if (localViewAdmitted) {
                 FirstPersonCapture fpReady = captureFirstPerson(build, dispatcher, entity, partial, id);
                 if (fpReady != null) {
-                    publishFirstPerson(ctx, build, fpReady, rbx, rby, rbz);
+                    build.localViewPublished = localViewPresence(localViewEligible, localViewAdmitted,
+                            true, publishFirstPerson(ctx, build, fpReady, rbx, rby, rbz));
                 }
             } else if (localViewEligible) {
                 warnLocalViewBudgetExhausted();
@@ -950,13 +959,29 @@ public final class RtEntities {
     }
 
     /**
+     * The publication verdict behind the frame's localViewPresent signal: true only when the
+     * compatibility gate, the two-slot budget admission, the provider capture (which folds provider
+     * absence, missing state, camera-unsafe state, ownership mismatch and the circuit breaker into one
+     * readiness fact) and the geometry-table write ALL held this frame. Kept pure so the definition is
+     * unit-testable; captureEntities feeds it the real per-frame facts, and every degraded path leaves
+     * the signal false.
+     */
+    static boolean localViewPresence(boolean compatEligible, boolean budgetAdmitted,
+                                     boolean captureReady, boolean instanceWritten) {
+        return compatEligible && budgetAdmitted && captureReady && instanceWritten;
+    }
+
+    /**
      * Publish the mesh {@link #captureFirstPerson} left in {@link #fpCapture} as the camera entity's
      * local-view representation: visible to the primary camera ray and to secondary rays leaving a
      * local-view surface, invisible to world secondary rays. Motion history lives in a disjoint negative key space
      * ({@code -(entityId + 1)}); entity ids are assigned positive by vanilla, so a frame that falls back to
      * the ordinary capture cannot diff against first-person history, or the other way round.
+     *
+     * <p>Returns whether the local-view instance landed in the geometry table — the publication fact the
+     * frame's presence signal is sourced from.
      */
-    private void publishFirstPerson(RtContext ctx, FrameBuild build, FirstPersonCapture ready,
+    private boolean publishFirstPerson(RtContext ctx, FrameBuild build, FirstPersonCapture ready,
                                     int rbx, int rby, int rbz) {
         EntityPrev fpHistory = prevVerts.get(ready.motionId());
         // A provider swap must not diff this frame's mesh against the previous provider's history, but the
@@ -974,6 +999,7 @@ public final class RtEntities {
         build.logicalCount++;
         RtFrameStats.FRAME.count("firstPersonInstances", 1);
         RtFrameStats.FRAME.count("localViewInstances", 1);
+        return true;
     }
 
     /**

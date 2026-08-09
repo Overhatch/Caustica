@@ -1064,7 +1064,8 @@ public final class RtComposite {
             frameInvViewProj.set(frameProjection).mul(frameViewRotation).invert();
             // flags: camera-in-water (so the path tracer starts in the water medium when the eye is
             // submerged, fixing the air→water first-segment orientation) and animated water normals.
-            // Bit 1 remains unused to avoid conflicting with stale external readers.
+            // Bit 1 remains unused to avoid conflicting with stale external readers; bit 2 is written
+            // below, only from this frame's local-view publication fact.
             int flags = 0;
             var level = Minecraft.getInstance().level;
             if (level != null) {
@@ -1117,6 +1118,11 @@ public final class RtComposite {
             RtEntities.FrameEntities fe = RtEntities.INSTANCE.beginFrame(ctx, terrain.staticInstances(),
                     terrain.blockX, terrain.blockY, terrain.blockZ, camX, camY, camZ, frameProjection, frameViewRotation);
             frameEntities = fe;
+            // Same-frame, no hysteresis: the shader's transmission-continuity chain keys off exactly
+            // this frame's publication fact.
+            if (fe.localViewPublished()) {
+                flags |= 0b100;
+            }
             // Block-breaking overlay: resolves each destroy-stage RenderType's texture into the
             // SAME bindless entity-texture array (destroy_stage_N.png is a standalone Sampler0 texture,
             // not a block-atlas sprite — see ModelBakery.BREAKING_LOCATIONS/DESTROY_TYPES), so any newly
