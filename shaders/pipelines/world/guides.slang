@@ -170,6 +170,13 @@ public void resolveTransmissionGuide(uint rayMask, float3 surfacePos, float3 tra
                               float3 surfaceBiasNormal, MediumStack medium, float rayBias,
                               float rayConeWidth, float rayConeSpread, float3 guideFilter) {
     if (dot(transmittedDir, transmittedDir) <= 0.0) return;
+    // With the local view published, the whole chain keeps the union of the camera domain and the
+    // local-view secondary domain — matching the radiance chain's representation, never mid-switching
+    // to a mask that could hit the world stand-in. Unset keeps the per-crossing derivation below.
+    bool localViewPresent = (worldPush.flags & 4u) != 0u;
+    if (localViewPresent) {
+        rayMask = CULL_PRIMARY | CULL_LOCAL_VIEW_SECONDARY;
+    }
 
     float3 direction = normalize(transmittedDir);
     float3 ro = offsetSurfaceOrigin(surfacePos, surfaceBiasNormal, direction, rayBias);
@@ -214,6 +221,15 @@ public void resolveTransmissionGuide(uint rayMask, float3 surfacePos, float3 tra
                     worldPush.waterParams.w, waterFootprint);
         }
 
+        // An ice interface ends the guide chain: depth, position, normal and motion all describe this
+        // interface, never a blend with the destination behind it. Shaped like the TIR endpoint above.
+        if (material == MATERIAL_DIELECTRIC && payloadSurfaceIce()) {
+            setTransmissionGuide(interfacePos - worldPush.camOffset,
+                    float3(payload.motionPrev), interfaceNormal, 0.0,
+                    float3(0.0, 0.0, 0.0), false);
+            return;
+        }
+
         float transmission = clamp(payloadTransmission(), 0.0, 1.0);
         Medium entered = makeDielectricMedium(payloadMediumId(), max(payloadIor(), 1.0),
                                               payloadAlbedo(), transmission);
@@ -245,9 +261,11 @@ public void resolveTransmissionGuide(uint rayMask, float3 surfacePos, float3 tra
         } else if (mediumExitIsDeep(exitMatch)) {
             mediumCommitExit(medium, exitMatch);
         }
-        // Re-derive from THIS crossing, or a chain that leaves the local-view representation and enters
-        // world glass would keep probing in the local-view domain.
-        rayMask = CULL_PRIMARY | secondaryMaskForSurface(payload.flags);
+        if (!localViewPresent) {
+            // Re-derive from THIS crossing, or a chain that leaves the local-view representation and
+            // enters world glass would keep probing in the local-view domain.
+            rayMask = CULL_PRIMARY | secondaryMaskForSurface(payload.flags);
+        }
         direction = normalize(nextDirection);
         ro = offsetSurfaceOrigin(interfacePos, geometricNormal, direction,
                 isWater ? SURF_BIAS : INSET_TRANSMIT_BIAS);

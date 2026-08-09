@@ -77,13 +77,20 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
     // iteration re-selects it below, at the loop's single continuation-domain assignment point.
     uint nextDomain = normalizeSecondaryDomain(seg.secondaryDomain);
     uint baseSurfaceDomain = SECONDARY_DOMAIN_WORLD;
-    bool reflectionClassLobe = false;
+    uint scatterClass = SCATTER_DIFFUSE;
+    // Camera-visible transmission continuity: seeded by the record, kept only across transmission
+    // lobes, cleared by everything else — and while true, transmission continuations stay in the
+    // local-view domain so the visible player never switches representation mid-chain.
+    bool cameraTransmissionContinuity = seg.cameraTransmissionContinuity;
     for (int bounce = seg.bounce; bounce <= maxBounces; bounce++) {
         // The single continuation-domain assignment point, live once a prior hit has selected a lobe.
         // Assigning per-branch instead would let a new upstream continuation path silently inherit the
         // wrong domain without a rebase conflict.
         if (bounce > seg.bounce) {
-            nextDomain = continuationDomainForLobe(baseSurfaceDomain, reflectionClassLobe);
+            cameraTransmissionContinuity = cameraTransmissionContinuity
+                    && scatterClass == SCATTER_TRANSMISSION;
+            nextDomain = continuationDomainForLobe(baseSurfaceDomain, scatterClass,
+                    cameraTransmissionContinuity);
         }
         // Radiance SBT records run any-hit only for true alpha cutout. Translucent/water go straight to
         // closest-hit for dielectric handling. Geometry is double-sided; the chit flips the normal.
@@ -125,7 +132,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
         // domain is selected separately, at the top of the next iteration, once the lobe is known.
         baseSurfaceDomain = secondaryDomainForSurface(payload.flags);
         uint baseSurfaceMask = secondaryMaskForDomain(baseSurfaceDomain);
-        reflectionClassLobe = false;
+        scatterClass = SCATTER_DIFFUSE;
 
         // Beer–Lambert: attenuate along the segment just travelled by the medium it lay inside. Applies
         // to every hit reached while inside a volume dielectric (its own exit face, or whatever content
@@ -188,6 +195,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
             float transmitBias = isWater ? SURF_BIAS : INSET_TRANSMIT_BIAS;
 
             if (!opticalEvent) {
+                scatterClass = SCATTER_TRANSMISSION;
                 if (mediumExitIsDeep(exitMatch)) {
                     mediumCommitExit(medium, exitMatch);
                 }
@@ -199,7 +207,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                 float F = fresnelDielectric(cosI, etaI, etaT);
                 float3 transmittedDir = refract(rd, n, etaI / etaT);
                 bool chooseReflection = rndf(seed) < F;
-                reflectionClassLobe = chooseReflection;
+                scatterClass = chooseReflection ? SCATTER_REFLECTION : SCATTER_TRANSMISSION;
                 if (chooseReflection) {
                     rd = reflect(rd, n);
                     ro = offsetSurfaceOrigin(hitPos, geometricNormal, rd, SURF_BIAS);
@@ -391,7 +399,7 @@ public float3 tracePath(PathSegment seg, uint2 pix, uint sampleIndex) {
                        ? 1.0
                        : clamp(luminance(F0) / (luminance(F0) + luminance(diffAlb) + 1.0e-4), 0.1, 0.9);
         if (rndf(seed) < ps) {
-            reflectionClassLobe = true;
+            scatterClass = SCATTER_REFLECTION;
             float3 l;
             if (exactSpecular) {
                 // Authored zero is a delta distribution, not a narrow finite GGX lobe. This avoids the

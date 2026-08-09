@@ -24,6 +24,12 @@ public static const uint SECONDARY_DOMAIN_WORLD = 0u;
 public static const uint SECONDARY_DOMAIN_LOCAL_VIEW = 1u;
 public static const uint SECONDARY_DOMAIN_REFLECTION = 2u;
 
+// Scatter classes a continuation lobe falls into; the pass-through of an optically inert medium face
+// counts as transmission.
+public static const uint SCATTER_REFLECTION = 0u;
+public static const uint SCATTER_TRANSMISSION = 1u;
+public static const uint SCATTER_DIFFUSE = 2u;
+
 public static const uint TERRAIN_BUCKETS = 4u;
 public static const uint SBT_RADIANCE = 0u;
 public static const uint SBT_SHADOW = TERRAIN_BUCKETS;
@@ -43,12 +49,19 @@ public uint secondaryMaskForDomain(uint domain) {
     return CULL_SECONDARY;
 }
 
-// A continuation ray's domain, decided once per hit after the scatter lobe is chosen: world surfaces
-// keep the world domain for every lobe, while a local-view surface sends reflection-class lobes into
-// the reflection domain and every other lobe into its own local-view domain.
-public uint continuationDomainForLobe(uint baseSurfaceDomain, bool reflectionClass) {
+// A continuation ray's domain, decided once per hit after the scatter lobe is chosen. An unbroken
+// camera-visible transmission chain keeps the local-view domain across world interfaces (both player
+// representations then resolve consistently through water and glass); otherwise world surfaces keep the
+// world domain for every lobe, and a local-view surface sends reflection-class lobes into the
+// reflection domain and every other lobe into its own local-view domain.
+public uint continuationDomainForLobe(uint baseSurfaceDomain, uint scatterClass,
+                                      bool cameraTransmissionContinuity) {
+    if (scatterClass == SCATTER_TRANSMISSION && cameraTransmissionContinuity) {
+        return SECONDARY_DOMAIN_LOCAL_VIEW;
+    }
     if (baseSurfaceDomain == SECONDARY_DOMAIN_LOCAL_VIEW) {
-        return reflectionClass ? SECONDARY_DOMAIN_REFLECTION : SECONDARY_DOMAIN_LOCAL_VIEW;
+        return scatterClass == SCATTER_REFLECTION
+                ? SECONDARY_DOMAIN_REFLECTION : SECONDARY_DOMAIN_LOCAL_VIEW;
     }
     return SECONDARY_DOMAIN_WORLD;
 }

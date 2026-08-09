@@ -36,6 +36,9 @@ public PathSegment tracePrimary(PathSegment seg,
     uint seed = seg.seed;
     bool showCelestial = seg.showCelestial;
     bool waterWaves = (worldPush.flags & 16u) != 0u;
+    // The local view published this frame: camera-visible transmission chains then keep the local-view
+    // domain and seed the continuity bit; unset falls back to interface-derived domains, same frame.
+    bool localViewPresent = (worldPush.flags & 4u) != 0u;
     nextRecord = PATH_NO_NEXT;
 
     {
@@ -43,7 +46,7 @@ public PathSegment tracePrimary(PathSegment seg,
         // Replayed by Pass B as the camera ray, so its domain field is normalized rather than derived.
         PathSegment terminal = makePathSegment(ro, rd, throughput, medium,
                                                rayConeWidth, rayConeSpread, seed, bounce,
-                                               showCelestial, SECONDARY_DOMAIN_WORLD, false);
+                                               showCelestial, SECONDARY_DOMAIN_WORLD, localViewPresent);
         traceRadiance(CULL_PRIMARY, ro, 0.0, rd, 10000.0,
                       showCelestial, rayConeWidth, rayConeSpread);
 
@@ -165,6 +168,10 @@ public PathSegment tracePrimary(PathSegment seg,
         bool interfaceLocalView = payloadSurfaceLocalView();
         uint interfaceSecondaryDomain = secondaryDomainForSurface(payload.flags);
         uint interfaceSecondaryMask = secondaryMaskForDomain(interfaceSecondaryDomain);
+        // Camera-visible transmission keeps the local-view domain whenever the local view is published,
+        // even through world water and glass; the reflection side is never part of that chain.
+        uint transmissionSecondaryDomain = localViewPresent
+                ? SECONDARY_DOMAIN_LOCAL_VIEW : interfaceSecondaryDomain;
         uint interfaceReflectionDomain = interfaceLocalView
                 ? SECONDARY_DOMAIN_REFLECTION : SECONDARY_DOMAIN_WORLD;
 
@@ -210,7 +217,7 @@ public PathSegment tracePrimary(PathSegment seg,
                     offsetSurfaceOrigin(hitPos, geometricNormal, deferredDir, transmitBias),
                     deferredDir, throughput * (1.0 - F), transmittedMedium,
                     rayConeWidth, rayConeSpread, seed, bounce + 1,
-                    true, interfaceSecondaryDomain, false);
+                    true, transmissionSecondaryDomain, localViewPresent);
             queue[splitRecord] = packPathSegment(deferred, PATH_NO_NEXT);
             nextRecord = splitRecord;
             float3 reflectedDir = reflect(rd, n);
@@ -224,12 +231,12 @@ public PathSegment tracePrimary(PathSegment seg,
 
         if (!opticalEvent) {
             // A deep or unmatched exit is optically inert: continue straight with unchanged direction
-            // and weight, carrying at most the deep removal.
+            // and weight, carrying at most the deep removal. It still extends a transmission chain.
             return makePathSegment(
                     offsetSurfaceOrigin(hitPos, geometricNormal, rd, transmitBias),
                     rd, throughput, transmittedMedium,
                     rayConeWidth, rayConeSpread, seed, bounce + 1,
-                    true, interfaceSecondaryDomain, false);
+                    true, transmissionSecondaryDomain, localViewPresent);
         }
 
         bool hasTransmission = dot(transmittedDir, transmittedDir) > 0.0;
@@ -249,13 +256,13 @@ public PathSegment tracePrimary(PathSegment seg,
                         offsetSurfaceOrigin(hitPos, geometricNormal, deferredDir, transmitBias),
                         deferredDir, float3(0.0, 0.0, 0.0), medium,
                         rayConeWidth, rayConeSpread, seed, bounce + 1,
-                        true, interfaceSecondaryDomain, false);
+                        true, transmissionSecondaryDomain, localViewPresent);
             }
             continuation = makePathSegment(
                     offsetSurfaceOrigin(hitPos, geometricNormal, deferredDir, transmitBias),
                     deferredDir, throughput * (1.0 - F), transmittedMedium,
                     rayConeWidth, rayConeSpread, seed, bounce + 1,
-                    true, interfaceSecondaryDomain, false);
+                    true, transmissionSecondaryDomain, localViewPresent);
         }
         return continuation;
     }
