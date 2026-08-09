@@ -962,7 +962,10 @@ public final class CausticaConfig {
     }
 
     private static FloatSetting clampedFloat(String key, String tomlPath, float fallback, float min, float max) {
-        return new FloatSetting(key, tomlPath, fallback, v -> v, v -> v, v -> Math.clamp(v, min, max));
+        // NaN is unordered, so Math.clamp would pass it straight through to the GPU; infinities clamp
+        // to the range ends like any other out-of-range value.
+        return new FloatSetting(key, tomlPath, fallback, v -> v, v -> v,
+                v -> Double.isNaN(v) ? fallback : Math.clamp(v, min, max));
     }
 
     private static FloatSetting radians(String key, String tomlPath, float fallbackDegrees) {
