@@ -57,9 +57,10 @@ public final class RtMaterialRegistry {
             Identifier.withDefaultNamespace("block/frosted_ice_3"),
             Identifier.withDefaultNamespace("block/packed_ice"),
             Identifier.withDefaultNamespace("block/blue_ice"));
-    // Largest header count whose every slot still packs as a 16-bit GPU medium identity: a dielectric's
+    // Largest header count whose every slot still packs as a 20-bit GPU medium identity: a dielectric's
     // identity is materialId + 2 (closest_hit.rchit.slang), with 0 and 1 reserved for air and water.
-    private static final int MAX_MEDIUM_IDENTITY_RECORDS = 65533;
+    // 2^20 - 3 keeps the derived identity at or below 0xFFFFE, so the 0xFFFFF sentinel is never allocated.
+    private static final int MAX_MEDIUM_IDENTITY_RECORDS = 1048573;
     // HDR radiance of a full (level-15-equivalent) emitter, modulated by albedo. Baked into every
     // emissive RtMaterialDesc.emissionStrength at compile time (compileDesc/compileEntityDesc), times
     // any resource-pack absolute emission.strength_cd_m2 override; see header() and RtMaterialOverrides.

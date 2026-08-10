@@ -66,8 +66,8 @@ public struct PackedPathSegment {
     public uint parent2Extinction;
     public uint mediumIors01;   // half2(current.ior, parent1.ior)
     public uint mediumIor2;     // half2(parent2.ior, unused)
-    public uint mediumIds01;    // u16 current.mediumId | u16 parent1.mediumId << 16
-    public uint mediumId2;      // u16 parent2.mediumId, high half unused
+    public uint mediumIds01;    // u20 current.mediumId | low u12 parent1.mediumId << 20
+    public uint mediumId2;      // high u8 parent1.mediumId | u20 parent2.mediumId << 8
     public uint rayCone;
     public uint seed;
     public uint pathFlags;
@@ -141,9 +141,10 @@ public PackedPathSegment packPathSegment(PathSegment seg, uint nextRecord) {
     p.parent2Extinction = packRgb9e5(seg.medium.parent2.extinction);
     p.mediumIors01 = packHalf2(float2(seg.medium.current.ior, seg.medium.parent1.ior));
     p.mediumIor2 = packHalf2(float2(seg.medium.parent2.ior, 0.0));
-    p.mediumIds01 = (seg.medium.current.mediumId & 0xffffu)
-            | ((seg.medium.parent1.mediumId & 0xffffu) << 16u);
-    p.mediumId2 = seg.medium.parent2.mediumId & 0xffffu;
+    p.mediumIds01 = (seg.medium.current.mediumId & 0xfffffu)
+            | ((seg.medium.parent1.mediumId & 0xfffu) << 20u);
+    p.mediumId2 = ((seg.medium.parent1.mediumId >> 12u) & 0xffu)
+            | ((seg.medium.parent2.mediumId & 0xfffffu) << 8u);
     p.rayCone = packHalf2(float2(seg.rayConeWidth, seg.rayConeSpread));
     p.seed = seg.seed;
     // The one normalization site: a bounce-0 record is always replayed as the camera ray, so its domain
@@ -163,15 +164,15 @@ public PathSegment unpackPathSegment(PackedPathSegment p) {
     Medium current;
     current.ior = iors01.x;
     current.extinction = unpackRgb9e5(p.currentExtinction);
-    current.mediumId = p.mediumIds01 & 0xffffu;
+    current.mediumId = p.mediumIds01 & 0xfffffu;
     Medium parent1;
     parent1.ior = iors01.y;
     parent1.extinction = unpackRgb9e5(p.parent1Extinction);
-    parent1.mediumId = p.mediumIds01 >> 16u;
+    parent1.mediumId = (p.mediumIds01 >> 20u) | ((p.mediumId2 & 0xffu) << 12u);
     Medium parent2;
     parent2.ior = unpackHalf2(p.mediumIor2).x;
     parent2.extinction = unpackRgb9e5(p.parent2Extinction);
-    parent2.mediumId = p.mediumId2 & 0xffffu;
+    parent2.mediumId = (p.mediumId2 >> 8u) & 0xfffffu;
     MediumStack medium;
     medium.current = current;
     medium.parent1 = parent1;

@@ -37,7 +37,7 @@ public bool payloadEmitterInList() { return (payload.flags & PAYLOAD_EMITTER_IN_
 // belongs to the local-view representation, so rays leaving it take the local-view secondary domain.
 public bool payloadSurfaceLocalView() { return (payload.flags & PAYLOAD_SURFACE_LOCAL_VIEW) != 0u; }
 public bool payloadSurfaceIce() { return (payload.flags & PAYLOAD_SURFACE_ICE) != 0u; }
-// The 16-bit canonical identity of the medium behind the current hit's dielectric face (see
+// The 20-bit canonical identity of the medium behind the current hit's dielectric face (see
 // PAYLOAD_MEDIUM_ID_SHIFT); MEDIUM_ID_AIR on non-dielectric hits.
 public uint payloadMediumId() { return (payload.flags & PAYLOAD_MEDIUM_ID_MASK) >> PAYLOAD_MEDIUM_ID_SHIFT; }
 // LINEAR roughness, i.e. GGX alpha directly — NOT perceptual roughness. This is the one convention used

@@ -48,7 +48,7 @@ public float3 volumeExtinction(float3 tint, float transmission) {
 public struct Medium {
     public float ior;
     public float3 extinction;
-    public uint mediumId; // canonical 16-bit identity (MEDIUM_ID_*)
+    public uint mediumId; // canonical 20-bit identity (MEDIUM_ID_*)
 };
 
 // Water-specific behaviour — the wave-refraction caustic on submerged receivers, the water miss guard —

@@ -171,7 +171,7 @@ public struct Payload {
     public float  hitT;        // >= 0 on hit, < 0 on miss.
     public half3  motionPrev;  // per-vertex world displacement since last frame.
     public half3  f0;          // specular F0.
-    public uint   flags;       // bits 0..1 material, bit 2 celestial, bit 3 water-entering, bits 4..6 emission source, bit 7 emitter-in-list, bit 8 local-view surface, bits 9..24 medium identity, bit 25 ice surface.
+    public uint   flags;       // bits 0..1 material, bit 2 celestial, bit 3 water-entering, bits 4..6 emission source, bit 7 emitter-in-list, bit 8 local-view surface, bits 9..28 medium identity, bit 29 ice surface.
     public uint   roughMetal;  // packHalf2x16(roughness, metalness)
     public uint   emissionSss; // packHalf2x16(emission, sss)
     public uint   iorTransmission; // packHalf2x16(IOR, transmission factor)
@@ -186,13 +186,13 @@ public static const uint PAYLOAD_EMITTER_IN_LIST = 128u;
 // belongs to the local-view representation. Bits 0..7 were full, so this takes the first free high bit —
 // the payload does not grow and the cross-stage ABI is unchanged.
 public static const uint PAYLOAD_SURFACE_LOCAL_VIEW = 1u << 8;
-// Set by world.rchit on a dielectric hit: the 16-bit canonical identity of the medium behind the face
-// (MEDIUM_ID_WATER for water, materialId + MEDIUM_ID_DIELECTRIC_BASE otherwise), consumed by the
-// raygen medium stack. Zero — air — on every non-dielectric hit.
+// Set by world.rchit on a dielectric hit: the 20-bit canonical identity in bits 9..28 of the
+// medium behind the face (MEDIUM_ID_WATER for water, materialId + MEDIUM_ID_DIELECTRIC_BASE
+// otherwise), consumed by the raygen medium stack. Zero — air — on every non-dielectric hit.
 public static const uint PAYLOAD_MEDIUM_ID_SHIFT = 9u;
-public static const uint PAYLOAD_MEDIUM_ID_MASK = 0xffffu << PAYLOAD_MEDIUM_ID_SHIFT;
+public static const uint PAYLOAD_MEDIUM_ID_MASK = 0xfffffu << PAYLOAD_MEDIUM_ID_SHIFT;
 // Set by world.rchit when the hit material carries MATERIAL_FEATURE_ICE.
-public static const uint PAYLOAD_SURFACE_ICE = 1u << 25;
+public static const uint PAYLOAD_SURFACE_ICE = 1u << 29;
 // Set by world.rchit on any dielectric hit (water or glass/ice): true when the incoming ray travels
 // against the prim's outward face normal (entering the volume), false when it exits. Derived from face
 // orientation rather than toggled, so a stray or missing face cannot corrupt the medium for the rest of
@@ -222,7 +222,7 @@ public static const uint MATERIAL_DIELECTRIC = 3u;
 // and per stack layer in the packed path record. Air and water are reserved; every other dielectric
 // derives materialId + MEDIUM_ID_DIELECTRIC_BASE, so identity comparisons are integer-only and optical
 // parameters never decide what a medium is. RtMaterialRegistry rejects tables too large to fit the
-// 16-bit identity space.
+// 20-bit identity space.
 public static const uint MEDIUM_ID_AIR = 0u;
 public static const uint MEDIUM_ID_WATER = 1u;
 public static const uint MEDIUM_ID_DIELECTRIC_BASE = 2u;

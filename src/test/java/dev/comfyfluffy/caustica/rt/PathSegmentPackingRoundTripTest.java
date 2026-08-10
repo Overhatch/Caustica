@@ -9,7 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Java replica of segment.slang's PackedPathSegment layout for everything the 64-byte record carries
- * beyond raw geometry: the three-layer medium stack (RGB9E5 extinction, fp16 IOR and u16 identity per
+ * beyond raw geometry: the three-layer medium stack (RGB9E5 extinction, fp16 IOR and u20 identity per
  * layer) and the pathFlags word (bounce in bits 0..3, showCelestial at 8, the two-bit secondary domain
  * at 9..10, camera-transmission continuity at 11). The shader and this replica follow one layout
  * definition; a change to either must land in both.
@@ -68,18 +68,20 @@ final class PathSegmentPackingRoundTripTest {
                 packRgb9e5(stack.parent2().extinction()),
                 packHalf2(stack.current().ior(), stack.parent1().ior()),
                 packHalf2(stack.parent2().ior(), 0.0f),
-                (stack.current().mediumId() & 0xFFFF) | ((stack.parent1().mediumId() & 0xFFFF) << 16),
-                stack.parent2().mediumId() & 0xFFFF,
+                (stack.current().mediumId() & 0xFFFFF)
+                        | ((stack.parent1().mediumId() & 0xFFF) << 20),
+                ((stack.parent1().mediumId() >>> 12) & 0xFF)
+                        | ((stack.parent2().mediumId() & 0xFFFFF) << 8),
                 pathFlags);
     }
 
     private static Segment unpack(Packed p) {
         Layer current = new Layer(halfLow(p.mediumIors01()), unpackRgb9e5(p.currentExtinction()),
-                p.mediumIds01() & 0xFFFF);
+                p.mediumIds01() & 0xFFFFF);
         Layer parent1 = new Layer(halfHigh(p.mediumIors01()), unpackRgb9e5(p.parent1Extinction()),
-                p.mediumIds01() >>> 16);
+                (p.mediumIds01() >>> 20) | ((p.mediumId2() & 0xFF) << 12));
         Layer parent2 = new Layer(halfLow(p.mediumIor2()), unpackRgb9e5(p.parent2Extinction()),
-                p.mediumId2() & 0xFFFF);
+                (p.mediumId2() >>> 8) & 0xFFFFF);
         return new Segment(p.pathFlags() & PATH_BOUNCE_MASK,
                 (p.pathFlags() & PATH_SHOW_CELESTIAL) != 0,
                 (p.pathFlags() & PATH_SECONDARY_DOMAIN_MASK) >>> PATH_SECONDARY_DOMAIN_SHIFT,
@@ -133,7 +135,7 @@ final class PathSegmentPackingRoundTripTest {
     @Test
     void roundTripPreservesDomainContinuityBounceAndStack() {
         Random random = new Random(0x5eedcafe);
-        int[] ids = {0, 1, 2, 7, 4096, 65534};
+        int[] ids = {0, 1, 2, 7, 4095, 4096, 65534, 65535, 65536, 1000000, 1048573, 1048574};
         for (int bounce : new int[]{0, 1, 2, 3, 8, 15}) {
             for (int domain : new int[]{DOMAIN_WORLD, DOMAIN_LOCAL_VIEW, DOMAIN_REFLECTION}) {
                 for (boolean celestial : new boolean[]{false, true}) {
